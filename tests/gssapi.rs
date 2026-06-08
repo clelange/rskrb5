@@ -30,6 +30,15 @@ const RC4_WRAP_FROM_ACCEPTOR: &str =
     "050401ff0010000000000000575e85d601010000fd1aa518115cffc141a7edbd4b844482";
 const RC4_WRAP_FROM_INITIATOR: &str =
     "050400ff001000000000000000000000010100009a6def57aa756af352904deb83ca78ff";
+const DES3_SESSION_KEY: &str = "850bb51358548cd05e86768c313e3bfef7511937dcf72c3e";
+const DES3_MIC_FROM_ACCEPTOR: &str =
+    "040401ffffffffff00000000575e85d6c139350ffc99da64e9a2591db9a21d609aa2748f";
+const DES3_MIC_FROM_INITIATOR: &str =
+    "040400ffffffffff0000000000000000e6c29e7e63d5fdc851285c34c1d1453b6abea103";
+const DES3_WRAP_FROM_ACCEPTOR: &str =
+    "050401ff0014000000000000575e85d6010100004fb03cbebce9ef771327d9f394804c27884a8e66";
+const DES3_WRAP_FROM_INITIATOR: &str =
+    "050400ff001400000000000000000000010100004cdcec3881979bb4af72359f96cdea61b05cc1f7";
 
 #[test]
 fn mic_token_decodes_and_roundtrips_gokrb5_vectors() {
@@ -166,6 +175,40 @@ fn mic_token_matches_gokrb5_rc4_hmac_vectors() {
 }
 
 #[test]
+fn mic_token_matches_gokrb5_des3_vectors() {
+    let key = des3_session_key();
+    let acceptor_bytes = decode_hex(DES3_MIC_FROM_ACCEPTOR);
+    let acceptor = MicToken::decode(&acceptor_bytes, true)
+        .expect("DES3 acceptor MIC decodes")
+        .with_payload(decode_hex(MIC_PAYLOAD));
+    assert!(
+        acceptor
+            .verify(&key, GSSAPI_ACCEPTOR_SIGN_USAGE)
+            .expect("DES3 acceptor MIC verifies")
+    );
+
+    let initiator =
+        MicToken::new_initiator(decode_hex(MIC_PAYLOAD), &key).expect("DES3 initiator MIC builds");
+    assert_eq!(
+        hex_encode(&initiator.encode().expect("DES3 initiator MIC encodes")),
+        DES3_MIC_FROM_INITIATOR
+    );
+
+    let decoded = MicToken::decode(&decode_hex(DES3_MIC_FROM_INITIATOR), false)
+        .expect("DES3 MIC decodes")
+        .with_payload(decode_hex(MIC_PAYLOAD));
+    assert!(
+        decoded
+            .verify(&key, GSSAPI_INITIATOR_SIGN_USAGE)
+            .expect("DES3 initiator MIC verifies")
+    );
+    assert_eq!(
+        hex_encode(&decoded.encode().expect("DES3 MIC roundtrips")),
+        DES3_MIC_FROM_INITIATOR
+    );
+}
+
+#[test]
 fn wrap_token_decodes_and_roundtrips_gokrb5_vectors() {
     let acceptor_bytes = decode_hex(WRAP_FROM_ACCEPTOR);
     let token = WrapToken::decode(&acceptor_bytes, true).expect("acceptor wrap decodes");
@@ -232,6 +275,35 @@ fn wrap_token_matches_gokrb5_rc4_hmac_vectors() {
     assert_eq!(
         hex_encode(&decoded.encode().expect("RC4 wrap roundtrips")),
         RC4_WRAP_FROM_INITIATOR
+    );
+}
+
+#[test]
+fn wrap_token_matches_gokrb5_des3_vectors() {
+    let key = des3_session_key();
+    let acceptor =
+        WrapToken::decode(&decode_hex(DES3_WRAP_FROM_ACCEPTOR), true).expect("DES3 wrap decodes");
+    assert_eq!(acceptor.ec, 20);
+    assert_eq!(acceptor.payload, Some(decode_hex(WRAP_PAYLOAD)));
+    assert!(
+        acceptor
+            .verify(&key, GSSAPI_ACCEPTOR_SEAL_USAGE)
+            .expect("DES3 acceptor wrap verifies")
+    );
+
+    let initiator =
+        WrapToken::new_initiator(decode_hex(WRAP_PAYLOAD), &key).expect("DES3 wrap builds");
+    assert_eq!(initiator.ec, 20);
+    assert_eq!(
+        hex_encode(&initiator.encode().expect("DES3 wrap encodes")),
+        DES3_WRAP_FROM_INITIATOR
+    );
+
+    let decoded =
+        WrapToken::decode(&decode_hex(DES3_WRAP_FROM_INITIATOR), false).expect("DES3 wrap decodes");
+    assert_eq!(
+        hex_encode(&decoded.encode().expect("DES3 wrap roundtrips")),
+        DES3_WRAP_FROM_INITIATOR
     );
 }
 
@@ -423,6 +495,13 @@ fn rc4_session_key() -> EncryptionKey {
     EncryptionKey {
         etype: 23,
         value: decode_hex(RC4_SESSION_KEY),
+    }
+}
+
+fn des3_session_key() -> EncryptionKey {
+    EncryptionKey {
+        etype: 16,
+        value: decode_hex(DES3_SESSION_KEY),
     }
 }
 
