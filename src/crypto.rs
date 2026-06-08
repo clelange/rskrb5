@@ -24,6 +24,15 @@ pub enum AesSha1Etype {
 }
 
 impl AesSha1Etype {
+    /// Return the AES-SHA1 encryption type for a Kerberos etype id.
+    pub fn from_etype_id(etype_id: i32) -> Option<Self> {
+        match etype_id {
+            17 => Some(Self::Aes128),
+            18 => Some(Self::Aes256),
+            _ => None,
+        }
+    }
+
     /// Kerberos encryption type ID.
     pub fn etype_id(self) -> i32 {
         match self {

@@ -14,14 +14,14 @@ publish = false
 [features]
 default = ["evaluation"]
 evaluation = [
+    "messages",
     "dep:hex",
     "dep:picky-asn1",
     "dep:picky-asn1-der",
     "dep:picky-krb",
-    "dep:rasn",
-    "dep:rasn-kerberos",
     "dep:serde",
 ]
+messages = ["dep:rasn", "dep:rasn-kerberos"]
 tokio = ["dep:tokio"]
 serde = ["dep:serde"]
 

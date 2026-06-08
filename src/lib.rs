@@ -13,6 +13,8 @@ pub mod ccache;
 pub mod config;
 pub mod crypto;
 pub mod keytab;
+#[cfg(feature = "messages")]
+pub mod service;
 
 /// Current crate-level result type.
 pub type Result<T> = std::result::Result<T, Error>;
@@ -44,4 +46,9 @@ pub enum Error {
     /// Kerberos cryptographic operation failed.
     #[error("crypto error: {0}")]
     Crypto(#[from] crypto::Error),
+
+    /// AP-REQ service validation failed.
+    #[cfg(feature = "messages")]
+    #[error("service validation error: {0}")]
+    Service(#[from] service::Error),
 }

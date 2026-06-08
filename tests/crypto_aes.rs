@@ -5,6 +5,10 @@ use rskrb5::crypto::{
 
 #[test]
 fn reports_aes_sha1_metadata() {
+    assert_eq!(AesSha1Etype::from_etype_id(17), Some(AesSha1Etype::Aes128));
+    assert_eq!(AesSha1Etype::from_etype_id(18), Some(AesSha1Etype::Aes256));
+    assert_eq!(AesSha1Etype::from_etype_id(23), None);
+
     assert_eq!(AesSha1Etype::Aes128.etype_id(), 17);
     assert_eq!(AesSha1Etype::Aes128.checksum_type_id(), 15);
     assert_eq!(AesSha1Etype::Aes128.key_len(), 16);
