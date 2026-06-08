@@ -5,6 +5,7 @@ use rasn::types::Integer;
 use rskrb5::kadmin::{
     ChangePasswdData, ChangePasswordResult, Error as KadminError, Reply, Request,
 };
+use rskrb5::keytab::EncryptionKey;
 
 const MARSHALLED_CHANGE_PASSWD_DATA: &str = "3036a00d040b6e657770617373776f7264a1163014a003020101a10d300b1b09746573747573657231a20d1b0b544553542e474f4b524235";
 const MARSHALLED_KPASSWD_REQ: &str = "037aff8002c16e8202bd308202b9a003020105a10302010ea20703050000000000a38201f1618201ed308201e9a003020105a10d1b0b544553542e474f4b524235a21d301ba003020101a11430121b066b61646d696e1b086368616e67657077a38201b2308201aea003020111a103020101a28201a00482019ca3de94df50e8e9fe7a8c9386f594f469bf08874407fc7b95ddcf22110ef63e62ff0ba3c31c3bb725dc1dde1f4c2f69a4973b4b43c9b4b31f71f676d5e8e7b4d7906b1dfacc9897d865b17f934fb96b802344463bb0746fdd39e9e48ff1b2665dc895a74d3d3aac89512b43bd8ead8f455b9b819cc6f6a34fb7c5975d7c2dbd4349524961215b98f33f5747f1e0c89f3b3637462308953940741ab7fc38ae817ba85800dd911bb78b42264f2d285c2a0a33ca21c1a3d281ec14614010db31c3e3f4d4622b799f97b3d31c4445411278fec62dd8e6e349db280aaa4419b53ef6fbc01f0206bcfea2cbe835b46764c03c138722e54dab53a1080e5d6c99f8cd7a948880677176cfc2d3800f9ef64d1ec4f8bdadc1ae409990c4855a82e265682e8ddaa6dea70a1d7855f3e1e766f5efe428dd6da71c585f5d17d8f81e8f2a4f4b2245f5ff2cc444a2a1ae5d16a15d588597219d5659da537f752ca9b572b635088b325b60e8e62fd99487872261f41dcc466516b89992d277bb8b3a1ca770671fca36dd33c3dd6dab643e6710280661029254054273151ccfca9aaddc55a481ae3081aba003020112a103020101a2819e04819be66387f971d751d7d3ebb6acd815a0991e0ed9f07e2643783e7961fb88127b31f767bf00d1d071a81858b101f4d45460412d8013228f942bc51891e95a06aefa8cedd95e5a3e6e65597c0f05c19ee54dc6dc00b1a3f9d7a95516b5e447c40cd5b462ed6b17a007670311efa44dbe939cab11072b9af1443c3203767bb1a3240542db06dffcaebcedd5c335bb295127bc0e6d99f2c1e87f68de1f547581b03081ada003020105a103020115a381a030819da003020112a103020101a2819004818df272b2726c8f31c578f3b4275bc283828716010a20f0c4369bff474fcf202537060a71edcbe8ba720d0d9b2bac26b58353dc5b2945570374928a819eb3526362eda328e704f1a5ebe3272eed0fa6a6aa7d0f32c4fc0bd2e4ea52a8834ea7b5fb018934df87c18ab625f5c07f6c28e202e0cec63bcc37b1d381d64937998c1bdcd1585695eeffb75f8ce9e736b3";
@@ -115,6 +116,43 @@ fn kpasswd_reply_parses_krb_error_response_data() {
             text: "b5data".to_owned(),
         })
     );
+}
+
+#[test]
+fn kpasswd_reply_decrypt_result_returns_krb_error_result() {
+    let reply = Reply::parse(&kpasswd_reply_frame(0, &decode_hex(KRB_ERROR_WITH_EDATA)))
+        .expect("KRB-ERROR reply parses");
+    let key = EncryptionKey {
+        etype: 18,
+        value: vec![0; 32],
+    };
+
+    assert_eq!(
+        reply
+            .decrypt_result(&key)
+            .expect("KRB-ERROR result needs no decrypt"),
+        ChangePasswordResult {
+            code: u16::from_be_bytes([b'k', b'r']),
+            text: "b5data".to_owned(),
+        }
+    );
+}
+
+#[test]
+fn kpasswd_reply_decrypt_result_rejects_wrong_key_etype() {
+    let reply = Reply::parse(&decode_hex(MARSHALLED_KPASSWD_REP)).expect("kpasswd reply parses");
+    let key = EncryptionKey {
+        etype: 17,
+        value: vec![0; 16],
+    };
+
+    assert!(matches!(
+        reply.decrypt_result(&key),
+        Err(KadminError::KeyEtypeMismatch {
+            key_etype: 17,
+            encrypted_data_etype: 18,
+        })
+    ));
 }
 
 #[test]

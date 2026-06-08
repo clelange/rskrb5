@@ -1,11 +1,15 @@
 //! kadmin protocol data wrappers used by gokrb5 compatibility tests.
 
+use crate::crypto::KerberosEtype;
+use crate::keytab::EncryptionKey;
 use rasn::prelude::*;
 
 /// Password-change request protocol version (`0xff80`).
 pub const CHANGE_PASSWORD_REQUEST_VERSION: u16 = 0xff80;
 /// Password-change reply protocol version.
 pub const CHANGE_PASSWORD_REPLY_VERSION: u16 = 1;
+/// Key usage for encrypted KRB-PRIV payloads.
+pub const KRB_PRIV_ENCPART_USAGE: u32 = 13;
 const HEADER_LEN: usize = 6;
 
 /// Payload encrypted inside a Kerberos password-change request.
@@ -150,6 +154,39 @@ impl Reply {
     pub fn is_krb_error(&self) -> bool {
         self.krb_error.is_some()
     }
+
+    /// Return the password-change result, decrypting KRB-PRIV when needed.
+    pub fn decrypt_result(&self, key: &EncryptionKey) -> Result<ChangePasswordResult, Error> {
+        if let Some(result) = &self.result {
+            return Ok(result.clone());
+        }
+        if self.krb_error.is_some() {
+            return Err(Error::MissingReplyResult);
+        }
+
+        let krb_priv = self.krb_priv.as_ref().ok_or(Error::MissingKrbPriv)?;
+        if krb_priv.enc_part.etype != key.etype {
+            return Err(Error::KeyEtypeMismatch {
+                key_etype: key.etype,
+                encrypted_data_etype: krb_priv.enc_part.etype,
+            });
+        }
+
+        let etype = KerberosEtype::from_etype_id(krb_priv.enc_part.etype)
+            .ok_or(Error::UnsupportedEtype(krb_priv.enc_part.etype))?;
+        let plaintext = etype
+            .decrypt_message(
+                &key.value,
+                krb_priv.enc_part.cipher.as_ref(),
+                KRB_PRIV_ENCPART_USAGE,
+            )
+            .map_err(|source| Error::Crypto {
+                message: source.to_string(),
+            })?;
+        let plaintext = crate::der::trim_zero_padded_der(&plaintext);
+        let enc_part = decode::<rasn_kerberos::EncKrbPrivPart>("EncKrbPrivPart", plaintext)?;
+        ChangePasswordResult::parse(enc_part.user_data.as_ref())
+    }
 }
 
 /// Cleartext password-change response code and text.
@@ -223,6 +260,31 @@ pub enum Error {
     ResponseTooShort {
         /// Actual response byte length.
         actual: usize,
+    },
+    /// A KRB-ERROR reply did not include kpasswd response data.
+    #[error("kadmin reply does not contain response data")]
+    MissingReplyResult,
+    /// A non-error reply did not include a KRB-PRIV section.
+    #[error("kadmin reply does not contain KRB-PRIV")]
+    MissingKrbPriv,
+    /// The encrypted data etype is not implemented yet.
+    #[error("unsupported encryption type: {0}")]
+    UnsupportedEtype(i32),
+    /// The supplied key etype did not match the encrypted KRB-PRIV etype.
+    #[error(
+        "key etype {key_etype} does not match KRB-PRIV encrypted data etype {encrypted_data_etype}"
+    )]
+    KeyEtypeMismatch {
+        /// Supplied key encryption type.
+        key_etype: i32,
+        /// KRB-PRIV encrypted data encryption type.
+        encrypted_data_etype: i32,
+    },
+    /// Cryptographic decrypt or integrity verification failed.
+    #[error("kadmin crypto operation failed: {message}")]
+    Crypto {
+        /// Crypto error message.
+        message: String,
     },
     /// DER decoding failed for a framed Kerberos message.
     #[error("{target} decode failed: {message}")]
