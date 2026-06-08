@@ -714,6 +714,70 @@ fn tokio_client_from_ccache_prefers_current_service_ticket_over_future_duplicate
 
 #[cfg(feature = "tokio")]
 #[test]
+fn tokio_client_from_ccache_rejects_expired_tgt_without_live_credentials() {
+    let tgt = sample_tgt_session();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("current time is after unix epoch")
+        .as_secs() as u32;
+
+    let mut cache = ccache::CCache::new(ccache::Principal::new(
+        "TEST.GOKRB5",
+        1,
+        vec!["testuser1".to_owned()],
+    ));
+    let mut tgt_credential = tgt.to_ccache_credential().expect("TGT converts");
+    make_credential_expired(&mut tgt_credential, now);
+    cache.credentials_mut().push(tgt_credential);
+
+    let mut client = TokioClient::from_ccache(Config::new(), KdcProtocol::Tcp, &cache);
+    let error = runtime()
+        .block_on(client.get_service_ticket(sample_service_principal()))
+        .expect_err("expired cache-only TGT cannot acquire a service ticket");
+
+    assert!(matches!(error, Error::NoClientCredentials));
+}
+
+#[cfg(feature = "tokio")]
+#[test]
+fn tokio_client_from_ccache_rejects_expired_service_ticket() {
+    let tgt = sample_tgt_session();
+    let service_ticket = sample_service_ticket_session(&tgt);
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("current time is after unix epoch")
+        .as_secs() as u32;
+
+    let mut cache = ccache::CCache::new(ccache::Principal::new(
+        "TEST.GOKRB5",
+        1,
+        vec!["testuser1".to_owned()],
+    ));
+    let mut tgt_credential = tgt.to_ccache_credential().expect("TGT converts");
+    make_credential_current(&mut tgt_credential, now);
+    let mut service_credential = service_ticket
+        .to_ccache_credential()
+        .expect("service ticket converts");
+    make_credential_expired(&mut service_credential, now);
+    cache.credentials_mut().push(tgt_credential);
+    cache.credentials_mut().push(service_credential);
+
+    let mut client = TokioClient::from_ccache(config_without_kdcs(), KdcProtocol::Tcp, &cache);
+    let error = runtime()
+        .block_on(client.get_service_ticket(sample_service_principal()))
+        .expect_err("expired service ticket is not returned from cache");
+
+    assert!(matches!(
+        error,
+        Error::NoKdcEndpoints {
+            realm,
+            protocol: KdcProtocol::Tcp,
+        } if realm == "TEST.GOKRB5"
+    ));
+}
+
+#[cfg(feature = "tokio")]
+#[test]
 fn tokio_client_exports_and_saves_ccache() {
     let tgt = sample_tgt_session();
     let service_ticket = sample_service_ticket_session(&tgt);
@@ -1341,6 +1405,29 @@ fn make_credential_current(credential: &mut ccache::Credential, now: u32) {
     credential.times.start_time = now - 60;
     credential.times.end_time = now + 60 * 60;
     credential.times.renew_till = now + 2 * 60 * 60;
+}
+
+#[cfg(feature = "tokio")]
+fn make_credential_expired(credential: &mut ccache::Credential, now: u32) {
+    credential.times.auth_time = now - 2 * 60 * 60;
+    credential.times.start_time = now - 2 * 60 * 60;
+    credential.times.end_time = now - 60 * 60;
+    credential.times.renew_till = 0;
+}
+
+#[cfg(feature = "tokio")]
+fn config_without_kdcs() -> Config {
+    Config::parse(
+        r#"
+[libdefaults]
+ dns_lookup_kdc = false
+
+[realms]
+ TEST.GOKRB5 = {
+ }
+"#,
+    )
+    .expect("config parses")
 }
 
 #[cfg(feature = "tokio")]
