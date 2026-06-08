@@ -12,7 +12,7 @@ use rskrb5::client::{
     KDC_OPTION_RENEWABLE, KdcError, KdcTransport, PA_ENC_TIMESTAMP, PA_ETYPE_INFO2,
     PA_REQ_ENC_PA_REP, PA_TGS_REQ, PreauthKeyInfo, Principal, TGS_REP_ENCPART_SESSION_KEY_USAGE,
     TGS_REQ_AUTHENTICATOR_CHECKSUM_USAGE, TGS_REQ_AUTHENTICATOR_USAGE, TgsReqOptions,
-    build_ap_req_with_confounder, build_kpasswd_request_with_confounders,
+    build_ap_req_with_confounder, build_kpasswd_request, build_kpasswd_request_with_confounders,
     build_tgs_req_for_realm_with_confounder, build_tgs_req_with_confounder, build_tgt_as_req,
     build_tgt_renewal_req_with_confounder, build_ticket_renewal_req_with_confounder,
     default_password_salt, derive_password_reply_key, exchange_as_req, exchange_tgs_req,
@@ -517,6 +517,47 @@ fn builds_kpasswd_request_with_subkey_encrypted_payload() {
         system_time_from_kerberos_time(enc_part.timestamp.as_ref().expect("KRB-PRIV timestamp")),
         timestamp(1_893_553_452)
     );
+}
+
+#[test]
+fn builds_kpasswd_request_with_generated_reply_key() {
+    let tgt = sample_tgt_session();
+    let request = sample_tgs_request(&tgt);
+    let response = synthetic_tgs_rep(&request, request.nonce, &tgt.session_key);
+    let service_ticket =
+        process_tgs_rep(&request, &response, &tgt.session_key).expect("TGS-REP validates");
+    let change_data = ChangePasswdData::new(b"newpassword");
+
+    let built = build_kpasswd_request(
+        &service_ticket,
+        &change_data,
+        KpasswdRequestOptions::new(
+            timestamp(1_893_553_452),
+            456_789,
+            42,
+            ipv4_host_address([127, 0, 0, 1]),
+        ),
+    )
+    .expect("kpasswd request builds");
+    let parsed = KpasswdRequest::parse(&built.der).expect("request parses");
+
+    assert_eq!(built.reply_key.etype, service_ticket.session_key.etype);
+    assert_eq!(built.reply_key.value.len(), 32);
+
+    let krb_priv_bytes = AesSha1Etype::Aes256
+        .decrypt_message(
+            &built.reply_key.value,
+            parsed.krb_priv.enc_part.cipher.as_ref(),
+            KRB_PRIV_ENCPART_USAGE,
+        )
+        .expect("KRB-PRIV decrypts");
+    let enc_part: rasn_kerberos::EncKrbPrivPart =
+        rasn::der::decode(&krb_priv_bytes).expect("EncKrbPrivPart decodes");
+    let decoded_change_data =
+        ChangePasswdData::decode_der(enc_part.user_data.as_ref()).expect("payload decodes");
+
+    assert_eq!(decoded_change_data, change_data);
+    assert_eq!(enc_part.seq_number, Some(42));
 }
 
 #[test]

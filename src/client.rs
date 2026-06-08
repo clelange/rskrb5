@@ -2288,6 +2288,34 @@ pub fn build_kpasswd_request_with_confounders(
     })
 }
 
+/// Build a complete kpasswd request with generated reply key and confounders.
+pub fn build_kpasswd_request(
+    service_ticket: &TgsRepSession,
+    change_data: &crate::kadmin::ChangePasswdData,
+    options: KpasswdRequestOptions,
+) -> Result<BuiltKpasswdRequest, Error> {
+    let etype = KerberosEtype::from_etype_id(service_ticket.session_key.etype)
+        .ok_or(Error::UnsupportedEtype(service_ticket.session_key.etype))?;
+    let mut reply_key = EncryptionKey {
+        etype: service_ticket.session_key.etype,
+        value: vec![0; etype.key_len()],
+    };
+    getrandom::fill(&mut reply_key.value)?;
+    let mut ap_req_confounder = vec![0; etype.confounder_len()];
+    getrandom::fill(&mut ap_req_confounder)?;
+    let mut krb_priv_confounder = vec![0; etype.confounder_len()];
+    getrandom::fill(&mut krb_priv_confounder)?;
+
+    build_kpasswd_request_with_confounders(
+        service_ticket,
+        change_data,
+        reply_key,
+        options,
+        &ap_req_confounder,
+        &krb_priv_confounder,
+    )
+}
+
 /// Build a TGS-REQ that renews an existing TGT session.
 pub fn build_tgt_renewal_req(
     tgt: &AsRepSession,
