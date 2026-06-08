@@ -622,7 +622,8 @@ fn decrypt_encrypted_data(
     usage: u32,
 ) -> Result<Vec<u8>, Error> {
     let etype = KerberosEtype::from_etype_id(etype_id).ok_or(Error::UnsupportedEtype(etype_id))?;
-    Ok(etype.decrypt_message(key, ciphertext, usage)?)
+    let plaintext = etype.decrypt_message(key, ciphertext, usage)?;
+    Ok(crate::der::trim_zero_padded_der(&plaintext).to_vec())
 }
 
 fn validate_integer(

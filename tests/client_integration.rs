@@ -10,7 +10,7 @@ use rskrb5::client::{
     pa_enc_timestamp_with_confounder,
 };
 use rskrb5::config::Config;
-use rskrb5::crypto::AesSha1Etype;
+use rskrb5::crypto::{AesSha1Etype, Des3CbcSha1KdEtype};
 use rskrb5::keytab::{EncryptionKey, Entry as KeytabEntry, Keytab, Principal as KeytabPrincipal};
 
 const REALM: &str = "TEST.GOKRB5";
@@ -18,6 +18,7 @@ const USER: &str = "testuser1";
 const PASSWORD: &[u8] = b"passwordvalue";
 const TESTUSER1_SALT: &[u8] = b"TEST.GOKRB5testuser1";
 const AES256_ETYPE: i32 = 18;
+const DES3_ETYPE: i32 = 16;
 const RC4_HMAC_ETYPE: i32 = 23;
 const TESTUSER1_KVNO: u32 = 2;
 const SERVICE_HOST: &str = "host.test.gokrb5";
@@ -141,6 +142,45 @@ fn docker_mit_kdc_rc4_hmac_as_login_through_tcp_and_udp() -> Result<(), Box<dyn 
             assert_eq!(session.service, Principal::tgt_service(REALM));
             assert_eq!(session.session_key.etype, RC4_HMAC_ETYPE);
             assert!(!session.session_key.value.is_empty());
+            assert!(!session.ticket.is_empty());
+            assert!(session.end_time > session.start_time);
+        }
+
+        Ok::<_, Box<dyn Error>>(())
+    })
+}
+
+#[test]
+fn docker_mit_kdc_des3_as_login_through_tcp_and_udp() -> Result<(), Box<dyn Error>> {
+    if std::env::var("INTEGRATION").as_deref() != Ok("1") {
+        eprintln!("skipping Docker KDC integration test; set INTEGRATION=1 to enable");
+        return Ok(());
+    }
+    let _guard = INTEGRATION_LOCK.lock().expect("integration test lock");
+
+    runtime().block_on(async {
+        let addr = kdc_addr();
+        let transport = TokioKdcTransport::new().with_timeout(Duration::from_secs(10));
+
+        for protocol in [KdcProtocol::Udp, KdcProtocol::Tcp] {
+            eprintln!("running Docker KDC DES3 AS login over {protocol:?} to {addr}");
+            let session = transport
+                .login_tgt_with_password(
+                    protocol,
+                    addr.as_str(),
+                    Principal::user(REALM, USER),
+                    PASSWORD,
+                    login_options_with_etypes(protocol, 19, vec![DES3_ETYPE])?,
+                )
+                .await?;
+
+            assert_eq!(session.client, Principal::user(REALM, USER));
+            assert_eq!(session.service, Principal::tgt_service(REALM));
+            assert_eq!(session.session_key.etype, DES3_ETYPE);
+            assert_eq!(
+                session.session_key.value.len(),
+                Des3CbcSha1KdEtype.key_len()
+            );
             assert!(!session.ticket.is_empty());
             assert!(session.end_time > session.start_time);
         }
