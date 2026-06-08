@@ -15,8 +15,9 @@ pure-Rust Kerberos library.
   Kerberos DER/data types.
 - The ASN.1 spike now checks 51 gokrb5 unit-test fixtures with separate decode
   and exact DER round-trip expectations for `rasn-kerberos` and `picky-krb`.
-- The first real modules are `keytab`, `krb5.conf`, `ccache`, `crypto`, and
-  `service`: keytabs parse, serialize, and select keys against gokrb5 fixtures;
+- The first real modules are `keytab`, `krb5.conf`, `ccache`, `crypto`,
+  `service`, and `pac`: keytabs parse, serialize, and select keys against
+  gokrb5 fixtures;
   config parsing covers libdefaults, realm host mappings, domain realm lookup,
   duration parsing, and configured KDC/KPassword server lookup; ccache parsing
   covers MIT file caches, opaque ticket bytes, server entry lookup, and exact
@@ -26,8 +27,12 @@ pure-Rust Kerberos library.
   gokrb5-generated AP-REQ fixtures, service-ticket decryption, authenticator
   decryption, client matching, ticket time checks, clock skew, replay, and
   address-required behavior, plus AP-REP mutual-auth reply generation and
-  verification; SPNEGO/GSSAPI covers KRB5 mech tokens, NegTokenInit/Resp,
-  HTTP Negotiate headers, and service-side AP-REQ to AP-REP response flow.
+  verification and verified ticket PAC extraction; SPNEGO/GSSAPI covers KRB5
+  mech tokens, NegTokenInit/Resp,
+  HTTP Negotiate headers, and service-side AP-REQ to AP-REP response flow; PAC
+  parsing covers the PAC container, KERB_VALIDATION_INFO NDR, client info,
+  UPN/DNS info, signature zeroing, authorization-data extraction, resource
+  group SID expansion, and AES-SHA1 service checksum verification.
 - `sspi-rs` is treated as a mature Negotiate/Kerberos collaboration or facade
   candidate.
 - `krb5-rs` is not used as a base implementation because the published crate is

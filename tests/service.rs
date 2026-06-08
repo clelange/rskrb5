@@ -3,8 +3,12 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use pretty_assertions::assert_eq;
+use rskrb5::crypto::AesSha1Etype;
 use rskrb5::keytab::{EncryptionKey, Keytab};
+use rskrb5::pac;
 use rskrb5::service::{ApRepOptions, Error, Principal, ServiceValidator, ValidatedApReq};
+
+mod common;
 
 const HTTP_KEYTAB: &str = concat!(
     "0502000000440002000b544553542e474f4b5242350004485454500010686f73742e746573742e676f6b",
@@ -36,6 +40,10 @@ const VALID_AP_REQ: &str = concat!(
 
 const VALID_SESSION_KEY: &str = "8845cbaccbf11cb9f467fd577ba51c70d73de6554980a05395bf319e18bdda07";
 const AP_REP_CONFOUNDER: &str = "000102030405060708090a0b0c0d0e0f";
+const PAC_TICKET_CONFOUNDER: &str = "101112131415161718191a1b1c1d1e1f";
+const PAC_AUTHENTICATOR_CONFOUNDER: &str = "202122232425262728292a2b2c2d2e2f";
+const KDC_REP_TICKET_USAGE_FOR_TEST: u32 = 2;
+const AP_REQ_AUTHENTICATOR_USAGE_FOR_TEST: u32 = 11;
 const AP_REP_SERVER_SUBKEY: &str =
     "00112233445566778899aabbccddeeff102132435465768798a9babbdcddfeff";
 const AP_REP_WITH_SUBKEY: &str = concat!(
@@ -119,6 +127,56 @@ fn validates_gokrb5_ap_req_fixture() {
         validated.authenticator_time,
         timestamp(1_893_553_447) + Duration::from_micros(123_456)
     );
+    assert!(validated.pac.is_none());
+}
+
+#[test]
+fn validates_ap_req_with_verified_ticket_pac() {
+    let keytab = syshttp_keytab();
+    let mut validator = ServiceValidator::new(&keytab).with_now(timestamp(1_893_553_447));
+
+    let validated = validator
+        .validate_ap_req(&ap_req_with_pac())
+        .expect("AP-REQ with PAC validates");
+
+    assert_eq!(validated.client.name(), "testuser1");
+    assert_eq!(validated.service.name(), "sysHTTP");
+    assert_eq!(validated.session_key.etype, 18);
+    assert_eq!(hex_encode(&validated.session_key.value), VALID_SESSION_KEY);
+    let pac = validated.pac.as_ref().expect("PAC extracted and verified");
+    assert_eq!(pac.c_buffers, 5);
+    assert_eq!(
+        pac.kerb_validation_info
+            .as_ref()
+            .expect("KVI parsed")
+            .effective_name
+            .value,
+        "testuser1"
+    );
+    assert_eq!(
+        pac.upn_dns_info.as_ref().expect("UPN/DNS parsed").upn,
+        "testuser1@test.gokrb5"
+    );
+}
+
+#[test]
+fn rejects_ap_req_with_invalid_ticket_pac_checksum() {
+    let keytab = syshttp_keytab();
+    let mut validator = ServiceValidator::new(&keytab).with_now(timestamp(1_893_553_447));
+    let mut pac_bytes = decode_hex(common::PAC_AD_WIN2K);
+    let pac_header = pac::Pac::parse(&pac_bytes).expect("PAC header parses");
+    let server_signature = pac_header
+        .buffer(pac::INFO_TYPE_PAC_SERVER_SIGNATURE_DATA)
+        .expect("server checksum buffer exists");
+    let signature_offset = usize::try_from(server_signature.offset).expect("offset fits") + 4;
+    pac_bytes[signature_offset] ^= 0x01;
+
+    assert!(matches!(
+        validator
+            .validate_ap_req(&ap_req_with_pac_bytes(pac_bytes))
+            .expect_err("bad PAC checksum is rejected"),
+        Error::Pac(pac::Error::ServerChecksumVerificationFailed)
+    ));
 }
 
 #[test]
@@ -283,6 +341,153 @@ fn rejects_addressless_ticket_when_client_address_is_required() {
 
 fn http_keytab() -> Keytab {
     Keytab::parse(&decode_hex(HTTP_KEYTAB)).expect("HTTP keytab parses")
+}
+
+fn syshttp_keytab() -> Keytab {
+    Keytab::parse(&decode_hex(common::SYSHTTP_KEYTAB)).expect("sysHTTP keytab parses")
+}
+
+fn ap_req_with_pac() -> Vec<u8> {
+    ap_req_with_pac_bytes(decode_hex(common::PAC_AD_WIN2K))
+}
+
+fn ap_req_with_pac_bytes(pac_bytes: Vec<u8>) -> Vec<u8> {
+    let keytab = syshttp_keytab();
+    let (service_key, _) = keytab
+        .find_key(&["sysHTTP"], "TEST.GOKRB5", 2, 18)
+        .expect("sysHTTP service key exists");
+    let session_key = EncryptionKey {
+        etype: 18,
+        value: decode_hex(VALID_SESSION_KEY),
+    };
+    let client = principal(["testuser1"]);
+    let service = principal(["sysHTTP"]);
+    let pac_authorization_data = pac_authorization_data(pac_bytes);
+    let auth_time = kerberos_time(1_893_553_445);
+    let ctime = kerberos_time(1_893_553_447);
+
+    let enc_ticket = rasn_kerberos::EncTicketPart {
+        flags: rasn_kerberos::TicketFlags(zero_kerberos_flags()),
+        key: encryption_key(&session_key),
+        crealm: realm("TEST.GOKRB5"),
+        cname: client.clone(),
+        transited: rasn_kerberos::TransitedEncoding {
+            r#type: 1,
+            contents: Vec::new().into(),
+        },
+        auth_time: auth_time.clone(),
+        start_time: Some(auth_time),
+        end_time: kerberos_time(1_893_639_845),
+        renew_till: None,
+        caddr: None,
+        authorization_data: Some(pac_authorization_data),
+    };
+    let ticket_cipher = encrypt_message(
+        service_key,
+        &rasn::der::encode(&enc_ticket).expect("EncTicketPart encodes"),
+        KDC_REP_TICKET_USAGE_FOR_TEST,
+        PAC_TICKET_CONFOUNDER,
+    );
+
+    let authenticator = rasn_kerberos::Authenticator {
+        authenticator_vno: 5.into(),
+        crealm: realm("TEST.GOKRB5"),
+        cname: client,
+        cksum: None,
+        cusec: 123_456.into(),
+        ctime,
+        subkey: None,
+        seq_number: Some(42),
+        authorization_data: None,
+    };
+    let authenticator_cipher = encrypt_message(
+        &session_key,
+        &rasn::der::encode(&authenticator).expect("Authenticator encodes"),
+        AP_REQ_AUTHENTICATOR_USAGE_FOR_TEST,
+        PAC_AUTHENTICATOR_CONFOUNDER,
+    );
+
+    let ap_req = rasn_kerberos::ApReq {
+        pvno: 5.into(),
+        msg_type: 14.into(),
+        ap_options: rasn_kerberos::ApOptions(zero_kerberos_flags()),
+        ticket: rasn_kerberos::Ticket {
+            tkt_vno: 5.into(),
+            realm: realm("TEST.GOKRB5"),
+            sname: service,
+            enc_part: rasn_kerberos::EncryptedData {
+                etype: service_key.etype,
+                kvno: Some(2),
+                cipher: ticket_cipher.into(),
+            },
+        },
+        authenticator: rasn_kerberos::EncryptedData {
+            etype: session_key.etype,
+            kvno: None,
+            cipher: authenticator_cipher.into(),
+        },
+    };
+
+    rasn::der::encode(&ap_req).expect("AP-REQ encodes")
+}
+
+fn pac_authorization_data(pac_bytes: Vec<u8>) -> rasn_kerberos::AuthorizationData {
+    let nested =
+        rasn_kerberos::AuthorizationData::from(vec![rasn_kerberos::AuthorizationDataValue {
+            r#type: pac::AD_WIN2K_PAC,
+            data: pac_bytes.into(),
+        }]);
+    let nested_der = rasn::der::encode(&nested).expect("nested authorization-data encodes");
+    rasn_kerberos::AuthorizationData::from(vec![rasn_kerberos::AuthorizationDataValue {
+        r#type: pac::AD_IF_RELEVANT,
+        data: nested_der.into(),
+    }])
+}
+
+fn encrypt_message(
+    key: &EncryptionKey,
+    plaintext: &[u8],
+    usage: u32,
+    confounder_hex: &str,
+) -> Vec<u8> {
+    let etype = AesSha1Etype::from_etype_id(key.etype).expect("AES-SHA1 etype is supported");
+    etype
+        .encrypt_message_with_confounder(&key.value, plaintext, usage, &decode_hex(confounder_hex))
+        .expect("message encrypts")
+}
+
+fn encryption_key(key: &EncryptionKey) -> rasn_kerberos::EncryptionKey {
+    rasn_kerberos::EncryptionKey {
+        r#type: key.etype,
+        value: key.value.clone().into(),
+    }
+}
+
+fn principal<const N: usize>(components: [&str; N]) -> rasn_kerberos::PrincipalName {
+    rasn_kerberos::PrincipalName {
+        r#type: 1,
+        string: components.into_iter().map(kerberos_string).collect(),
+    }
+}
+
+fn realm(value: &str) -> rasn_kerberos::Realm {
+    kerberos_string(value)
+}
+
+fn kerberos_string(value: &str) -> rasn_kerberos::KerberosString {
+    rasn_kerberos::KerberosString::from_bytes(value.as_bytes())
+        .expect("Kerberos string uses permitted characters")
+}
+
+fn kerberos_time(seconds: u64) -> rasn_kerberos::KerberosTime {
+    let utc = chrono::DateTime::<chrono::Utc>::from_timestamp(seconds as i64, 0)
+        .expect("fixture timestamp is representable");
+    let offset = chrono::FixedOffset::east_opt(0).expect("UTC offset exists");
+    rasn_kerberos::KerberosTime(utc.with_timezone(&offset))
+}
+
+fn zero_kerberos_flags() -> rasn_kerberos::KerberosFlags {
+    rasn_kerberos::KerberosFlags::repeat(false, 32)
 }
 
 fn valid_ap_req() -> ValidatedApReq {

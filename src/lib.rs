@@ -13,6 +13,7 @@ pub mod ccache;
 pub mod config;
 pub mod crypto;
 pub mod keytab;
+pub mod pac;
 #[cfg(feature = "messages")]
 pub mod service;
 #[cfg(feature = "spnego")]
@@ -48,6 +49,10 @@ pub enum Error {
     /// Kerberos cryptographic operation failed.
     #[error("crypto error: {0}")]
     Crypto(#[from] crypto::Error),
+
+    /// PAC parsing or verification failed.
+    #[error("PAC error: {0}")]
+    Pac(#[from] pac::Error),
 
     /// AP-REQ service validation failed.
     #[cfg(feature = "messages")]

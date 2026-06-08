@@ -12,6 +12,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::crypto::AesSha1Etype;
 use crate::keytab::{EncryptionKey, Keytab};
+use crate::pac::{self, Pac};
 
 const KRB5_PVNO: i32 = 5;
 const KRB_AP_REQ_MSG_TYPE: i32 = 14;
@@ -83,6 +84,8 @@ pub struct ValidatedApReq {
     pub authenticator_cusec: u32,
     /// Authenticator timestamp including `cusec`.
     pub authenticator_time: SystemTime,
+    /// Verified PAC from the ticket authorization data, when present.
+    pub pac: Option<Pac>,
 }
 
 impl ValidatedApReq {
@@ -317,6 +320,13 @@ impl<'a> ServiceValidator<'a> {
             decode::<rasn_kerberos::EncTicketPart>("EncTicketPart", &decrypted_ticket)?;
         self.validate_ticket_times(&ticket_service, &enc_ticket)?;
         self.validate_client_address(&ticket_service, &enc_ticket)?;
+        let pac = match &enc_ticket.authorization_data {
+            Some(authorization_data) => pac::find_pac_in_authorization_data(authorization_data)?,
+            None => None,
+        };
+        if let Some(pac) = &pac {
+            pac.verify(service_key.0)?;
+        }
 
         let session_key = encryption_key_from_rasn(&enc_ticket.key)?;
         let authenticator_usage = authenticator_usage(&ap_req.ticket.sname)?;
@@ -376,6 +386,7 @@ impl<'a> ServiceValidator<'a> {
             authenticator_ctime,
             authenticator_cusec: cusec,
             authenticator_time,
+            pac,
         })
     }
 
@@ -501,6 +512,10 @@ pub enum Error {
     /// Crypto operation failed.
     #[error("crypto error: {0}")]
     Crypto(#[from] crate::crypto::Error),
+
+    /// PAC parsing or verification failed.
+    #[error("PAC error: {0}")]
+    Pac(#[from] crate::pac::Error),
 
     /// Ticket has not become valid or carries the invalid ticket flag.
     #[error("ticket for {service}@{realm} is not yet valid")]
