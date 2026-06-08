@@ -2066,6 +2066,10 @@ pub fn process_as_rep(
     bytes: &[u8],
     reply_key: &EncryptionKey,
 ) -> Result<AsRepSession, Error> {
+    if let Ok(error) = process_kdc_error(bytes) {
+        return Err(Error::Kdc(Box::new(error)));
+    }
+
     let as_rep = decode::<rasn_kerberos::AsRep>("AS-REP", bytes)?;
     let kdc_rep = &as_rep.0;
     validate_integer("pvno", &kdc_rep.pvno, KRB5_PVNO)?;
@@ -2166,6 +2170,10 @@ fn process_tgs_rep_inner(
     tgs_session_key: &EncryptionKey,
     allow_referral: bool,
 ) -> Result<TgsRepSession, Error> {
+    if let Ok(error) = process_kdc_error(bytes) {
+        return Err(Error::Kdc(Box::new(error)));
+    }
+
     let tgs_rep = decode::<rasn_kerberos::TgsRep>("TGS-REP", bytes)?;
     let kdc_rep = &tgs_rep.0;
     validate_integer("pvno", &kdc_rep.pvno, KRB5_PVNO)?;

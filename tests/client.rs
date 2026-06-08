@@ -172,6 +172,18 @@ fn processes_as_rep_and_exports_ccache_credential() {
 }
 
 #[test]
+fn process_as_rep_surfaces_kdc_error_response() {
+    let request = sample_request();
+    let error = process_as_rep(&request, &synthetic_preauth_required_error(), &reply_key())
+        .expect_err("KRB-ERROR response is surfaced");
+
+    assert!(matches!(
+        error,
+        Error::Kdc(kdc_error) if kdc_error.error_code == KDC_ERR_PREAUTH_REQUIRED
+    ));
+}
+
+#[test]
 fn rejects_as_rep_nonce_mismatch() {
     let request = sample_request();
     let response = synthetic_as_rep(&request, request.nonce + 1);
@@ -449,6 +461,23 @@ fn processes_tgs_rep_and_exports_ccache_credential() {
     assert_eq!(credential.times.start_time, 1_893_553_446);
     assert_eq!(credential.times.end_time, 1_893_560_646);
     assert!(!credential.ticket.is_empty());
+}
+
+#[test]
+fn process_tgs_rep_surfaces_kdc_error_response() {
+    let tgt = sample_tgt_session();
+    let request = sample_tgs_request(&tgt);
+    let error = process_tgs_rep(
+        &request,
+        &synthetic_preauth_required_error(),
+        &tgt.session_key,
+    )
+    .expect_err("KRB-ERROR response is surfaced");
+
+    assert!(matches!(
+        error,
+        Error::Kdc(kdc_error) if kdc_error.error_code == KDC_ERR_PREAUTH_REQUIRED
+    ));
 }
 
 #[test]
