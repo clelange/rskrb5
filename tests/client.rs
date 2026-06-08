@@ -5,24 +5,29 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use pretty_assertions::assert_eq;
 #[cfg(feature = "tokio")]
 use rskrb5::ccache;
+use rskrb5::client::KpasswdRequestOptions;
 use rskrb5::client::{
     AP_REQ_AUTHENTICATOR_USAGE, AS_REP_ENCPART_USAGE, AS_REQ_PA_ENC_TIMESTAMP_USAGE, ApReqOptions,
     AsReqOptions, BuiltAsReq, BuiltTgsReq, Error, KDC_ERR_PREAUTH_REQUIRED, KDC_OPTION_RENEW,
     KDC_OPTION_RENEWABLE, KdcError, KdcTransport, PA_ENC_TIMESTAMP, PA_ETYPE_INFO2,
     PA_REQ_ENC_PA_REP, PA_TGS_REQ, PreauthKeyInfo, Principal, TGS_REP_ENCPART_SESSION_KEY_USAGE,
     TGS_REQ_AUTHENTICATOR_CHECKSUM_USAGE, TGS_REQ_AUTHENTICATOR_USAGE, TgsReqOptions,
-    build_ap_req_with_confounder, build_tgs_req_for_realm_with_confounder,
-    build_tgs_req_with_confounder, build_tgt_as_req, build_tgt_renewal_req_with_confounder,
-    build_ticket_renewal_req_with_confounder, default_password_salt, derive_password_reply_key,
-    exchange_as_req, exchange_tgs_req, login_tgt_with_keytab, login_tgt_with_password,
-    pa_enc_timestamp_with_confounder, process_as_rep, process_kdc_error, process_tgs_rep,
-    process_tgs_rep_with_referral, renew_tgt, renew_ticket, select_preauth_key_info,
+    build_ap_req_with_confounder, build_kpasswd_request_with_confounders,
+    build_tgs_req_for_realm_with_confounder, build_tgs_req_with_confounder, build_tgt_as_req,
+    build_tgt_renewal_req_with_confounder, build_ticket_renewal_req_with_confounder,
+    default_password_salt, derive_password_reply_key, exchange_as_req, exchange_tgs_req,
+    login_tgt_with_keytab, login_tgt_with_password, pa_enc_timestamp_with_confounder,
+    process_as_rep, process_kdc_error, process_tgs_rep, process_tgs_rep_with_referral, renew_tgt,
+    renew_ticket, select_preauth_key_info,
 };
 #[cfg(feature = "tokio")]
 use rskrb5::client::{KdcProtocol, TokioClient};
 #[cfg(feature = "tokio")]
 use rskrb5::config::Config;
 use rskrb5::crypto::AesSha1Etype;
+use rskrb5::kadmin::{
+    ChangePasswdData, KRB_PRIV_ENCPART_USAGE, Request as KpasswdRequest, ipv4_host_address,
+};
 use rskrb5::keytab::{EncryptionKey, Entry as KeytabEntry, Keytab, Principal as KeytabPrincipal};
 
 const REPLY_KEY: &str = "9cad00bbc72d703258e911dc18e6d5487cf737bf67fd111f0c2463ad6033bf51";
@@ -432,6 +437,84 @@ fn builds_service_ap_req_with_subkey_and_sequence_number() {
     );
     assert_eq!(
         system_time_from_kerberos_time(&authenticator.ctime),
+        timestamp(1_893_553_452)
+    );
+}
+
+#[test]
+fn builds_kpasswd_request_with_subkey_encrypted_payload() {
+    let tgt = sample_tgt_session();
+    let request = sample_tgs_request(&tgt);
+    let response = synthetic_tgs_rep(&request, request.nonce, &tgt.session_key);
+    let service_ticket =
+        process_tgs_rep(&request, &response, &tgt.session_key).expect("TGS-REP validates");
+    let reply_key = EncryptionKey {
+        etype: 18,
+        value: vec![0x55; 32],
+    };
+    let change_data = ChangePasswdData::for_target(b"newpassword", 1, ["testuser1"], "TEST.GOKRB5")
+        .expect("ChangePasswdData builds");
+
+    let built = build_kpasswd_request_with_confounders(
+        &service_ticket,
+        &change_data,
+        reply_key.clone(),
+        KpasswdRequestOptions::new(
+            timestamp(1_893_553_452),
+            456_789,
+            42,
+            ipv4_host_address([127, 0, 0, 1]),
+        ),
+        &decode_hex(TGS_REQ_CONFOUNDER),
+        &decode_hex(PREAUTH_CONFOUNDER),
+    )
+    .expect("kpasswd request builds");
+
+    assert_eq!(built.reply_key, reply_key);
+    assert_eq!(built.der, built.request.encode().expect("request encodes"));
+    let parsed = KpasswdRequest::parse(&built.der).expect("request parses");
+    assert_eq!(parsed.ap_req, built.request.ap_req);
+    assert_eq!(parsed.krb_priv, built.request.krb_priv);
+
+    let authenticator_bytes = AesSha1Etype::Aes256
+        .decrypt_message(
+            &service_ticket.session_key.value,
+            parsed.ap_req.authenticator.cipher.as_ref(),
+            AP_REQ_AUTHENTICATOR_USAGE,
+        )
+        .expect("AP-REQ authenticator decrypts");
+    let authenticator: rasn_kerberos::Authenticator =
+        rasn::der::decode(&authenticator_bytes).expect("Authenticator decodes");
+    let subkey = authenticator.subkey.expect("authenticator subkey");
+    assert_eq!(subkey.r#type, reply_key.etype);
+    assert_eq!(subkey.value.as_ref(), reply_key.value.as_slice());
+    assert_eq!(authenticator.seq_number, Some(42));
+
+    let krb_priv_bytes = AesSha1Etype::Aes256
+        .decrypt_message(
+            &reply_key.value,
+            parsed.krb_priv.enc_part.cipher.as_ref(),
+            KRB_PRIV_ENCPART_USAGE,
+        )
+        .expect("KRB-PRIV decrypts");
+    let enc_part: rasn_kerberos::EncKrbPrivPart =
+        rasn::der::decode(&krb_priv_bytes).expect("EncKrbPrivPart decodes");
+    let decoded_change_data =
+        ChangePasswdData::decode_der(enc_part.user_data.as_ref()).expect("payload decodes");
+
+    assert_eq!(decoded_change_data, change_data);
+    assert_eq!(enc_part.seq_number, Some(42));
+    assert_eq!(
+        enc_part
+            .usec
+            .expect("KRB-PRIV usec")
+            .to_string()
+            .parse::<u32>()
+            .expect("usec parses"),
+        456_789
+    );
+    assert_eq!(
+        system_time_from_kerberos_time(enc_part.timestamp.as_ref().expect("KRB-PRIV timestamp")),
         timestamp(1_893_553_452)
     );
 }

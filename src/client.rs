@@ -414,6 +414,58 @@ pub struct BuiltApReq {
     pub subkey: Option<EncryptionKey>,
 }
 
+/// Options for constructing a kpasswd request from a service ticket.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct KpasswdRequestOptions {
+    /// Authenticator and KRB-PRIV timestamp.
+    pub timestamp: SystemTime,
+    /// Authenticator and KRB-PRIV microseconds.
+    pub cusec: u32,
+    /// Authenticator and KRB-PRIV sequence number.
+    pub sequence_number: u32,
+    /// Sender address used in the KRB-PRIV encrypted part.
+    pub sender_address: rasn_kerberos::HostAddress,
+    /// Optional recipient address used in the KRB-PRIV encrypted part.
+    pub recipient_address: Option<rasn_kerberos::HostAddress>,
+}
+
+impl KpasswdRequestOptions {
+    /// Construct options with the required timestamp, sequence number, and sender address.
+    pub fn new(
+        timestamp: SystemTime,
+        cusec: u32,
+        sequence_number: u32,
+        sender_address: rasn_kerberos::HostAddress,
+    ) -> Self {
+        Self {
+            timestamp,
+            cusec,
+            sequence_number,
+            sender_address,
+            recipient_address: None,
+        }
+    }
+
+    /// Set the optional recipient address.
+    pub fn with_recipient_address(mut self, recipient_address: rasn_kerberos::HostAddress) -> Self {
+        self.recipient_address = Some(recipient_address);
+        self
+    }
+}
+
+/// Built kpasswd request plus the key needed to decrypt the reply.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BuiltKpasswdRequest {
+    /// Parsed kpasswd request.
+    pub request: crate::kadmin::Request,
+    /// Encoded kpasswd request frame.
+    pub der: Vec<u8>,
+    /// Authenticator subkey used to encrypt KRB-PRIV and decrypt the reply.
+    pub reply_key: EncryptionKey,
+    /// Built AP-REQ metadata.
+    pub ap_req: BuiltApReq,
+}
+
 /// Successful AS-REP processing result.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AsRepSession {
@@ -2185,6 +2237,54 @@ pub fn build_ap_req_with_confounder(
         authenticator_time,
         sequence_number: options.sequence_number,
         subkey: options.subkey,
+    })
+}
+
+/// Build a complete kpasswd request with explicit confounders.
+pub fn build_kpasswd_request_with_confounders(
+    service_ticket: &TgsRepSession,
+    change_data: &crate::kadmin::ChangePasswdData,
+    reply_key: EncryptionKey,
+    options: KpasswdRequestOptions,
+    ap_req_confounder: &[u8],
+    krb_priv_confounder: &[u8],
+) -> Result<BuiltKpasswdRequest, Error> {
+    let ap_req = build_ap_req_with_confounder(
+        service_ticket,
+        ApReqOptions::new()
+            .with_subkey(Some(reply_key.clone()))
+            .with_sequence_number(Some(options.sequence_number)),
+        options.timestamp,
+        options.cusec,
+        ap_req_confounder,
+    )?;
+
+    let mut krb_priv_options = crate::kadmin::EncKrbPrivPartOptions::new(options.sender_address)
+        .with_timestamp(
+            kerberos_time_from_system_time(options.timestamp)?,
+            options.cusec,
+        )
+        .with_sequence_number(options.sequence_number);
+    if let Some(recipient_address) = options.recipient_address {
+        krb_priv_options = krb_priv_options.with_recipient_address(recipient_address);
+    }
+    let krb_priv = crate::kadmin::build_krb_priv_with_confounder(
+        change_data.encode_der()?,
+        krb_priv_options,
+        &reply_key,
+        krb_priv_confounder,
+    )?;
+    let request = crate::kadmin::Request {
+        ap_req: ap_req.message.clone(),
+        krb_priv,
+    };
+    let der = request.encode()?;
+
+    Ok(BuiltKpasswdRequest {
+        request,
+        der,
+        reply_key,
+        ap_req,
     })
 }
 
