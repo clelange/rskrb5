@@ -84,6 +84,9 @@ pub const TGS_REQ_AUTHENTICATOR_CHECKSUM_USAGE: u32 = 6;
 /// Key usage for the PA-TGS-REQ AP-REQ authenticator.
 pub const TGS_REQ_AUTHENTICATOR_USAGE: u32 = 7;
 
+/// Key usage for normal AP-REQ authenticators.
+pub const AP_REQ_AUTHENTICATOR_USAGE: u32 = 11;
+
 /// Key usage for TGS-REP encrypted parts when encrypted with the TGT session key.
 pub const TGS_REP_ENCPART_SESSION_KEY_USAGE: u32 = 8;
 
@@ -329,6 +332,86 @@ pub struct BuiltTgsReq {
     pub kdc_realm: String,
     /// Request nonce.
     pub nonce: u32,
+}
+
+/// Options for constructing a client AP-REQ.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ApReqOptions {
+    /// Raw AP option bit string.
+    pub ap_option_bits: u32,
+    /// Optional authenticator checksum.
+    pub checksum: Option<rasn_kerberos::Checksum>,
+    /// Optional client-selected subkey.
+    pub subkey: Option<EncryptionKey>,
+    /// Optional client sequence number.
+    pub sequence_number: Option<u32>,
+}
+
+impl ApReqOptions {
+    /// Construct AP-REQ options with no flags or optional authenticator fields.
+    pub fn new() -> Self {
+        Self {
+            ap_option_bits: 0,
+            checksum: None,
+            subkey: None,
+            sequence_number: None,
+        }
+    }
+
+    /// Override AP-REQ option bits.
+    pub fn with_ap_option_bits(mut self, ap_option_bits: u32) -> Self {
+        self.ap_option_bits = ap_option_bits;
+        self
+    }
+
+    /// Set or clear the authenticator checksum.
+    pub fn with_checksum(mut self, checksum: Option<rasn_kerberos::Checksum>) -> Self {
+        self.checksum = checksum;
+        self
+    }
+
+    /// Set or clear the client-selected subkey.
+    pub fn with_subkey(mut self, subkey: Option<EncryptionKey>) -> Self {
+        self.subkey = subkey;
+        self
+    }
+
+    /// Set or clear the client sequence number.
+    pub fn with_sequence_number(mut self, sequence_number: Option<u32>) -> Self {
+        self.sequence_number = sequence_number;
+        self
+    }
+}
+
+impl Default for ApReqOptions {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Built client AP-REQ.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BuiltApReq {
+    /// ASN.1 AP-REQ message.
+    pub message: rasn_kerberos::ApReq,
+    /// DER-encoded AP-REQ bytes.
+    pub der: Vec<u8>,
+    /// Client principal placed in the authenticator.
+    pub client: Principal,
+    /// Service principal from the ticket.
+    pub service: Principal,
+    /// Service-ticket session key used to encrypt the authenticator.
+    pub session_key: EncryptionKey,
+    /// Authenticator `ctime` without `cusec`.
+    pub authenticator_ctime: SystemTime,
+    /// Authenticator microsecond field.
+    pub authenticator_cusec: u32,
+    /// Authenticator timestamp including `cusec`.
+    pub authenticator_time: SystemTime,
+    /// Optional client sequence number supplied in the authenticator.
+    pub sequence_number: Option<u32>,
+    /// Optional client-selected subkey supplied in the authenticator.
+    pub subkey: Option<EncryptionKey>,
 }
 
 /// Successful AS-REP processing result.
@@ -2045,6 +2128,66 @@ pub fn build_tgs_req_for_realm_with_confounder(
     })
 }
 
+/// Build a client AP-REQ with an explicit authenticator timestamp and confounder.
+pub fn build_ap_req_with_confounder(
+    service_ticket: &TgsRepSession,
+    options: ApReqOptions,
+    timestamp: SystemTime,
+    cusec: u32,
+    confounder: &[u8],
+) -> Result<BuiltApReq, Error> {
+    let ticket = decode::<rasn_kerberos::Ticket>("Ticket", &service_ticket.ticket)?;
+    let authenticator = rasn_kerberos::Authenticator {
+        authenticator_vno: rasn::types::Integer::from(KRB5_PVNO),
+        crealm: kerberos_string(&service_ticket.client.realm)?,
+        cname: principal_to_rasn(&service_ticket.client)?,
+        cksum: options.checksum,
+        cusec: rasn::types::Integer::from(cusec),
+        ctime: kerberos_time_from_system_time(timestamp)?,
+        subkey: options.subkey.as_ref().map(encryption_key_to_rasn),
+        seq_number: options.sequence_number,
+        authorization_data: None,
+    };
+    let authenticator_der = encode("Authenticator", &authenticator)?;
+    let etype = KerberosEtype::from_etype_id(service_ticket.session_key.etype)
+        .ok_or(Error::UnsupportedEtype(service_ticket.session_key.etype))?;
+    let cipher = etype.encrypt_message_with_confounder(
+        &service_ticket.session_key.value,
+        &authenticator_der,
+        authenticator_usage(&ticket.sname),
+        confounder,
+    )?;
+    let authenticator_kvno = ticket.enc_part.kvno;
+    let message = rasn_kerberos::ApReq {
+        pvno: rasn::types::Integer::from(KRB5_PVNO),
+        msg_type: rasn::types::Integer::from(KRB_AP_REQ_MSG_TYPE),
+        ap_options: rasn_kerberos::ApOptions(kerberos_flags_from_bits(options.ap_option_bits)),
+        ticket,
+        authenticator: rasn_kerberos::EncryptedData {
+            etype: service_ticket.session_key.etype,
+            kvno: authenticator_kvno,
+            cipher: cipher.into(),
+        },
+    };
+    let der = encode("AP-REQ", &message)?;
+    let authenticator_time = timestamp
+        .checked_add(Duration::from_micros(cusec.into()))
+        .ok_or(Error::TimeOverflow)?;
+
+    Ok(BuiltApReq {
+        message,
+        der,
+        client: service_ticket.client.clone(),
+        service: service_ticket.service.clone(),
+        session_key: service_ticket.session_key.clone(),
+        authenticator_ctime: timestamp,
+        authenticator_cusec: cusec,
+        authenticator_time,
+        sequence_number: options.sequence_number,
+        subkey: options.subkey,
+    })
+}
+
 /// Build a TGS-REQ that renews an existing TGT session.
 pub fn build_tgt_renewal_req(
     tgt: &AsRepSession,
@@ -3220,6 +3363,25 @@ fn encryption_key_from_rasn(value: &rasn_kerberos::EncryptionKey) -> EncryptionK
     }
 }
 
+fn encryption_key_to_rasn(value: &EncryptionKey) -> rasn_kerberos::EncryptionKey {
+    rasn_kerberos::EncryptionKey {
+        r#type: value.etype,
+        value: value.value.clone().into(),
+    }
+}
+
+fn authenticator_usage(service: &rasn_kerberos::PrincipalName) -> u32 {
+    if service
+        .string
+        .first()
+        .is_some_and(|component| component.as_bytes() == b"krbtgt")
+    {
+        TGS_REQ_AUTHENTICATOR_USAGE
+    } else {
+        AP_REQ_AUTHENTICATOR_USAGE
+    }
+}
+
 fn kdc_options_from_bits(bits: u32) -> rasn_kerberos::KdcOptions {
     rasn_kerberos::KdcOptions(rasn_kerberos::KerberosFlags::from_slice(
         &bits.to_be_bytes(),
@@ -3240,6 +3402,10 @@ fn renewal_kdc_option_bits(bits: u32) -> u32 {
 
 fn zero_kerberos_flags() -> rasn_kerberos::KerberosFlags {
     rasn_kerberos::KerberosFlags::repeat(false, 32)
+}
+
+fn kerberos_flags_from_bits(bits: u32) -> rasn_kerberos::KerberosFlags {
+    rasn_kerberos::KerberosFlags::from_slice(&bits.to_be_bytes())
 }
 
 fn ticket_flags_to_bytes(flags: &rasn_kerberos::TicketFlags) -> [u8; 4] {

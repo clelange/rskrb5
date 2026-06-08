@@ -6,11 +6,12 @@ use pretty_assertions::assert_eq;
 #[cfg(feature = "tokio")]
 use rskrb5::ccache;
 use rskrb5::client::{
-    AS_REP_ENCPART_USAGE, AS_REQ_PA_ENC_TIMESTAMP_USAGE, AsReqOptions, BuiltAsReq, BuiltTgsReq,
-    Error, KDC_ERR_PREAUTH_REQUIRED, KDC_OPTION_RENEW, KDC_OPTION_RENEWABLE, KdcError,
-    KdcTransport, PA_ENC_TIMESTAMP, PA_ETYPE_INFO2, PA_REQ_ENC_PA_REP, PA_TGS_REQ, PreauthKeyInfo,
-    Principal, TGS_REP_ENCPART_SESSION_KEY_USAGE, TGS_REQ_AUTHENTICATOR_CHECKSUM_USAGE,
-    TGS_REQ_AUTHENTICATOR_USAGE, TgsReqOptions, build_tgs_req_for_realm_with_confounder,
+    AP_REQ_AUTHENTICATOR_USAGE, AS_REP_ENCPART_USAGE, AS_REQ_PA_ENC_TIMESTAMP_USAGE, ApReqOptions,
+    AsReqOptions, BuiltAsReq, BuiltTgsReq, Error, KDC_ERR_PREAUTH_REQUIRED, KDC_OPTION_RENEW,
+    KDC_OPTION_RENEWABLE, KdcError, KdcTransport, PA_ENC_TIMESTAMP, PA_ETYPE_INFO2,
+    PA_REQ_ENC_PA_REP, PA_TGS_REQ, PreauthKeyInfo, Principal, TGS_REP_ENCPART_SESSION_KEY_USAGE,
+    TGS_REQ_AUTHENTICATOR_CHECKSUM_USAGE, TGS_REQ_AUTHENTICATOR_USAGE, TgsReqOptions,
+    build_ap_req_with_confounder, build_tgs_req_for_realm_with_confounder,
     build_tgs_req_with_confounder, build_tgt_as_req, build_tgt_renewal_req_with_confounder,
     build_ticket_renewal_req_with_confounder, default_password_salt, derive_password_reply_key,
     exchange_as_req, exchange_tgs_req, login_tgt_with_keytab, login_tgt_with_password,
@@ -357,6 +358,81 @@ fn builds_tgs_req_for_explicit_kdc_realm() {
             decoded.0.req_body.sname.as_ref().expect("sname")
         ),
         service
+    );
+}
+
+#[test]
+fn builds_service_ap_req_with_subkey_and_sequence_number() {
+    let tgt = sample_tgt_session();
+    let request = sample_tgs_request(&tgt);
+    let response = synthetic_tgs_rep(&request, request.nonce, &tgt.session_key);
+    let service_ticket =
+        process_tgs_rep(&request, &response, &tgt.session_key).expect("TGS-REP validates");
+    let subkey = EncryptionKey {
+        etype: 18,
+        value: vec![0x44; 32],
+    };
+    let options = ApReqOptions::new()
+        .with_ap_option_bits(0x2000_0000)
+        .with_subkey(Some(subkey.clone()))
+        .with_sequence_number(Some(42));
+
+    let built = build_ap_req_with_confounder(
+        &service_ticket,
+        options,
+        timestamp(1_893_553_452),
+        456_789,
+        &decode_hex(TGS_REQ_CONFOUNDER),
+    )
+    .expect("AP-REQ builds");
+    let decoded: rasn_kerberos::ApReq = rasn::der::decode(&built.der).expect("AP-REQ decodes");
+
+    assert_eq!(built.message, decoded);
+    assert_eq!(built.client, service_ticket.client);
+    assert_eq!(built.service, service_ticket.service);
+    assert_eq!(built.sequence_number, Some(42));
+    assert_eq!(built.subkey, Some(subkey.clone()));
+    assert_eq!(decoded.pvno, rasn::types::Integer::from(5));
+    assert_eq!(decoded.msg_type, rasn::types::Integer::from(14));
+    assert_eq!(
+        decoded.ap_options.0.as_raw_slice(),
+        0x2000_0000u32.to_be_bytes().as_slice()
+    );
+    assert_eq!(
+        decoded.authenticator.etype,
+        service_ticket.session_key.etype
+    );
+
+    let authenticator_bytes = AesSha1Etype::Aes256
+        .decrypt_message(
+            &service_ticket.session_key.value,
+            decoded.authenticator.cipher.as_ref(),
+            AP_REQ_AUTHENTICATOR_USAGE,
+        )
+        .expect("AP-REQ authenticator decrypts");
+    let authenticator: rasn_kerberos::Authenticator =
+        rasn::der::decode(&authenticator_bytes).expect("Authenticator decodes");
+
+    assert_eq!(
+        principal_from_parts(&authenticator.crealm, &authenticator.cname),
+        service_ticket.client
+    );
+    assert!(authenticator.cksum.is_none());
+    assert_eq!(authenticator.seq_number, Some(42));
+    let decoded_subkey = authenticator.subkey.expect("authenticator subkey");
+    assert_eq!(decoded_subkey.r#type, subkey.etype);
+    assert_eq!(decoded_subkey.value.as_ref(), subkey.value.as_slice());
+    assert_eq!(
+        authenticator
+            .cusec
+            .to_string()
+            .parse::<u32>()
+            .expect("cusec"),
+        456_789
+    );
+    assert_eq!(
+        system_time_from_kerberos_time(&authenticator.ctime),
+        timestamp(1_893_553_452)
     );
 }
 

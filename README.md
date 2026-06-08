@@ -36,7 +36,7 @@ pure-Rust Kerberos library.
   KDC transport with response-too-big fallback and Docker auto-protocol AS/TGS
   coverage, configured kpasswd transport and typed kpasswd request/reply/result exchanges, `krb5.conf` configured KDC
   discovery, DNS SRV KDC discovery, AS-REP and TGS-REP encrypted-part decryption and validation,
-  cross-realm TGS referral following, renewable AS/TGS request flags, explicit
+  generic AP-REQ construction, cross-realm TGS referral following, renewable AS/TGS request flags, explicit
   TGT/service-ticket renewal helpers, Docker MIT KDC AS/TGS login and TGT
   renewal coverage across AES-SHA1, AES-SHA2, DES3, and RC4-HMAC, per-enctype
   keytab AS/TGS integration coverage, ccache credential export/write-back, and a high-level
