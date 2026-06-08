@@ -47,6 +47,27 @@ pub const CHECKSUM_HMAC_SHA256_128_AES128: u32 = 19;
 /// Kerberos AES256 SHA2 checksum type.
 pub const CHECKSUM_HMAC_SHA384_192_AES256: u32 = 20;
 
+/// Claims data is not compressed.
+pub const CLAIMS_COMPRESSION_FORMAT_NONE: u16 = 0;
+/// Claims data uses LZNT1 compression.
+pub const CLAIMS_COMPRESSION_FORMAT_LZNT1: u16 = 2;
+/// Claims data uses XPRESS compression.
+pub const CLAIMS_COMPRESSION_FORMAT_XPRESS: u16 = 3;
+/// Claims data uses XPRESS Huffman compression.
+pub const CLAIMS_COMPRESSION_FORMAT_XPRESS_HUFF: u16 = 4;
+
+/// Claims originated in Active Directory.
+pub const CLAIMS_SOURCE_TYPE_AD: u16 = 1;
+
+/// Signed 64-bit integer claim value type.
+pub const CLAIM_TYPE_ID_INT64: u16 = 1;
+/// Unsigned 64-bit integer claim value type.
+pub const CLAIM_TYPE_ID_UINT64: u16 = 2;
+/// UTF-16 string claim value type.
+pub const CLAIM_TYPE_ID_STRING: u16 = 3;
+/// Boolean claim value type.
+pub const CLAIM_TYPE_ID_BOOLEAN: u16 = 6;
+
 const PAC_HEADER_LEN: usize = 8;
 const PAC_INFO_BUFFER_LEN: usize = 16;
 const PAC_SERVER_CHECKSUM_KEY_USAGE: u32 = 17;
@@ -77,6 +98,10 @@ pub struct Pac {
     pub client_info: Option<ClientInfo>,
     /// Parsed UPN/DNS info, if present and processed.
     pub upn_dns_info: Option<UpnDnsInfo>,
+    /// Parsed client claims info, if present and processed.
+    pub client_claims_info: Option<ClaimsInfo>,
+    /// Parsed device claims info, if present and processed.
+    pub device_claims_info: Option<ClaimsInfo>,
 }
 
 impl Pac {
@@ -124,6 +149,8 @@ impl Pac {
             kdc_checksum: None,
             client_info: None,
             upn_dns_info: None,
+            client_claims_info: None,
+            device_claims_info: None,
         })
     }
 
@@ -160,6 +187,12 @@ impl Pac {
                 }
                 INFO_TYPE_UPN_DNS_INFO if self.upn_dns_info.is_none() => {
                     self.upn_dns_info = Some(UpnDnsInfo::parse(bytes)?);
+                }
+                INFO_TYPE_PAC_CLIENT_CLAIMS_INFO if self.client_claims_info.is_none() => {
+                    self.client_claims_info = Some(ClaimsInfo::parse(bytes)?);
+                }
+                INFO_TYPE_PAC_DEVICE_CLAIMS_INFO if self.device_claims_info.is_none() => {
+                    self.device_claims_info = Some(ClaimsInfo::parse(bytes)?);
                 }
                 _ => {}
             }
@@ -433,6 +466,199 @@ impl UpnDnsInfo {
     }
 }
 
+/// PAC client or device claims info.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ClaimsInfo {
+    /// Claims metadata, including compression and raw nested claims bytes.
+    pub metadata: ClaimsSetMetadata,
+    /// Decoded claims set.
+    pub claims_set: ClaimsSet,
+}
+
+impl ClaimsInfo {
+    /// Parse PAC client or device claims info.
+    pub fn parse(bytes: &[u8]) -> Result<Self, Error> {
+        let metadata = ClaimsSetMetadata::parse(bytes)?;
+        let claims_set = metadata.claims_set()?;
+        Ok(Self {
+            metadata,
+            claims_set,
+        })
+    }
+}
+
+/// Claims set metadata wrapping a nested claims set byte stream.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ClaimsSetMetadata {
+    /// Encoded claims set byte length.
+    pub claims_set_size: u32,
+    /// Encoded claims set bytes.
+    pub claims_set_bytes: Vec<u8>,
+    /// Compression format for `claims_set_bytes`.
+    pub compression_format: u16,
+    /// Uncompressed claims set byte length.
+    pub uncompressed_claims_set_size: u32,
+    /// Reserved field type.
+    pub reserved_type: u16,
+    /// Reserved field byte length.
+    pub reserved_field_size: u32,
+    /// Reserved field bytes.
+    pub reserved_field: Vec<u8>,
+}
+
+impl ClaimsSetMetadata {
+    /// Parse an NDR-encoded `ClaimsSetMetadata` value.
+    pub fn parse(bytes: &[u8]) -> Result<Self, Error> {
+        let mut reader = Reader::new(bytes);
+        read_ndr_wrapper(&mut reader, "ClaimsSetMetadata")?;
+
+        let claims_set_size = read_ndr_u32(&mut reader)?;
+        let claims_set_bytes_ref = read_ndr_u32(&mut reader)?;
+        let compression_format = read_ndr_u16(&mut reader)?;
+        let uncompressed_claims_set_size = read_ndr_u32(&mut reader)?;
+        let reserved_type = read_ndr_u16(&mut reader)?;
+        let reserved_field_size = read_ndr_u32(&mut reader)?;
+        let reserved_field_ref = read_ndr_u32(&mut reader)?;
+
+        let claims_set_bytes = read_deferred_u8_array(
+            &mut reader,
+            claims_set_bytes_ref,
+            claims_set_size,
+            "ClaimsSetMetadata.ClaimsSetBytes",
+        )?;
+        let reserved_field = read_deferred_u8_array(
+            &mut reader,
+            reserved_field_ref,
+            reserved_field_size,
+            "ClaimsSetMetadata.ReservedField",
+        )?;
+        ensure_zero_trailing(&mut reader, "ClaimsSetMetadata")?;
+
+        Ok(Self {
+            claims_set_size,
+            claims_set_bytes,
+            compression_format,
+            uncompressed_claims_set_size,
+            reserved_type,
+            reserved_field_size,
+            reserved_field,
+        })
+    }
+
+    /// Decode the nested claims set when it is uncompressed.
+    pub fn claims_set(&self) -> Result<ClaimsSet, Error> {
+        match self.compression_format {
+            CLAIMS_COMPRESSION_FORMAT_NONE => ClaimsSet::parse(&self.claims_set_bytes),
+            compression_format => Err(Error::UnsupportedClaimsCompressionFormat(
+                compression_format,
+            )),
+        }
+    }
+}
+
+/// Decoded PAC claims set.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ClaimsSet {
+    /// Number of claims arrays.
+    pub claims_array_count: u32,
+    /// Claims arrays.
+    pub claims_arrays: Vec<ClaimsArray>,
+    /// Reserved field type.
+    pub reserved_type: u16,
+    /// Reserved field byte length.
+    pub reserved_field_size: u32,
+    /// Reserved field bytes.
+    pub reserved_field: Vec<u8>,
+}
+
+impl ClaimsSet {
+    /// Parse an NDR-encoded claims set.
+    pub fn parse(bytes: &[u8]) -> Result<Self, Error> {
+        let mut reader = Reader::new(bytes);
+        read_ndr_wrapper(&mut reader, "ClaimsSet")?;
+
+        let claims_array_count = read_ndr_u32(&mut reader)?;
+        let claims_arrays_ref = read_ndr_u32(&mut reader)?;
+        let reserved_type = read_ndr_u16(&mut reader)?;
+        let reserved_field_size = read_ndr_u32(&mut reader)?;
+        let reserved_field_ref = read_ndr_u32(&mut reader)?;
+
+        let claims_arrays = read_deferred_claims_arrays(
+            &mut reader,
+            claims_arrays_ref,
+            claims_array_count,
+            "ClaimsSet.ClaimsArrays",
+        )?;
+        let reserved_field = read_deferred_u8_array(
+            &mut reader,
+            reserved_field_ref,
+            reserved_field_size,
+            "ClaimsSet.ReservedField",
+        )?;
+        ensure_zero_trailing(&mut reader, "ClaimsSet")?;
+
+        Ok(Self {
+            claims_array_count,
+            claims_arrays,
+            reserved_type,
+            reserved_field_size,
+            reserved_field,
+        })
+    }
+}
+
+/// Claims from a single source.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ClaimsArray {
+    /// Claims source type.
+    pub claims_source_type: u16,
+    /// Number of claim entries.
+    pub claims_count: u32,
+    /// Claim entries.
+    pub claim_entries: Vec<ClaimEntry>,
+}
+
+/// A single decoded claim entry.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ClaimEntry {
+    /// Claim identifier URI.
+    pub id: String,
+    /// Claim value type.
+    pub claim_type: u16,
+    /// Claim values.
+    pub values: ClaimValues,
+}
+
+/// Typed claim values.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ClaimValues {
+    /// Signed 64-bit integer values.
+    Int64(Vec<i64>),
+    /// Unsigned 64-bit integer values.
+    UInt64(Vec<u64>),
+    /// UTF-16 string values.
+    String(Vec<String>),
+    /// Boolean values.
+    Boolean(Vec<bool>),
+}
+
+impl ClaimValues {
+    /// Number of values.
+    pub fn len(&self) -> usize {
+        match self {
+            Self::Int64(values) => values.len(),
+            Self::UInt64(values) => values.len(),
+            Self::String(values) => values.len(),
+            Self::Boolean(values) => values.len(),
+        }
+    }
+
+    /// Whether the claim carries no values.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
 /// Microsoft FILETIME, expressed as 100ns ticks since 1601-01-01 UTC.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub struct FileTime {
@@ -601,7 +827,7 @@ impl KerbValidationInfo {
     /// Parse NDR-encoded KERB_VALIDATION_INFO.
     pub fn parse(bytes: &[u8]) -> Result<Self, Error> {
         let mut reader = Reader::new(bytes);
-        read_ndr_wrapper(&mut reader)?;
+        read_ndr_wrapper(&mut reader, "KERB_VALIDATION_INFO")?;
 
         let logon_time = reader.read_filetime()?;
         let logoff_time = reader.read_filetime()?;
@@ -763,8 +989,22 @@ impl RpcUnicodeStringDescriptor {
     }
 }
 
-fn read_ndr_wrapper(reader: &mut Reader<'_>) -> Result<(), Error> {
-    let target = "NDR KERB_VALIDATION_INFO wrapper";
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ClaimsArrayDescriptor {
+    claims_source_type: u16,
+    claims_count: u32,
+    claim_entries_ref: u32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ClaimEntryDescriptor {
+    id_ref: u32,
+    claim_type: u16,
+    value_count: u32,
+    values_ref: u32,
+}
+
+fn read_ndr_wrapper(reader: &mut Reader<'_>, target: &'static str) -> Result<(), Error> {
     let minimum = 20;
     if reader.bytes.len() < minimum {
         return Err(Error::TooShort {
@@ -795,7 +1035,366 @@ fn read_ndr_wrapper(reader: &mut Reader<'_>) -> Result<(), Error> {
 
     let top_level_referent = reader.read_u32()?;
     if top_level_referent == 0 {
-        return Err(Error::MissingNdrPointer("KERB_VALIDATION_INFO"));
+        return Err(Error::MissingNdrPointer(target));
+    }
+    Ok(())
+}
+
+fn read_ndr_u16(reader: &mut Reader<'_>) -> Result<u16, Error> {
+    reader.align(2)?;
+    reader.read_u16()
+}
+
+fn read_ndr_u32(reader: &mut Reader<'_>) -> Result<u32, Error> {
+    reader.align(4)?;
+    reader.read_u32()
+}
+
+fn read_ndr_u64(reader: &mut Reader<'_>) -> Result<u64, Error> {
+    reader.align(8)?;
+    reader.read_u64()
+}
+
+fn read_ndr_reasonable_count(reader: &mut Reader<'_>, target: &'static str) -> Result<u32, Error> {
+    let count = read_ndr_u32(reader)?;
+    if count > MAX_REASONABLE_NDR_COUNT {
+        return Err(Error::UnreasonableNdrCount { target, count });
+    }
+    Ok(count)
+}
+
+fn read_deferred_u8_array(
+    reader: &mut Reader<'_>,
+    referent_id: u32,
+    count: u32,
+    target: &'static str,
+) -> Result<Vec<u8>, Error> {
+    if referent_id == 0 {
+        if count == 0 {
+            return Ok(Vec::new());
+        }
+        return Err(Error::MissingNdrPointer(target));
+    }
+
+    let max_count = read_ndr_reasonable_count(reader, target)?;
+    if max_count != count {
+        return Err(Error::CountMismatch {
+            target,
+            expected: count,
+            actual: max_count,
+        });
+    }
+
+    let len = usize::try_from(count).map_err(|_| Error::LengthOverflow)?;
+    let bytes = reader.read_bytes(len)?.to_vec();
+    reader.align(4)?;
+    Ok(bytes)
+}
+
+fn read_deferred_claims_arrays(
+    reader: &mut Reader<'_>,
+    referent_id: u32,
+    count: u32,
+    target: &'static str,
+) -> Result<Vec<ClaimsArray>, Error> {
+    if referent_id == 0 {
+        if count == 0 {
+            return Ok(Vec::new());
+        }
+        return Err(Error::MissingNdrPointer(target));
+    }
+
+    let max_count = read_ndr_reasonable_count(reader, target)?;
+    if max_count != count {
+        return Err(Error::CountMismatch {
+            target,
+            expected: count,
+            actual: max_count,
+        });
+    }
+
+    let count = usize::try_from(count).map_err(|_| Error::LengthOverflow)?;
+    let mut descriptors = Vec::with_capacity(count);
+    for _ in 0..count {
+        descriptors.push(ClaimsArrayDescriptor {
+            claims_source_type: read_ndr_u16(reader)?,
+            claims_count: read_ndr_u32(reader)?,
+            claim_entries_ref: read_ndr_u32(reader)?,
+        });
+    }
+
+    let mut arrays = Vec::with_capacity(count);
+    for descriptor in descriptors {
+        let claim_entries = read_deferred_claim_entries(
+            reader,
+            descriptor.claim_entries_ref,
+            descriptor.claims_count,
+            "ClaimsArray.ClaimEntries",
+        )?;
+        arrays.push(ClaimsArray {
+            claims_source_type: descriptor.claims_source_type,
+            claims_count: descriptor.claims_count,
+            claim_entries,
+        });
+    }
+    Ok(arrays)
+}
+
+fn read_deferred_claim_entries(
+    reader: &mut Reader<'_>,
+    referent_id: u32,
+    count: u32,
+    target: &'static str,
+) -> Result<Vec<ClaimEntry>, Error> {
+    if referent_id == 0 {
+        if count == 0 {
+            return Ok(Vec::new());
+        }
+        return Err(Error::MissingNdrPointer(target));
+    }
+
+    let max_count = read_ndr_reasonable_count(reader, target)?;
+    if max_count != count {
+        return Err(Error::CountMismatch {
+            target,
+            expected: count,
+            actual: max_count,
+        });
+    }
+
+    let count = usize::try_from(count).map_err(|_| Error::LengthOverflow)?;
+    let mut descriptors = Vec::with_capacity(count);
+    for _ in 0..count {
+        descriptors.push(read_claim_entry_descriptor(reader)?);
+    }
+
+    let mut entries = Vec::with_capacity(count);
+    for descriptor in descriptors {
+        let id = read_deferred_claim_string(reader, descriptor.id_ref, "ClaimEntry.ID")?;
+        let values = match descriptor.claim_type {
+            CLAIM_TYPE_ID_INT64 => ClaimValues::Int64(read_deferred_i64_array(
+                reader,
+                descriptor.values_ref,
+                descriptor.value_count,
+                "ClaimEntry.Int64Values",
+            )?),
+            CLAIM_TYPE_ID_UINT64 => ClaimValues::UInt64(read_deferred_u64_array(
+                reader,
+                descriptor.values_ref,
+                descriptor.value_count,
+                "ClaimEntry.UInt64Values",
+            )?),
+            CLAIM_TYPE_ID_STRING => ClaimValues::String(read_deferred_lpwstr_array(
+                reader,
+                descriptor.values_ref,
+                descriptor.value_count,
+                "ClaimEntry.StringValues",
+            )?),
+            CLAIM_TYPE_ID_BOOLEAN => ClaimValues::Boolean(read_deferred_bool_array(
+                reader,
+                descriptor.values_ref,
+                descriptor.value_count,
+                "ClaimEntry.BooleanValues",
+            )?),
+            claim_type => return Err(Error::UnsupportedClaimType(claim_type)),
+        };
+        entries.push(ClaimEntry {
+            id,
+            claim_type: descriptor.claim_type,
+            values,
+        });
+    }
+    Ok(entries)
+}
+
+fn read_claim_entry_descriptor(reader: &mut Reader<'_>) -> Result<ClaimEntryDescriptor, Error> {
+    let id_ref = read_ndr_u32(reader)?;
+    let claim_type = read_ndr_u16(reader)?;
+    let union_tag = read_ndr_u16(reader)?;
+    if union_tag != claim_type {
+        return Err(Error::InvalidClaimUnionTag {
+            claim_type,
+            union_tag,
+        });
+    }
+    Ok(ClaimEntryDescriptor {
+        id_ref,
+        claim_type,
+        value_count: read_ndr_u32(reader)?,
+        values_ref: read_ndr_u32(reader)?,
+    })
+}
+
+fn read_deferred_i64_array(
+    reader: &mut Reader<'_>,
+    referent_id: u32,
+    count: u32,
+    target: &'static str,
+) -> Result<Vec<i64>, Error> {
+    if referent_id == 0 {
+        if count == 0 {
+            return Ok(Vec::new());
+        }
+        return Err(Error::MissingNdrPointer(target));
+    }
+
+    let max_count = read_ndr_reasonable_count(reader, target)?;
+    if max_count != count {
+        return Err(Error::CountMismatch {
+            target,
+            expected: count,
+            actual: max_count,
+        });
+    }
+
+    let count = usize::try_from(count).map_err(|_| Error::LengthOverflow)?;
+    let mut values = Vec::with_capacity(count);
+    for _ in 0..count {
+        values.push(read_ndr_u64(reader)? as i64);
+    }
+    Ok(values)
+}
+
+fn read_deferred_u64_array(
+    reader: &mut Reader<'_>,
+    referent_id: u32,
+    count: u32,
+    target: &'static str,
+) -> Result<Vec<u64>, Error> {
+    if referent_id == 0 {
+        if count == 0 {
+            return Ok(Vec::new());
+        }
+        return Err(Error::MissingNdrPointer(target));
+    }
+
+    let max_count = read_ndr_reasonable_count(reader, target)?;
+    if max_count != count {
+        return Err(Error::CountMismatch {
+            target,
+            expected: count,
+            actual: max_count,
+        });
+    }
+
+    let count = usize::try_from(count).map_err(|_| Error::LengthOverflow)?;
+    let mut values = Vec::with_capacity(count);
+    for _ in 0..count {
+        values.push(read_ndr_u64(reader)?);
+    }
+    Ok(values)
+}
+
+fn read_deferred_bool_array(
+    reader: &mut Reader<'_>,
+    referent_id: u32,
+    count: u32,
+    target: &'static str,
+) -> Result<Vec<bool>, Error> {
+    if referent_id == 0 {
+        if count == 0 {
+            return Ok(Vec::new());
+        }
+        return Err(Error::MissingNdrPointer(target));
+    }
+
+    let max_count = read_ndr_reasonable_count(reader, target)?;
+    if max_count != count {
+        return Err(Error::CountMismatch {
+            target,
+            expected: count,
+            actual: max_count,
+        });
+    }
+
+    let count = usize::try_from(count).map_err(|_| Error::LengthOverflow)?;
+    let mut values = Vec::with_capacity(count);
+    for _ in 0..count {
+        values.push(reader.read_u8()? != 0);
+    }
+    reader.align(4)?;
+    Ok(values)
+}
+
+fn read_deferred_lpwstr_array(
+    reader: &mut Reader<'_>,
+    referent_id: u32,
+    count: u32,
+    target: &'static str,
+) -> Result<Vec<String>, Error> {
+    if referent_id == 0 {
+        if count == 0 {
+            return Ok(Vec::new());
+        }
+        return Err(Error::MissingNdrPointer(target));
+    }
+
+    let max_count = read_ndr_reasonable_count(reader, target)?;
+    if max_count != count {
+        return Err(Error::CountMismatch {
+            target,
+            expected: count,
+            actual: max_count,
+        });
+    }
+
+    let count = usize::try_from(count).map_err(|_| Error::LengthOverflow)?;
+    let mut string_refs = Vec::with_capacity(count);
+    for _ in 0..count {
+        string_refs.push(read_ndr_u32(reader)?);
+    }
+
+    let mut values = Vec::with_capacity(count);
+    for string_ref in string_refs {
+        values.push(read_deferred_claim_string(reader, string_ref, target)?);
+    }
+    Ok(values)
+}
+
+fn read_deferred_claim_string(
+    reader: &mut Reader<'_>,
+    referent_id: u32,
+    target: &'static str,
+) -> Result<String, Error> {
+    if referent_id == 0 {
+        return Err(Error::MissingNdrPointer(target));
+    }
+
+    let max_count = read_ndr_reasonable_count(reader, target)?;
+    let offset = read_ndr_u32(reader)?;
+    let actual_count = read_ndr_reasonable_count(reader, target)?;
+    if offset > max_count || actual_count > max_count.saturating_sub(offset) {
+        return Err(Error::InvalidNdrArrayBounds {
+            target,
+            max_count,
+            offset,
+            actual_count,
+        });
+    }
+
+    let actual_count = usize::try_from(actual_count).map_err(|_| Error::LengthOverflow)?;
+    let mut units = Vec::with_capacity(actual_count);
+    for _ in 0..actual_count {
+        units.push(reader.read_u16()?);
+    }
+    reader.align(4)?;
+
+    if units.last().copied() == Some(0) {
+        units.pop();
+    }
+    String::from_utf16(&units).map_err(|error| Error::InvalidUtf16 {
+        target,
+        message: error.to_string(),
+    })
+}
+
+fn ensure_zero_trailing(reader: &mut Reader<'_>, target: &'static str) -> Result<(), Error> {
+    reader.align(4)?;
+    if reader.remaining_bytes().iter().any(|byte| *byte != 0) {
+        return Err(Error::TrailingNdrBytesAfter {
+            target,
+            remaining: reader.remaining(),
+        });
     }
     Ok(())
 }
@@ -1187,6 +1786,23 @@ pub enum Error {
     #[error("unsupported PAC checksum type: {0}")]
     UnsupportedChecksumType(u32),
 
+    /// A claims compression format is not supported.
+    #[error("unsupported PAC claims compression format: {0}")]
+    UnsupportedClaimsCompressionFormat(u16),
+
+    /// A claims value type is not supported.
+    #[error("unsupported PAC claim type: {0}")]
+    UnsupportedClaimType(u16),
+
+    /// A claim union discriminant did not match the entry type.
+    #[error("invalid PAC claim union tag: claim type {claim_type}, union tag {union_tag}")]
+    InvalidClaimUnionTag {
+        /// Claim type field.
+        claim_type: u16,
+        /// Union tag field.
+        union_tag: u16,
+    },
+
     /// A required PAC buffer was absent.
     #[error("PAC Info Buffers do not contain required {0}")]
     MissingRequiredBuffer(&'static str),
@@ -1314,6 +1930,15 @@ pub enum Error {
     /// NDR data remained after all KERB_VALIDATION_INFO fields were parsed.
     #[error("trailing NDR bytes after KERB_VALIDATION_INFO: {remaining}")]
     TrailingNdrBytes {
+        /// Remaining byte count.
+        remaining: usize,
+    },
+
+    /// NDR data remained after all fields were parsed.
+    #[error("trailing NDR bytes after {target}: {remaining}")]
+    TrailingNdrBytesAfter {
+        /// Parsed target.
+        target: &'static str,
         /// Remaining byte count.
         remaining: usize,
     },

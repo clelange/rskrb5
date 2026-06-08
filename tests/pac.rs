@@ -5,13 +5,29 @@ use std::time::{Duration, UNIX_EPOCH};
 use pretty_assertions::assert_eq;
 use rskrb5::keytab::Keytab;
 use rskrb5::pac::{
-    self, CHECKSUM_HMAC_MD5_UNSIGNED, CHECKSUM_HMAC_SHA1_96_AES256, ClientInfo,
-    INFO_TYPE_PAC_CLIENT_INFO, INFO_TYPE_PAC_KDC_SIGNATURE_DATA,
+    self, CHECKSUM_HMAC_MD5_UNSIGNED, CHECKSUM_HMAC_SHA1_96_AES256, CLAIM_TYPE_ID_INT64,
+    CLAIM_TYPE_ID_STRING, CLAIM_TYPE_ID_UINT64, CLAIMS_COMPRESSION_FORMAT_NONE,
+    CLAIMS_COMPRESSION_FORMAT_XPRESS_HUFF, CLAIMS_SOURCE_TYPE_AD, ClaimValues, ClaimsInfo,
+    ClaimsSetMetadata, ClientInfo, INFO_TYPE_PAC_CLIENT_CLAIMS_INFO, INFO_TYPE_PAC_CLIENT_INFO,
+    INFO_TYPE_PAC_DEVICE_CLAIMS_INFO, INFO_TYPE_PAC_KDC_SIGNATURE_DATA,
     INFO_TYPE_PAC_SERVER_SIGNATURE_DATA, INFO_TYPE_UPN_DNS_INFO, KerbValidationInfo, Pac,
     SignatureData, UpnDnsInfo,
 };
 
 mod common;
+
+const CLIENT_CLAIMS_INFO_STR: &str = "01100800cccccccc000100000000000000000200d80000000400020000000000d8000000000000000000000000000000d800000001100800ccccccccc80000000000000000000200010000000400020000000000000000000000000001000000010000000100000008000200010000000c000200030003000100000010000200290000000000000029000000610064003a002f002f006500780074002f00730041004d004100630063006f0075006e0074004e0061006d0065003a0038003800640035006400390030003800350065006100350063003000630030000000000001000000140002000a000000000000000a00000074006500730074007500730065007200310000000000000000000000";
+const CLIENT_CLAIMS_INFO_INT: &str = "01100800cccccccce00000000000000000000200b80000000400020000000000b8000000000000000000000000000000b800000001100800cccccccca80000000000000000000200010000000400020000000000000000000000000001000000010000000100000008000200010000000c0002000100010001000000100002002a000000000000002a000000610064003a002f002f006500780074002f006d007300440053002d0053007500700070006f00720074006500640045003a0038003800640035006400650061003800660031006100660035006600310039000000010000001c0000000000000000000000";
+const CLIENT_CLAIMS_INFO_MULTI: &str = "01100800cccccccc780100000000000000000200500100000400020000000000500100000000000000000000000000005001000001100800cccccccc400100000000000000000200010000000400020000000000000000000000000001000000010000000200000008000200020000000c000200010001000100000010000200140002000300030001000000180002002a000000000000002a000000610064003a002f002f006500780074002f006d007300440053002d0053007500700070006f00720074006500640045003a0038003800640035006400650061003800660031006100660035006600310039000000010000001c00000000000000290000000000000029000000610064003a002f002f006500780074002f00730041004d004100630063006f0075006e0074004e0061006d0065003a00380038006400350064003900300038003500650061003500630030006300300000000000010000001c0002000a000000000000000a000000740065007300740075007300650072003100000000000000";
+const CLIENT_CLAIMS_INFO_MULTI_UINT: &str = "01100800ccccccccf00000000000000000000200c80000000400020000000000c8000000000000000000000000000000c800000001100800ccccccccb80000000000000000000200010000000400020000000000000000000000000001000000010000000100000008000200010000000c000200020002000400000010000200260000000000000026000000610064003a002f002f006500780074002f006f0062006a0065006300740043006c006100730073003a00380038006400350064006500370039003100650037006200320037006500360000000400000009000a000000000007000100000000000600010000000000000001000000000000000000";
+const CLIENT_CLAIMS_INFO_MULTI_STR: &str = "01100800cccccccc480100000000000000000200200100000400020000000000200100000000000000000000000000002001000001100800cccccccc100100000000000000000200010000000400020000000000000000000000000001000000010000000100000008000200010000000c000200030003000400000010000200270000000000000027000000610064003a002f002f006500780074002f006f00740068006500720049007000500068006f006e0065003a003800380064003500640065003900660036006200340061006600390038003500000000000400000014000200180002001c000200200002000500000000000000050000007300740072003100000000000500000000000000050000007300740072003200000000000500000000000000050000007300740072003300000000000500000000000000050000007300740072003400000000000000000000000000";
+const CLIENT_CLAIMS_INFO_XPRESS_HUFF: &str = "01100800ccccccccd00100000000000000000200a80100000400020004000000e0010000000000000000000000000000a8010000727807888708080007000800080008000800080880000080870870887807000080800000000080080000080000000000605767070007777707677700770000000000000000000000000000000000000000000000000000000000000000000000000000000000070007000000000000000000000000000000000000000000000076000700700000007600000000000000750700000000000064770700000000007607000000000000060700000000000077060700000000707770700070000770007700000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001a85652950bb9d8bae030b2212b90df95764d1b182da22f2c848b23b3cc4efc8e3499701e481cf938e490986a384c3d572250aaab2446572fc26be279c263e4a4c9c2c24f9649e2444d8ddb3277373c600363beb73200baaa783da183dd85830af863e1a00d5cf718aac4879519fbf0745bcc59214493a330f940bf99a446f1ade6df2610c5f154b432eaba964d7ad1f1182e522019fc21ce498a204d06b96a476f7386e6003000000000000";
+
+const CLAIMS_ENTRY_ID_STR: &str = "ad://ext/sAMAccountName:88d5d9085ea5c0c0";
+const CLAIMS_ENTRY_VALUE_STR: &str = "testuser1";
+const CLAIMS_ENTRY_ID_INT64: &str = "ad://ext/msDS-SupportedE:88d5dea8f1af5f19";
+const CLAIMS_ENTRY_VALUE_INT64: i64 = 28;
+const CLAIMS_ENTRY_ID_UINT64: &str = "ad://ext/objectClass:88d5de791e7b27e6";
 
 #[test]
 fn parses_gokrb5_pac_container_and_buffers() {
@@ -105,6 +121,135 @@ fn parses_component_buffers_directly() {
     )
     .expect("signature parses");
     assert_eq!(signature.signature_type, CHECKSUM_HMAC_SHA1_96_AES256);
+}
+
+#[test]
+fn parses_gokrb5_client_claims_info_str() {
+    let claims = ClaimsInfo::parse(&decode_hex(CLIENT_CLAIMS_INFO_STR)).expect("claims parse");
+    let entry = assert_single_claim(&claims, CLAIM_TYPE_ID_STRING, CLAIMS_ENTRY_ID_STR);
+
+    assert_eq!(
+        entry.values,
+        ClaimValues::String(vec![CLAIMS_ENTRY_VALUE_STR.to_string()])
+    );
+}
+
+#[test]
+fn parses_gokrb5_client_claims_info_int() {
+    let claims = ClaimsInfo::parse(&decode_hex(CLIENT_CLAIMS_INFO_INT)).expect("claims parse");
+    let entry = assert_single_claim(&claims, CLAIM_TYPE_ID_INT64, CLAIMS_ENTRY_ID_INT64);
+
+    assert_eq!(
+        entry.values,
+        ClaimValues::Int64(vec![CLAIMS_ENTRY_VALUE_INT64])
+    );
+}
+
+#[test]
+fn parses_gokrb5_client_claims_info_multi_uint() {
+    let claims =
+        ClaimsInfo::parse(&decode_hex(CLIENT_CLAIMS_INFO_MULTI_UINT)).expect("claims parse");
+    let entry = assert_single_claim(&claims, CLAIM_TYPE_ID_UINT64, CLAIMS_ENTRY_ID_UINT64);
+
+    assert_eq!(
+        entry.values,
+        ClaimValues::UInt64(vec![655_369, 65_543, 65_542, 65_536])
+    );
+}
+
+#[test]
+fn parses_gokrb5_client_claims_info_multi_str() {
+    let claims =
+        ClaimsInfo::parse(&decode_hex(CLIENT_CLAIMS_INFO_MULTI_STR)).expect("claims parse");
+    let entry = assert_single_claim(
+        &claims,
+        CLAIM_TYPE_ID_STRING,
+        "ad://ext/otherIpPhone:88d5de9f6b4af985",
+    );
+
+    assert_eq!(
+        entry.values,
+        ClaimValues::String(vec![
+            "str1".to_string(),
+            "str2".to_string(),
+            "str3".to_string(),
+            "str4".to_string()
+        ])
+    );
+}
+
+#[test]
+fn parses_gokrb5_client_claims_info_multi_entry() {
+    let claims = ClaimsInfo::parse(&decode_hex(CLIENT_CLAIMS_INFO_MULTI)).expect("claims parse");
+    let array = assert_single_claims_array(&claims, 2);
+
+    assert_eq!(array.claim_entries[0].claim_type, CLAIM_TYPE_ID_INT64);
+    assert_eq!(array.claim_entries[0].id, CLAIMS_ENTRY_ID_INT64);
+    assert_eq!(
+        array.claim_entries[0].values,
+        ClaimValues::Int64(vec![CLAIMS_ENTRY_VALUE_INT64])
+    );
+    assert_eq!(array.claim_entries[1].claim_type, CLAIM_TYPE_ID_STRING);
+    assert_eq!(array.claim_entries[1].id, CLAIMS_ENTRY_ID_STR);
+    assert_eq!(
+        array.claim_entries[1].values,
+        ClaimValues::String(vec![CLAIMS_ENTRY_VALUE_STR.to_string()])
+    );
+}
+
+#[test]
+fn records_unsupported_compressed_claims_metadata() {
+    let metadata = ClaimsSetMetadata::parse(&decode_hex(CLIENT_CLAIMS_INFO_XPRESS_HUFF))
+        .expect("claims metadata parses");
+
+    assert_eq!(
+        metadata.compression_format,
+        CLAIMS_COMPRESSION_FORMAT_XPRESS_HUFF
+    );
+    assert!(matches!(
+        metadata.claims_set(),
+        Err(pac::Error::UnsupportedClaimsCompressionFormat(
+            CLAIMS_COMPRESSION_FORMAT_XPRESS_HUFF
+        ))
+    ));
+}
+
+#[test]
+fn processes_client_and_device_claims_pac_buffers() {
+    let claim_bytes = decode_hex(CLIENT_CLAIMS_INFO_STR);
+    let pac = Pac::parse_and_process(&single_buffer_pac(
+        INFO_TYPE_PAC_CLIENT_CLAIMS_INFO,
+        &claim_bytes,
+    ))
+    .expect("PAC parses");
+    let entry = assert_single_claim(
+        pac.client_claims_info
+            .as_ref()
+            .expect("client claims parsed"),
+        CLAIM_TYPE_ID_STRING,
+        CLAIMS_ENTRY_ID_STR,
+    );
+    assert_eq!(
+        entry.values,
+        ClaimValues::String(vec![CLAIMS_ENTRY_VALUE_STR.to_string()])
+    );
+
+    let pac = Pac::parse_and_process(&single_buffer_pac(
+        INFO_TYPE_PAC_DEVICE_CLAIMS_INFO,
+        &claim_bytes,
+    ))
+    .expect("PAC parses");
+    let entry = assert_single_claim(
+        pac.device_claims_info
+            .as_ref()
+            .expect("device claims parsed"),
+        CLAIM_TYPE_ID_STRING,
+        CLAIMS_ENTRY_ID_STR,
+    );
+    assert_eq!(
+        entry.values,
+        ClaimValues::String(vec![CLAIMS_ENTRY_VALUE_STR.to_string()])
+    );
 }
 
 #[test]
@@ -318,11 +463,54 @@ fn assert_upn_dns_info(upn: &UpnDnsInfo) {
     assert_eq!(upn.dns_domain, "TEST.GOKRB5");
 }
 
+fn assert_single_claim<'a>(
+    claims: &'a ClaimsInfo,
+    claim_type: u16,
+    id: &str,
+) -> &'a pac::ClaimEntry {
+    let array = assert_single_claims_array(claims, 1);
+    let entry = &array.claim_entries[0];
+    assert_eq!(entry.claim_type, claim_type);
+    assert_eq!(entry.id, id);
+    entry
+}
+
+fn assert_single_claims_array(claims: &ClaimsInfo, claims_count: u32) -> &pac::ClaimsArray {
+    assert_eq!(
+        claims.metadata.compression_format,
+        CLAIMS_COMPRESSION_FORMAT_NONE
+    );
+    assert_eq!(claims.claims_set.claims_array_count, 1);
+    assert_eq!(claims.claims_set.claims_arrays.len(), 1);
+
+    let array = &claims.claims_set.claims_arrays[0];
+    assert_eq!(array.claims_source_type, CLAIMS_SOURCE_TYPE_AD);
+    assert_eq!(array.claims_count, claims_count);
+    assert_eq!(array.claim_entries.len(), claims_count as usize);
+    array
+}
+
 fn group(relative_id: u32, attributes: u32) -> pac::GroupMembership {
     pac::GroupMembership {
         relative_id,
         attributes,
     }
+}
+
+fn single_buffer_pac(ul_type: u32, buffer: &[u8]) -> Vec<u8> {
+    let offset = 24u64;
+    let mut pac = Vec::with_capacity(usize::try_from(offset).expect("offset fits") + buffer.len());
+    pac.extend_from_slice(&1u32.to_le_bytes());
+    pac.extend_from_slice(&0u32.to_le_bytes());
+    pac.extend_from_slice(&ul_type.to_le_bytes());
+    pac.extend_from_slice(
+        &u32::try_from(buffer.len())
+            .expect("buffer length fits")
+            .to_le_bytes(),
+    );
+    pac.extend_from_slice(&offset.to_le_bytes());
+    pac.extend_from_slice(buffer);
+    pac
 }
 
 fn unix_time(seconds: u64, nanos: u32) -> std::time::SystemTime {
