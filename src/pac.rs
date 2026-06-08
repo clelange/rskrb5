@@ -866,14 +866,47 @@ impl ClaimsSetMetadata {
         })
     }
 
-    /// Decode the nested claims set when it is uncompressed.
-    pub fn claims_set(&self) -> Result<ClaimsSet, Error> {
+    /// Decode the nested claims set bytes, decompressing when required.
+    pub fn decoded_claims_set_bytes(&self) -> Result<Vec<u8>, Error> {
         match self.compression_format {
-            CLAIMS_COMPRESSION_FORMAT_NONE => ClaimsSet::parse(&self.claims_set_bytes),
+            CLAIMS_COMPRESSION_FORMAT_NONE => Ok(self.claims_set_bytes.clone()),
+            CLAIMS_COMPRESSION_FORMAT_LZNT1 => {
+                decompress_claims_set_bytes::<compcol::lznt1::Lznt1>(
+                    self.compression_format,
+                    &self.claims_set_bytes,
+                    self.uncompressed_claims_set_size,
+                )
+            }
+            CLAIMS_COMPRESSION_FORMAT_XPRESS => {
+                let mut framed = Vec::with_capacity(8 + self.claims_set_bytes.len());
+                framed
+                    .extend_from_slice(&u64::from(self.uncompressed_claims_set_size).to_le_bytes());
+                framed.extend_from_slice(&self.claims_set_bytes);
+                decompress_claims_set_bytes::<compcol::xpress::Xpress>(
+                    self.compression_format,
+                    &framed,
+                    self.uncompressed_claims_set_size,
+                )
+            }
+            CLAIMS_COMPRESSION_FORMAT_XPRESS_HUFF => {
+                let mut framed = Vec::with_capacity(4 + self.claims_set_bytes.len());
+                framed.extend_from_slice(&self.uncompressed_claims_set_size.to_le_bytes());
+                framed.extend_from_slice(&self.claims_set_bytes);
+                decompress_claims_set_bytes::<compcol::xpress_huffman::XpressHuffman>(
+                    self.compression_format,
+                    &framed,
+                    self.uncompressed_claims_set_size,
+                )
+            }
             compression_format => Err(Error::UnsupportedClaimsCompressionFormat(
                 compression_format,
             )),
         }
+    }
+
+    /// Decode the nested claims set.
+    pub fn claims_set(&self) -> Result<ClaimsSet, Error> {
+        ClaimsSet::parse(&self.decoded_claims_set_bytes()?)
     }
 }
 
@@ -1806,6 +1839,28 @@ fn ensure_zero_trailing(reader: &mut Reader<'_>, target: &'static str) -> Result
     Ok(())
 }
 
+fn decompress_claims_set_bytes<A: compcol::Algorithm>(
+    compression_format: u16,
+    bytes: &[u8],
+    uncompressed_size: u32,
+) -> Result<Vec<u8>, Error> {
+    let decoded = compcol::vec::decompress_to_vec_capped::<A>(bytes, u64::from(uncompressed_size))
+        .map_err(|error| Error::ClaimsDecompression {
+            compression_format,
+            message: error.to_string(),
+        })?;
+    let actual = decoded.len();
+    let expected = usize::try_from(uncompressed_size).map_err(|_| Error::LengthOverflow)?;
+    if actual != expected {
+        return Err(Error::ClaimsDecompressedSizeMismatch {
+            compression_format,
+            expected,
+            actual,
+        });
+    }
+    Ok(decoded)
+}
+
 fn read_deferred_unicode_string(
     reader: &mut Reader<'_>,
     descriptor: RpcUnicodeStringDescriptor,
@@ -2249,6 +2304,28 @@ pub enum Error {
     /// A claims compression format is not supported.
     #[error("unsupported PAC claims compression format: {0}")]
     UnsupportedClaimsCompressionFormat(u16),
+
+    /// PAC claims decompression failed.
+    #[error("PAC claims decompression failed for format {compression_format}: {message}")]
+    ClaimsDecompression {
+        /// Claims compression format.
+        compression_format: u16,
+        /// Decompression error message.
+        message: String,
+    },
+
+    /// PAC claims decompressed to a length other than the metadata declared.
+    #[error(
+        "PAC claims decompressed size mismatch for format {compression_format}: expected {expected}, got {actual}"
+    )]
+    ClaimsDecompressedSizeMismatch {
+        /// Claims compression format.
+        compression_format: u16,
+        /// Expected decompressed byte length.
+        expected: usize,
+        /// Actual decompressed byte length.
+        actual: usize,
+    },
 
     /// A claims value type is not supported.
     #[error("unsupported PAC claim type: {0}")]

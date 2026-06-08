@@ -236,6 +236,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "compcol"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "54b8ffee98f7c1d52a9efb2295c6c35a44aaab9f551793e11cb5f3b57557ea50"
+
+[[package]]
 name = "const-oid"
 version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1387,6 +1393,7 @@ dependencies = [
  "axum",
  "base64",
  "chrono",
+ "compcol",
  "getrandom 0.3.4",
  "hex",
  "hickory-resolver",

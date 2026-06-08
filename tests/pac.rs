@@ -7,7 +7,8 @@ use rskrb5::crypto::{AesEtype, AesSha1Etype};
 use rskrb5::keytab::{EncryptionKey, Keytab};
 use rskrb5::pac::{
     self, CHECKSUM_HMAC_MD5_UNSIGNED, CHECKSUM_HMAC_SHA1_96_AES256, CLAIM_TYPE_ID_INT64,
-    CLAIM_TYPE_ID_STRING, CLAIM_TYPE_ID_UINT64, CLAIMS_COMPRESSION_FORMAT_NONE,
+    CLAIM_TYPE_ID_STRING, CLAIM_TYPE_ID_UINT64, CLAIMS_COMPRESSION_FORMAT_LZNT1,
+    CLAIMS_COMPRESSION_FORMAT_NONE, CLAIMS_COMPRESSION_FORMAT_XPRESS,
     CLAIMS_COMPRESSION_FORMAT_XPRESS_HUFF, CLAIMS_SOURCE_TYPE_AD, ClaimValues, ClaimsInfo,
     ClaimsSetMetadata, ClientInfo, CredentialData, CredentialsInfo, DeviceInfo,
     INFO_TYPE_CREDENTIALS, INFO_TYPE_PAC_CLIENT_CLAIMS_INFO, INFO_TYPE_PAC_CLIENT_INFO,
@@ -201,20 +202,74 @@ fn parses_gokrb5_client_claims_info_multi_entry() {
 }
 
 #[test]
-fn records_unsupported_compressed_claims_metadata() {
-    let metadata = ClaimsSetMetadata::parse(&decode_hex(CLIENT_CLAIMS_INFO_XPRESS_HUFF))
-        .expect("claims metadata parses");
+fn parses_gokrb5_xpress_huffman_compressed_claims_info() {
+    let claims = ClaimsInfo::parse(&decode_hex(CLIENT_CLAIMS_INFO_XPRESS_HUFF))
+        .expect("compressed claims parse");
 
     assert_eq!(
-        metadata.compression_format,
+        claims.metadata.compression_format,
         CLAIMS_COMPRESSION_FORMAT_XPRESS_HUFF
     );
-    assert!(matches!(
-        metadata.claims_set(),
-        Err(pac::Error::UnsupportedClaimsCompressionFormat(
-            CLAIMS_COMPRESSION_FORMAT_XPRESS_HUFF
+    assert_eq!(claims.claims_set.claims_array_count, 1);
+    assert!(!claims.claims_set.claims_arrays[0].claim_entries.is_empty());
+}
+
+#[test]
+fn parses_generated_compressed_claims_formats() {
+    let raw = ClaimsSetMetadata::parse(&decode_hex(CLIENT_CLAIMS_INFO_STR))
+        .expect("claims metadata parses")
+        .claims_set_bytes;
+
+    let mut xpress =
+        compcol::vec::compress_to_vec::<compcol::xpress::Xpress>(&raw).expect("XPRESS compresses");
+    let mut xpress_huff =
+        compcol::vec::compress_to_vec::<compcol::xpress_huffman::XpressHuffman>(&raw)
+            .expect("XPRESS Huffman compresses");
+    let compressed_formats = [
+        (
+            CLAIMS_COMPRESSION_FORMAT_LZNT1,
+            compcol::vec::compress_to_vec::<compcol::lznt1::Lznt1>(&raw).expect("LZNT1 compresses"),
+        ),
+        (CLAIMS_COMPRESSION_FORMAT_XPRESS, xpress.split_off(8)),
+        (
+            CLAIMS_COMPRESSION_FORMAT_XPRESS_HUFF,
+            xpress_huff.split_off(4),
+        ),
+    ];
+
+    for (compression_format, compressed) in compressed_formats {
+        let metadata = ClaimsSetMetadata::parse(&claims_set_metadata_bytes(
+            compression_format,
+            &compressed,
+            raw.len(),
         ))
-    ));
+        .expect("compressed claims metadata parses");
+        assert_eq!(
+            metadata
+                .decoded_claims_set_bytes()
+                .expect("claims bytes decode"),
+            raw
+        );
+
+        let claims = metadata.claims_set().expect("claims set parses");
+        let info = ClaimsInfo {
+            metadata,
+            claims_set: claims,
+        };
+        assert_eq!(info.claims_set.claims_array_count, 1);
+        assert_eq!(info.claims_set.claims_arrays.len(), 1);
+        let array = &info.claims_set.claims_arrays[0];
+        assert_eq!(array.claims_source_type, CLAIMS_SOURCE_TYPE_AD);
+        assert_eq!(array.claims_count, 1);
+        assert_eq!(array.claim_entries.len(), 1);
+        let entry = &array.claim_entries[0];
+        assert_eq!(entry.claim_type, CLAIM_TYPE_ID_STRING);
+        assert_eq!(entry.id, CLAIMS_ENTRY_ID_STR);
+        assert_eq!(
+            entry.values,
+            ClaimValues::String(vec![CLAIMS_ENTRY_VALUE_STR.to_string()])
+        );
+    }
 }
 
 #[test]
@@ -656,6 +711,31 @@ fn credentials_info_bytes(encryption_type: u32, encrypted: Vec<u8>) -> Vec<u8> {
     push_u32(&mut bytes, encryption_type);
     bytes.extend_from_slice(&encrypted);
     bytes
+}
+
+fn claims_set_metadata_bytes(
+    compression_format: u16,
+    claims_set_bytes: &[u8],
+    uncompressed_size: usize,
+) -> Vec<u8> {
+    let mut object = Vec::new();
+    push_u32(
+        &mut object,
+        u32::try_from(claims_set_bytes.len()).expect("claims set size fits"),
+    );
+    push_u32(&mut object, 0x0002_0004);
+    push_u16(&mut object, compression_format);
+    align_vec(&mut object, 4);
+    push_u32(
+        &mut object,
+        u32::try_from(uncompressed_size).expect("uncompressed size fits"),
+    );
+    push_u16(&mut object, 0);
+    align_vec(&mut object, 4);
+    push_u32(&mut object, 0);
+    push_u32(&mut object, 0);
+    push_deferred_u8_array(&mut object, claims_set_bytes);
+    ndr_wrapped(object)
 }
 
 fn credential_data_bytes() -> Vec<u8> {

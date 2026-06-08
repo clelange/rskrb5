@@ -32,6 +32,7 @@ serde = ["dep:serde"]
 aes = "0.9.1"
 base64 = { version = "0.22", optional = true }
 chrono = { version = "0.4", default-features = false, features = ["std"], optional = true }
+compcol = { version = "0.6.0", default-features = false, features = ["lznt1", "xpress", "xpress_huffman"] }
 hex = { version = "0.4", optional = true }
 getrandom = { version = "0.3", features = ["std"] }
 hickory-resolver = { version = "0.26.1", default-features = false, features = ["system-config", "tokio"], optional = true }
