@@ -9,6 +9,7 @@
 #[cfg(feature = "evaluation")]
 pub mod evaluation;
 
+pub mod config;
 pub mod keytab;
 
 /// Current crate-level result type.
@@ -29,4 +30,8 @@ pub enum Error {
     /// Keytab parsing or serialization failed.
     #[error("keytab error: {0}")]
     Keytab(#[from] keytab::Error),
+
+    /// krb5.conf parsing failed.
+    #[error("config error: {0}")]
+    Config(#[from] config::Error),
 }
