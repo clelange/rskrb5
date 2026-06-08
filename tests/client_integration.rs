@@ -18,6 +18,8 @@ const USER: &str = "testuser1";
 const PASSWORD: &[u8] = b"passwordvalue";
 const TESTUSER1_SALT: &[u8] = b"TEST.GOKRB5testuser1";
 const AES256_ETYPE: i32 = 18;
+const AES128_SHA2_ETYPE: i32 = 19;
+const AES256_SHA2_ETYPE: i32 = 20;
 const DES3_ETYPE: i32 = 16;
 const RC4_HMAC_ETYPE: i32 = 23;
 const TESTUSER1_KVNO: u32 = 2;
@@ -451,6 +453,58 @@ fn docker_mit_kdc_des3_tgs_service_ticket_through_tcp_and_udp() -> Result<(), Bo
             assert_eq!(ticket.session_key.value.len(), Des3CbcSha1KdEtype.key_len());
             assert!(!ticket.ticket.is_empty());
             assert!(ticket.end_time > ticket.start_time);
+        }
+
+        Ok::<_, Box<dyn Error>>(())
+    })
+}
+
+#[test]
+fn docker_mit_latest_kdc_aes_sha2_as_tgs_through_tcp_and_udp() -> Result<(), Box<dyn Error>> {
+    if std::env::var("INTEGRATION").as_deref() != Ok("1") {
+        eprintln!("skipping Docker KDC integration test; set INTEGRATION=1 to enable");
+        return Ok(());
+    }
+    let _guard = INTEGRATION_LOCK.lock().expect("integration test lock");
+
+    runtime().block_on(async {
+        let addr = latest_kdc_addr();
+        let transport = TokioKdcTransport::new().with_timeout(Duration::from_secs(10));
+
+        for etype in [AES128_SHA2_ETYPE, AES256_SHA2_ETYPE] {
+            for protocol in [KdcProtocol::Udp, KdcProtocol::Tcp] {
+                eprintln!(
+                    "running Docker latest-KDC AES-SHA2 etype {etype} AS/TGS exchange over {protocol:?} to {addr}"
+                );
+                let tgt = transport
+                    .login_tgt_with_password(
+                        protocol,
+                        addr.as_str(),
+                        Principal::user(REALM, USER),
+                        PASSWORD,
+                        login_options_with_etypes(protocol, etype as u32 + 4, vec![etype])?,
+                    )
+                    .await?;
+                assert_eq!(tgt.session_key.etype, etype);
+                assert!(!tgt.session_key.value.is_empty());
+
+                let service = service_principal();
+                let request = build_tgs_req(
+                    &tgt,
+                    service.clone(),
+                    tgs_options_with_etypes(protocol, etype as u32 + 6, vec![etype])?,
+                )?;
+                let ticket = transport
+                    .exchange_tgs_req(protocol, addr.as_str(), &request, &tgt.session_key)
+                    .await?;
+
+                assert_eq!(ticket.client, Principal::user(REALM, USER));
+                assert_eq!(ticket.service, service);
+                assert_eq!(ticket.session_key.etype, etype);
+                assert!(!ticket.session_key.value.is_empty());
+                assert!(!ticket.ticket.is_empty());
+                assert!(ticket.end_time > ticket.start_time);
+            }
         }
 
         Ok::<_, Box<dyn Error>>(())
@@ -987,6 +1041,21 @@ fn short_kdc_addr() -> String {
     }
 
     let port = std::env::var("TEST_SHORT_KDC_PORT").unwrap_or_else(|_| "58".to_owned());
+    format!("{host}:{port}")
+}
+
+fn latest_kdc_addr() -> String {
+    let host = std::env::var("TEST_LATEST_KDC_ADDR")
+        .or_else(|_| std::env::var("TEST_KDC_ADDR"))
+        .unwrap_or_else(|_| "127.0.0.1".to_owned());
+    if host
+        .rsplit_once(':')
+        .is_some_and(|(_, port)| port.parse::<u16>().is_ok())
+    {
+        return host;
+    }
+
+    let port = std::env::var("TEST_LATEST_KDC_PORT").unwrap_or_else(|_| "98".to_owned());
     format!("{host}:{port}")
 }
 
