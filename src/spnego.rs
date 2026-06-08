@@ -10,7 +10,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use base64::Engine as _;
 
 use crate::client::{Principal, TgsRepSession};
-use crate::crypto::AesSha1Etype;
+use crate::crypto::AesEtype;
 use crate::keytab::EncryptionKey;
 use crate::service::{ApRepOptions, ServiceValidator, ValidatedApReq, VerifiedApRep};
 
@@ -688,7 +688,7 @@ pub struct AcceptedContext {
 impl AcceptedContext {
     /// Build a `WWW-Authenticate` header containing an AP-REP response token.
     pub fn ap_rep_response_header(&self, options: ApRepOptions) -> Result<String, Error> {
-        let etype = AesSha1Etype::from_etype_id(self.ap_req.session_key.etype)
+        let etype = AesEtype::from_etype_id(self.ap_req.session_key.etype)
             .ok_or(Error::UnsupportedEtype(self.ap_req.session_key.etype))?;
         let mut confounder = vec![0; etype.confounder_len()];
         getrandom::fill(&mut confounder)?;
@@ -730,7 +730,7 @@ pub fn init_sec_context(
     if options.sequence_number.is_none() {
         options.sequence_number = Some(random_sequence_number()?);
     }
-    let etype = AesSha1Etype::from_etype_id(service_ticket.session_key.etype)
+    let etype = AesEtype::from_etype_id(service_ticket.session_key.etype)
         .ok_or(Error::UnsupportedEtype(service_ticket.session_key.etype))?;
     let mut confounder = vec![0; etype.confounder_len()];
     getrandom::fill(&mut confounder)?;
@@ -761,7 +761,7 @@ pub fn init_sec_context_with_confounder(
         authorization_data: None,
     };
     let authenticator_der = encode("Authenticator", &authenticator)?;
-    let etype = AesSha1Etype::from_etype_id(service_ticket.session_key.etype)
+    let etype = AesEtype::from_etype_id(service_ticket.session_key.etype)
         .ok_or(Error::UnsupportedEtype(service_ticket.session_key.etype))?;
     let cipher = etype.encrypt_message_with_confounder(
         &service_ticket.session_key.value,
@@ -1081,7 +1081,7 @@ fn decrypt_encrypted_data(
     ciphertext: &[u8],
     usage: u32,
 ) -> Result<Vec<u8>, Error> {
-    let etype = AesSha1Etype::from_etype_id(etype_id).ok_or(Error::UnsupportedEtype(etype_id))?;
+    let etype = AesEtype::from_etype_id(etype_id).ok_or(Error::UnsupportedEtype(etype_id))?;
     Ok(etype.decrypt_message(key, ciphertext, usage)?)
 }
 

@@ -20,7 +20,7 @@ pub fn render_markdown() -> String {
     render_candidate_details(&mut out);
 
     out.push_str("## Decision\n\n");
-    out.push_str("Proceed with `rskrb5` as the high-level pure-Rust implementation while reusing permissively licensed ASN.1/data-type crates where they pass gokrb5 vectors. Candidate crates remain useful dependencies or references, but none currently supplies a clean gokrb5-equivalent client/service/SPNEGO API. With SPNEGO client AP-REQ/header generation, config/DNS-backed Tokio KDC discovery, cross-realm TGS referral following, TGT/session renewal, a high-level Tokio client cache, ccache write-back, HTTP/Tower adapters, and an Axum Negotiate example in place, the immediate implementation work is richer cache policy and additional HTTP integration coverage.\n");
+    out.push_str("Proceed with `rskrb5` as the high-level pure-Rust implementation while reusing permissively licensed ASN.1/data-type crates where they pass gokrb5 vectors. Candidate crates remain useful dependencies or references, but none currently supplies a clean gokrb5-equivalent client/service/SPNEGO API. With RFC3962/RFC8009 AES coverage, SPNEGO client AP-REQ/header generation, config/DNS-backed Tokio KDC discovery, cross-realm TGS referral following, TGT/session renewal, a high-level Tokio client cache, ccache write-back, HTTP/Tower adapters, and an Axum Negotiate example in place, the immediate implementation work is GSSAPI MIC/Wrap parity, PAC claims/device buffers, and deeper client/session edge-case coverage.\n");
     out
 }
 

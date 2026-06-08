@@ -21,8 +21,9 @@ pure-Rust Kerberos library.
   config parsing covers libdefaults, realm host mappings, domain realm lookup,
   duration parsing, and configured KDC/KPassword server lookup; ccache parsing
   covers MIT file caches, opaque ticket bytes, server entry lookup, and exact
-  fixture round-trips; crypto covers RFC3961 n-fold and RFC3962
-  AES128/AES256-CTS-HMAC-SHA1-96 string-to-key, AES-CTS, checksums, and
+  fixture round-trips; crypto covers RFC3961 n-fold, RFC3962
+  AES128/AES256-CTS-HMAC-SHA1-96, and RFC8009
+  AES128/AES256-CTS-HMAC-SHA2 string-to-key, KDF, AES-CTS, checksums, and
   deterministic encrypted-message vectors; client AS/TGS exchange primitives
   cover deterministic TGT AS-REQ construction, KRB-ERROR preauthentication
   negotiation, PA-ENC-TIMESTAMP encryption, password/keytab TGT login helpers,
@@ -46,7 +47,7 @@ pure-Rust Kerberos library.
   headers, with a compileable Axum Negotiate example; PAC
   parsing covers the PAC container, KERB_VALIDATION_INFO NDR, client info,
   UPN/DNS info, signature zeroing, authorization-data extraction, resource
-  group SID expansion, and AES-SHA1 service checksum verification.
+  group SID expansion, and AES service checksum verification.
 - `sspi-rs` is treated as a mature Negotiate/Kerberos collaboration or facade
   candidate.
 - `krb5-rs` is not used as a base implementation because the published crate is

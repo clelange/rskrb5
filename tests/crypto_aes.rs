@@ -1,6 +1,7 @@
 use pretty_assertions::assert_eq;
 use rskrb5::crypto::{
-    AesSha1Etype, Error, iterations_to_s2kparams, nfold, s2kparams_to_iterations,
+    AesEtype, AesSha1Etype, AesSha2Etype, Error, iterations_to_s2kparams, nfold,
+    s2kparams_to_iterations,
 };
 
 #[test]
@@ -20,6 +21,42 @@ fn reports_aes_sha1_metadata() {
     assert_eq!(AesSha1Etype::Aes256.checksum_type_id(), 16);
     assert_eq!(AesSha1Etype::Aes256.key_len(), 32);
     assert_eq!(AesSha1Etype::Aes256.default_s2kparams(), "00001000");
+}
+
+#[test]
+fn reports_aes_sha2_metadata_and_dispatch() {
+    assert_eq!(AesSha2Etype::from_etype_id(19), Some(AesSha2Etype::Aes128));
+    assert_eq!(AesSha2Etype::from_etype_id(20), Some(AesSha2Etype::Aes256));
+    assert_eq!(AesSha2Etype::from_etype_id(18), None);
+
+    assert_eq!(AesSha2Etype::Aes128.etype_id(), 19);
+    assert_eq!(AesSha2Etype::Aes128.checksum_type_id(), 19);
+    assert_eq!(AesSha2Etype::Aes128.ename(), "aes128-cts-hmac-sha256-128");
+    assert_eq!(AesSha2Etype::Aes128.key_len(), 16);
+    assert_eq!(AesSha2Etype::Aes128.confounder_len(), 16);
+    assert_eq!(AesSha2Etype::Aes128.hmac_len(), 16);
+    assert_eq!(AesSha2Etype::Aes128.default_s2kparams(), "00008000");
+
+    assert_eq!(AesSha2Etype::Aes256.etype_id(), 20);
+    assert_eq!(AesSha2Etype::Aes256.checksum_type_id(), 20);
+    assert_eq!(AesSha2Etype::Aes256.ename(), "aes256-cts-hmac-sha384-192");
+    assert_eq!(AesSha2Etype::Aes256.key_len(), 32);
+    assert_eq!(AesSha2Etype::Aes256.hmac_len(), 24);
+    assert_eq!(AesSha2Etype::Aes256.default_s2kparams(), "00008000");
+
+    assert_eq!(
+        AesEtype::from_etype_id(17),
+        Some(AesEtype::Sha1(AesSha1Etype::Aes128))
+    );
+    assert_eq!(
+        AesEtype::from_etype_id(20),
+        Some(AesEtype::Sha2(AesSha2Etype::Aes256))
+    );
+    assert_eq!(
+        AesEtype::from_checksum_type_id(19),
+        Some(AesEtype::Sha2(AesSha2Etype::Aes128))
+    );
+    assert_eq!(AesEtype::from_etype_id(23), None);
 }
 
 #[test]
@@ -201,6 +238,147 @@ fn aes256_string_to_key_matches_gokrb5_vectors() {
 }
 
 #[test]
+fn aes_sha2_string_to_key_matches_gokrb5_vectors() {
+    let random = decode_hex("10df9dd783e5bc8acea1730e74355f61");
+    let mut salt = random;
+    salt.extend_from_slice(b"ATHENA.MIT.EDUraeburn");
+
+    let tests = [
+        Sha2StringToKeyVector {
+            etype: AesSha2Etype::Aes128,
+            iterations: 32768,
+            phrase: b"password".as_slice(),
+            salt: salt.as_slice(),
+            saltp: "6165733132382d6374732d686d61632d7368613235362d3132380010df9dd783e5bc8acea1730e74355f61415448454e412e4d49542e4544557261656275726e",
+            key: "089bca48b105ea6ea77ca5d2f39dc5e7",
+        },
+        Sha2StringToKeyVector {
+            etype: AesSha2Etype::Aes256,
+            iterations: 32768,
+            phrase: b"password".as_slice(),
+            salt: salt.as_slice(),
+            saltp: "6165733235362d6374732d686d61632d7368613338342d3139320010df9dd783e5bc8acea1730e74355f61415448454e412e4d49542e4544557261656275726e",
+            key: "45bd806dbf6a833a9cffc1c94589a222367a79bc21c413718906e9f578a78467",
+        },
+    ];
+
+    for test in tests {
+        assert_eq!(hex_encode(&test.etype.saltp(test.salt)), test.saltp);
+        let key = test
+            .etype
+            .string_to_key(
+                test.phrase,
+                test.salt,
+                &iterations_to_s2kparams(test.iterations),
+            )
+            .expect("AES-SHA2 string-to-key succeeds");
+        assert_eq!(hex_encode(&key), test.key);
+    }
+}
+
+#[test]
+fn aes128_sha2_derive_checksum_integrity_and_crypto_match_gokrb5_vectors() {
+    assert_sha2_derive_vectors(
+        AesSha2Etype::Aes128,
+        "3705d96080c17728a0e800eab6e0d23c",
+        "b31a018a48f54776f403e9a396325dc3",
+        "9b197dd1e8c5609d6e67c3e37c62c72e",
+        "9fda0e56ab2d85e1569a688696c26a6c",
+    );
+    assert_sha2_checksum_vector(
+        AesSha2Etype::Aes128,
+        "3705d96080c17728a0e800eab6e0d23c",
+        "000102030405060708090a0b0c0d0e0f1011121314",
+        "d78367186643d67b411cba9139fc1dee",
+    );
+    assert_sha2_crypto_vectors(
+        AesSha2Etype::Aes128,
+        "3705d96080c17728a0e800eab6e0d23c",
+        &[
+            Sha2CryptoVector {
+                plain: "",
+                confounder: "7e5895eaf2672435bad817f545a37148",
+                ke: "9b197dd1e8c5609d6e67c3e37c62c72e",
+                encrypted: "ef85fb890bb8472f4dab20394dca781d",
+                cipher: "ef85fb890bb8472f4dab20394dca781dad877eda39d50c870c0d5a0a8e48c718",
+            },
+            Sha2CryptoVector {
+                plain: "000102030405",
+                confounder: "7bca285e2fd4130fb55b1a5c83bc5b24",
+                ke: "9b197dd1e8c5609d6e67c3e37c62c72e",
+                encrypted: "84d7f30754ed987bab0bf3506beb09cfb55402cef7e6",
+                cipher: "84d7f30754ed987bab0bf3506beb09cfb55402cef7e6877ce99e247e52d16ed4421dfdf8976c",
+            },
+            Sha2CryptoVector {
+                plain: "000102030405060708090a0b0c0d0e0f",
+                confounder: "56ab21713ff62c0a1457200f6fa9948f",
+                ke: "9b197dd1e8c5609d6e67c3e37c62c72e",
+                encrypted: "3517d640f50ddc8ad3628722b3569d2ae07493fa8263254080ea65c1008e8fc2",
+                cipher: "3517d640f50ddc8ad3628722b3569d2ae07493fa8263254080ea65c1008e8fc295fb4852e7d83e1e7c48c37eebe6b0d3",
+            },
+            Sha2CryptoVector {
+                plain: "000102030405060708090a0b0c0d0e0f1011121314",
+                confounder: "a7a4e29a4728ce10664fb64e49ad3fac",
+                ke: "9b197dd1e8c5609d6e67c3e37c62c72e",
+                encrypted: "720f73b18d9859cd6ccb4346115cd336c70f58edc0c4437c5573544c31c813bce1e6d072c1",
+                cipher: "720f73b18d9859cd6ccb4346115cd336c70f58edc0c4437c5573544c31c813bce1e6d072c186b39a413c2f92ca9b8334a287ffcbfc",
+            },
+        ],
+    );
+}
+
+#[test]
+fn aes256_sha2_derive_checksum_integrity_and_crypto_match_gokrb5_vectors() {
+    assert_sha2_derive_vectors(
+        AesSha2Etype::Aes256,
+        "6d404d37faf79f9df0d33568d320669800eb4836472ea8a026d16b7182460c52",
+        "ef5718be86cc84963d8bbb5031e9f5c4ba41f28faf69e73d",
+        "56ab22bee63d82d7bc5227f6773f8ea7a5eb1c825160c38312980c442e5c7e49",
+        "69b16514e3cd8e56b82010d5c73012b622c4d00ffc23ed1f",
+    );
+    assert_sha2_checksum_vector(
+        AesSha2Etype::Aes256,
+        "6d404d37faf79f9df0d33568d320669800eb4836472ea8a026d16b7182460c52",
+        "000102030405060708090a0b0c0d0e0f1011121314",
+        "45ee791567eefca37f4ac1e0222de80d43c3bfa06699672a",
+    );
+    assert_sha2_crypto_vectors(
+        AesSha2Etype::Aes256,
+        "6d404d37faf79f9df0d33568d320669800eb4836472ea8a026d16b7182460c52",
+        &[
+            Sha2CryptoVector {
+                plain: "",
+                confounder: "f764e9fa15c276478b2c7d0c4e5f58e4",
+                ke: "56ab22bee63d82d7bc5227f6773f8ea7a5eb1c825160c38312980c442e5c7e49",
+                encrypted: "41f53fa5bfe7026d91faf9be959195a0",
+                cipher: "41f53fa5bfe7026d91faf9be959195a058707273a96a40f0a01960621ac612748b9bbfbe7eb4ce3c",
+            },
+            Sha2CryptoVector {
+                plain: "000102030405",
+                confounder: "b80d3251c1f6471494256ffe712d0b9a",
+                ke: "56ab22bee63d82d7bc5227f6773f8ea7a5eb1c825160c38312980c442e5c7e49",
+                encrypted: "4ed7b37c2bcac8f74f23c1cf07e62bc7b75fb3f637b9",
+                cipher: "4ed7b37c2bcac8f74f23c1cf07e62bc7b75fb3f637b9f559c7f664f69eab7b6092237526ea0d1f61cb20d69d10f2",
+            },
+            Sha2CryptoVector {
+                plain: "000102030405060708090a0b0c0d0e0f",
+                confounder: "53bf8a0d105265d4e276428624ce5e63",
+                ke: "56ab22bee63d82d7bc5227f6773f8ea7a5eb1c825160c38312980c442e5c7e49",
+                encrypted: "bc47ffec7998eb91e8115cf8d19dac4bbbe2e163e87dd37f49beca92027764f6",
+                cipher: "bc47ffec7998eb91e8115cf8d19dac4bbbe2e163e87dd37f49beca92027764f68cf51f14d798c2273f35df574d1f932e40c4ff255b36a266",
+            },
+            Sha2CryptoVector {
+                plain: "000102030405060708090a0b0c0d0e0f1011121314",
+                confounder: "763e65367e864f02f55153c7e3b58af1",
+                ke: "56ab22bee63d82d7bc5227f6773f8ea7a5eb1c825160c38312980c442e5c7e49",
+                encrypted: "40013e2df58e8751957d2878bcd2d6fe101ccfd556cb1eae79db3c3ee86429f2b2a602ac86",
+                cipher: "40013e2df58e8751957d2878bcd2d6fe101ccfd556cb1eae79db3c3ee86429f2b2a602ac86fef6ecb647d6295fae077a1feb517508d2c16b4192e01f62",
+            },
+        ],
+    );
+}
+
+#[test]
 fn aes_cts_encrypts_and_decrypts_rfc3962_vectors() {
     let key = decode_hex("636869636b656e207465726979616b69");
     let tests = [
@@ -308,6 +486,15 @@ struct StringToKeyVector<'a> {
     key: &'a str,
 }
 
+struct Sha2StringToKeyVector<'a> {
+    etype: AesSha2Etype,
+    iterations: u32,
+    phrase: &'a [u8],
+    salt: &'a [u8],
+    saltp: &'a str,
+    key: &'a str,
+}
+
 fn assert_string_to_key_vectors(etype: AesSha1Etype, tests: &[StringToKeyVector<'_>]) {
     for test in tests {
         let pbkdf2 = etype.string_to_pbkdf2(test.phrase, test.salt, test.iterations);
@@ -321,10 +508,114 @@ fn assert_string_to_key_vectors(etype: AesSha1Etype, tests: &[StringToKeyVector<
     }
 }
 
+struct Sha2CryptoVector<'a> {
+    plain: &'a str,
+    confounder: &'a str,
+    ke: &'a str,
+    encrypted: &'a str,
+    cipher: &'a str,
+}
+
+fn assert_sha2_derive_vectors(
+    etype: AesSha2Etype,
+    key_hex: &str,
+    kc_hex: &str,
+    ke_hex: &str,
+    ki_hex: &str,
+) {
+    let key = decode_hex(key_hex);
+    assert_eq!(
+        hex_encode(
+            &etype
+                .derive_key(&key, &usage_constant(2, 0x99))
+                .expect("Kc derives")
+        ),
+        kc_hex
+    );
+    assert_eq!(
+        hex_encode(
+            &etype
+                .derive_key(&key, &usage_constant(2, 0xaa))
+                .expect("Ke derives")
+        ),
+        ke_hex
+    );
+    assert_eq!(
+        hex_encode(
+            &etype
+                .derive_key(&key, &usage_constant(2, 0x55))
+                .expect("Ki derives")
+        ),
+        ki_hex
+    );
+}
+
+fn assert_sha2_checksum_vector(
+    etype: AesSha2Etype,
+    key_hex: &str,
+    data_hex: &str,
+    checksum_hex: &str,
+) {
+    let key = decode_hex(key_hex);
+    let data = decode_hex(data_hex);
+    let checksum = etype
+        .checksum(&key, &data, 2)
+        .expect("AES-SHA2 checksum succeeds");
+    assert_eq!(hex_encode(&checksum), checksum_hex);
+    assert!(etype.verify_checksum(&key, &data, &checksum, 2));
+    assert!(!etype.verify_checksum(&key, b"tampered", &checksum, 2));
+}
+
+fn assert_sha2_crypto_vectors(etype: AesSha2Etype, key_hex: &str, tests: &[Sha2CryptoVector<'_>]) {
+    let key = decode_hex(key_hex);
+
+    for test in tests {
+        let plain = decode_hex(test.plain);
+        let confounder = decode_hex(test.confounder);
+        let ke = decode_hex(test.ke);
+
+        let mut confounded = confounder.clone();
+        confounded.extend_from_slice(&plain);
+        let (_, encrypted) = etype
+            .encrypt_data(&ke, &confounded)
+            .expect("AES-SHA2 raw data encrypts");
+        assert_eq!(hex_encode(&encrypted), test.encrypted);
+        assert_eq!(
+            etype
+                .decrypt_data(&ke, &encrypted)
+                .expect("AES-SHA2 raw data decrypts"),
+            confounded
+        );
+
+        let cipher = etype
+            .encrypt_message_with_confounder(&key, &plain, 2, &confounder)
+            .expect("AES-SHA2 message encrypts");
+        assert_eq!(hex_encode(&cipher), test.cipher);
+        assert_eq!(
+            etype
+                .decrypt_message(&key, &cipher, 2)
+                .expect("AES-SHA2 message decrypts"),
+            plain
+        );
+
+        let mut tampered = cipher;
+        tampered[0] ^= 0x01;
+        assert!(matches!(
+            etype.decrypt_message(&key, &tampered, 2),
+            Err(Error::IntegrityCheckFailed)
+        ));
+    }
+}
+
 struct AesCtsVector<'a> {
     plain: &'a str,
     cipher: &'a str,
     next_iv: &'a str,
+}
+
+fn usage_constant(usage: u32, suffix: u8) -> [u8; 5] {
+    let usage = usage.to_be_bytes();
+    [usage[0], usage[1], usage[2], usage[3], suffix]
 }
 
 fn assert_checksum_and_message_vector(

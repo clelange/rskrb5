@@ -45,6 +45,7 @@ rasn = { version = "0.28.13", optional = true }
 rasn-kerberos = { version = "0.28.13", features = ["otp"], optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
 sha1 = "0.11.0"
+sha2 = "0.11.0"
 thiserror = "2"
 tokio = { version = "1.47", features = ["net", "io-util", "time", "rt"], optional = true }
 tower_layer = { package = "tower-layer", version = "0.3", optional = true }

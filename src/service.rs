@@ -10,7 +10,7 @@
 use std::collections::HashSet;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use crate::crypto::AesSha1Etype;
+use crate::crypto::AesEtype;
 use crate::keytab::{EncryptionKey, Keytab};
 use crate::pac::{self, Pac};
 
@@ -106,7 +106,7 @@ impl ValidatedApReq {
             seq_number: options.sequence_number,
         };
         let plaintext = encode("EncApRepPart", &enc_part)?;
-        let etype = AesSha1Etype::from_etype_id(self.session_key.etype)
+        let etype = AesEtype::from_etype_id(self.session_key.etype)
             .ok_or(Error::UnsupportedEtype(self.session_key.etype))?;
         let cipher = etype.encrypt_message_with_confounder(
             &self.session_key.value,
@@ -621,7 +621,7 @@ fn decrypt_encrypted_data(
     ciphertext: &[u8],
     usage: u32,
 ) -> Result<Vec<u8>, Error> {
-    let etype = AesSha1Etype::from_etype_id(etype_id).ok_or(Error::UnsupportedEtype(etype_id))?;
+    let etype = AesEtype::from_etype_id(etype_id).ok_or(Error::UnsupportedEtype(etype_id))?;
     Ok(etype.decrypt_message(key, ciphertext, usage)?)
 }
 

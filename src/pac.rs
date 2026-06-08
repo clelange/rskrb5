@@ -2,13 +2,12 @@
 //!
 //! This module covers the PAC surface that gokrb5 consumes on the service
 //! path: the PAC container, KERB_VALIDATION_INFO, client information,
-//! UPN/DNS information, PAC signatures, and AES-SHA1 server checksum
-//! verification.
+//! UPN/DNS information, PAC signatures, and AES server checksum verification.
 
 use std::fmt;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use crate::crypto::{self, AesSha1Etype};
+use crate::crypto::{self, AesEtype};
 use crate::keytab::EncryptionKey;
 
 /// `AD-IF-RELEVANT` authorization-data type.
@@ -43,9 +42,9 @@ pub const CHECKSUM_HMAC_MD5_UNSIGNED: u32 = 0xffff_ff76;
 pub const CHECKSUM_HMAC_SHA1_96_AES128: u32 = 15;
 /// Kerberos AES256 HMAC-SHA1-96 checksum type.
 pub const CHECKSUM_HMAC_SHA1_96_AES256: u32 = 16;
-/// Kerberos AES128 SHA2 checksum type. Parsed, but not verified yet.
+/// Kerberos AES128 SHA2 checksum type.
 pub const CHECKSUM_HMAC_SHA256_128_AES128: u32 = 19;
-/// Kerberos AES256 SHA2 checksum type. Parsed, but not verified yet.
+/// Kerberos AES256 SHA2 checksum type.
 pub const CHECKSUM_HMAC_SHA384_192_AES256: u32 = 20;
 
 const PAC_HEADER_LEN: usize = 8;
@@ -1001,12 +1000,8 @@ fn filetime_tick_duration(ticks: u64) -> Duration {
     )
 }
 
-fn aes_etype_for_checksum_type(signature_type: u32) -> Option<AesSha1Etype> {
-    match signature_type {
-        CHECKSUM_HMAC_SHA1_96_AES128 => Some(AesSha1Etype::Aes128),
-        CHECKSUM_HMAC_SHA1_96_AES256 => Some(AesSha1Etype::Aes256),
-        _ => None,
-    }
+fn aes_etype_for_checksum_type(signature_type: u32) -> Option<AesEtype> {
+    AesEtype::from_checksum_type_id(signature_type.try_into().ok()?)
 }
 
 fn checked_slice<'a>(
