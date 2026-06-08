@@ -7,8 +7,12 @@ use rskrb5::client::{
     KRB_ERR_RESPONSE_TOO_BIG, KdcEndpoint, KdcEndpointSource, KdcProtocol, TokioKdcTransport,
 };
 use rskrb5::config::Config;
+use rskrb5::kadmin::Request as KpasswdRequest;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, UdpSocket};
+
+const MARSHALLED_KPASSWD_REQ: &str = include_str!("fixtures/kpasswd-request.hex");
+const KPASSWD_HEADER_LEN: usize = 6;
 
 #[test]
 fn tokio_transport_sends_udp_datagram() -> Result<(), Box<dyn Error>> {
@@ -228,6 +232,43 @@ fn tokio_transport_sends_tcp_to_configured_kpasswd_server() -> Result<(), Box<dy
 
         task.await?;
         assert_eq!(response, b"kpasswd-tcp-rep");
+        Ok::<_, Box<dyn Error>>(())
+    })
+}
+
+#[test]
+fn tokio_transport_exchanges_configured_kpasswd_request() -> Result<(), Box<dyn Error>> {
+    runtime().block_on(async {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let addr = listener.local_addr()?;
+        let config = config_with_kpasswd_servers([addr.to_string()], 1465);
+        let request = KpasswdRequest::parse(&decode_hex(MARSHALLED_KPASSWD_REQ))?;
+        let expected_request = request.encode()?;
+        let response = kpasswd_reply_frame(0, &response_too_big_error());
+        let expected_response_len = response.len();
+        let task = tokio::spawn(async move {
+            let (request, mut socket) = read_tcp_request(&listener).await;
+            assert_eq!(request, expected_request);
+            write_tcp_response(&mut socket, &response).await;
+        });
+
+        let reply = TokioKdcTransport::new()
+            .with_timeout(Duration::from_secs(2))
+            .exchange_kpasswd_request_with_config(
+                &config,
+                KdcProtocol::Tcp,
+                "TEST.GOKRB5",
+                &request,
+            )
+            .await?;
+
+        task.await?;
+        assert!(reply.is_krb_error());
+        assert_eq!(reply.message_length as usize, expected_response_len);
+        assert_eq!(
+            reply.krb_error.expect("KRB-ERROR parsed").error_code,
+            KRB_ERR_RESPONSE_TOO_BIG
+        );
         Ok::<_, Box<dyn Error>>(())
     })
 }
@@ -467,6 +508,41 @@ fn response_too_big_error() -> Vec<u8> {
         e_data: None,
     };
     rasn::der::encode(&error).expect("KRB-ERROR encodes")
+}
+
+fn kpasswd_reply_frame(ap_rep_length: u16, body: &[u8]) -> Vec<u8> {
+    let message_length = KPASSWD_HEADER_LEN + body.len();
+    assert!(u16::try_from(message_length).is_ok());
+
+    let mut frame = Vec::with_capacity(message_length);
+    frame.extend_from_slice(&(message_length as u16).to_be_bytes());
+    frame.extend_from_slice(&1u16.to_be_bytes());
+    frame.extend_from_slice(&ap_rep_length.to_be_bytes());
+    frame.extend_from_slice(body);
+    frame
+}
+
+fn decode_hex(input: &str) -> Vec<u8> {
+    let input = input.trim();
+    assert_eq!(input.len() % 2, 0, "hex input has even length");
+    input
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair| {
+            let hi = hex_nibble(pair[0]);
+            let lo = hex_nibble(pair[1]);
+            (hi << 4) | lo
+        })
+        .collect()
+}
+
+fn hex_nibble(value: u8) -> u8 {
+    match value {
+        b'0'..=b'9' => value - b'0',
+        b'a'..=b'f' => value - b'a' + 10,
+        b'A'..=b'F' => value - b'A' + 10,
+        _ => panic!("invalid hex digit: {value}"),
+    }
 }
 
 fn kerberos_time(seconds: i64) -> rasn_kerberos::KerberosTime {

@@ -1212,6 +1212,36 @@ impl TokioKdcTransport {
             .await
     }
 
+    /// Send a framed kpasswd request through Tokio transport and parse the reply.
+    pub async fn exchange_kpasswd_request<A>(
+        &self,
+        protocol: KdcProtocol,
+        addr: A,
+        request: &crate::kadmin::Request,
+    ) -> Result<crate::kadmin::Reply, Error>
+    where
+        A: ToSocketAddrs + Clone,
+    {
+        let frame = request.encode()?;
+        let response = self.send(protocol, addr, &frame).await?;
+        Ok(crate::kadmin::Reply::parse(&response)?)
+    }
+
+    /// Send a framed kpasswd request to a configured kpasswd server and parse the reply.
+    pub async fn exchange_kpasswd_request_with_config(
+        &self,
+        config: &Config,
+        protocol: KdcProtocol,
+        realm: &str,
+        request: &crate::kadmin::Request,
+    ) -> Result<crate::kadmin::Reply, Error> {
+        let frame = request.encode()?;
+        let response = self
+            .send_to_kpasswd_realm(config, protocol, realm, &frame)
+            .await?;
+        Ok(crate::kadmin::Reply::parse(&response)?)
+    }
+
     /// Send an AS-REQ through Tokio transport and process the returned AS-REP.
     pub async fn exchange_as_req<A>(
         &self,
@@ -2598,6 +2628,10 @@ pub enum Error {
     /// Credential cache operation failed.
     #[error("ccache error: {0}")]
     CCache(#[from] crate::ccache::Error),
+
+    /// kadmin protocol processing failed.
+    #[error("kadmin error: {0}")]
+    Kadmin(#[from] crate::kadmin::Error),
 
     /// Random byte generation failed.
     #[error("random byte generation failed: {0}")]
