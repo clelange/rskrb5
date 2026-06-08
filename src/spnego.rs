@@ -9,7 +9,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use base64::Engine as _;
 
-use crate::client::{Principal, TgsRepSession};
+use crate::client::{ApReqOptions, Principal, TgsRepSession, build_ap_req_with_confounder};
 use crate::crypto::KerberosEtype;
 use crate::keytab::EncryptionKey;
 use crate::service::{ApRepOptions, ServiceValidator, ValidatedApReq, VerifiedApRep};
@@ -31,11 +31,8 @@ const TOK_ID_KRB_ERROR: [u8; 2] = [0x03, 0x00];
 const TOK_ID_GSS_MIC: [u8; 2] = [0x04, 0x04];
 const TOK_ID_GSS_WRAP: [u8; 2] = [0x05, 0x04];
 const KRB5_PVNO: i32 = 5;
-const KRB_AP_REQ_MSG_TYPE: i32 = 14;
 const KRB_AP_REP_MSG_TYPE: i32 = 15;
-const AP_REQ_AUTHENTICATOR_USAGE: u32 = 11;
 const AP_REP_ENCPART_USAGE: u32 = 12;
-const TGS_REQ_AP_REQ_AUTHENTICATOR_USAGE: u32 = 7;
 const GSSAPI_CHECKSUM_TYPE: i32 = 32_771;
 const GSS_MIC_HEADER_LEN: usize = 16;
 const GSS_WRAP_HEADER_LEN: usize = 16;
@@ -1196,64 +1193,36 @@ pub fn init_sec_context_with_confounder(
     cusec: u32,
     confounder: &[u8],
 ) -> Result<InitiatorContext, Error> {
-    let ticket = decode::<rasn_kerberos::Ticket>("Ticket", &service_ticket.ticket)?;
-    let authenticator = rasn_kerberos::Authenticator {
-        authenticator_vno: rasn::types::Integer::from(KRB5_PVNO),
-        crealm: kerberos_string(&service_ticket.client.realm)?,
-        cname: principal_to_rasn(&service_ticket.client)?,
-        cksum: Some(rasn_kerberos::Checksum {
+    let ap_req_options = ApReqOptions::new()
+        .with_ap_option_bits(options.ap_option_bits)
+        .with_checksum(Some(rasn_kerberos::Checksum {
             r#type: GSSAPI_CHECKSUM_TYPE,
             checksum: authenticator_checksum(&options.context_flags).into(),
-        }),
-        cusec: rasn::types::Integer::from(cusec),
-        ctime: kerberos_time_from_system_time(timestamp)?,
-        subkey: options.subkey.as_ref().map(encryption_key_to_rasn),
-        seq_number: options.sequence_number,
-        authorization_data: None,
-    };
-    let authenticator_der = encode("Authenticator", &authenticator)?;
-    let etype = KerberosEtype::from_etype_id(service_ticket.session_key.etype)
-        .ok_or(Error::UnsupportedEtype(service_ticket.session_key.etype))?;
-    let cipher = etype.encrypt_message_with_confounder(
-        &service_ticket.session_key.value,
-        &authenticator_der,
-        authenticator_usage(&ticket.sname),
-        confounder,
-    )?;
-    let authenticator_kvno = ticket.enc_part.kvno;
-    let ap_req = rasn_kerberos::ApReq {
-        pvno: rasn::types::Integer::from(KRB5_PVNO),
-        msg_type: rasn::types::Integer::from(KRB_AP_REQ_MSG_TYPE),
-        ap_options: rasn_kerberos::ApOptions(kerberos_flags_from_bits(options.ap_option_bits)),
-        ticket,
-        authenticator: rasn_kerberos::EncryptedData {
-            etype: service_ticket.session_key.etype,
-            kvno: authenticator_kvno,
-            cipher: cipher.into(),
-        },
-    };
-    let ap_req_der = encode("AP-REQ", &ap_req)?;
+        }))
+        .with_subkey(options.subkey.clone())
+        .with_sequence_number(options.sequence_number);
+    let built_ap_req =
+        build_ap_req_with_confounder(service_ticket, ap_req_options, timestamp, cusec, confounder)
+            .map_err(client_error_to_spnego)?;
+    let ap_req_der = built_ap_req.der.clone();
     let krb5_token = Krb5MechToken::ap_req(ap_req_der.clone());
     let krb5_token_der = krb5_token.encode()?;
     let spnego_token = SpnegoToken::Init(NegTokenInit::krb5(krb5_token_der));
     let header = negotiate_header(&spnego_token)?;
-    let authenticator_time = timestamp
-        .checked_add(Duration::from_micros(cusec.into()))
-        .ok_or(Error::TimeOverflow)?;
 
     Ok(InitiatorContext {
-        ap_req,
+        ap_req: built_ap_req.message,
         ap_req_der,
         krb5_token,
         spnego_token,
         header,
-        client: service_ticket.client.clone(),
-        service: service_ticket.service.clone(),
-        session_key: service_ticket.session_key.clone(),
-        authenticator_ctime: timestamp,
-        authenticator_cusec: cusec,
-        authenticator_time,
-        sequence_number: options.sequence_number,
+        client: built_ap_req.client,
+        service: built_ap_req.service,
+        session_key: built_ap_req.session_key,
+        authenticator_ctime: built_ap_req.authenticator_ctime,
+        authenticator_cusec: built_ap_req.authenticator_cusec,
+        authenticator_time: built_ap_req.authenticator_time,
+        sequence_number: built_ap_req.sequence_number,
     })
 }
 
@@ -1679,6 +1648,10 @@ pub enum Error {
     /// Service AP-REQ validation failed.
     #[error("service validation error: {0}")]
     Service(#[from] crate::service::Error),
+
+    /// Client AP-REQ construction failed.
+    #[error("client AP-REQ construction error: {0}")]
+    Client(String),
 }
 
 fn decode<T>(target: &'static str, bytes: &[u8]) -> Result<T, Error>
@@ -1686,16 +1659,6 @@ where
     T: rasn::Decode,
 {
     rasn::der::decode(bytes).map_err(|source| Error::Decode {
-        target,
-        message: source.to_string(),
-    })
-}
-
-fn encode<T>(target: &'static str, value: &T) -> Result<Vec<u8>, Error>
-where
-    T: rasn::Encode,
-{
-    rasn::der::encode(value).map_err(|source| Error::Encode {
         target,
         message: source.to_string(),
     })
@@ -1737,29 +1700,6 @@ fn integer_to_u32(field: &'static str, value: &rasn::types::Integer) -> Result<u
         })
 }
 
-fn principal_to_rasn(value: &Principal) -> Result<rasn_kerberos::PrincipalName, Error> {
-    Ok(rasn_kerberos::PrincipalName {
-        r#type: value.name_type,
-        string: value
-            .components
-            .iter()
-            .map(|component| kerberos_string(component))
-            .collect::<Result<Vec<_>, _>>()?,
-    })
-}
-
-fn kerberos_string(value: &str) -> Result<rasn_kerberos::KerberosString, Error> {
-    rasn_kerberos::KerberosString::from_bytes(value.as_bytes())
-        .map_err(|source| Error::InvalidKerberosString(source.to_string()))
-}
-
-fn encryption_key_to_rasn(key: &EncryptionKey) -> rasn_kerberos::EncryptionKey {
-    rasn_kerberos::EncryptionKey {
-        r#type: key.etype,
-        value: key.value.clone().into(),
-    }
-}
-
 fn encryption_key_from_rasn(value: &rasn_kerberos::EncryptionKey) -> EncryptionKey {
     EncryptionKey {
         etype: value.r#type,
@@ -1767,20 +1707,22 @@ fn encryption_key_from_rasn(value: &rasn_kerberos::EncryptionKey) -> EncryptionK
     }
 }
 
-fn authenticator_usage(service: &rasn_kerberos::PrincipalName) -> u32 {
-    if service
-        .string
-        .first()
-        .is_some_and(|component| component.as_bytes() == b"krbtgt")
-    {
-        TGS_REQ_AP_REQ_AUTHENTICATOR_USAGE
-    } else {
-        AP_REQ_AUTHENTICATOR_USAGE
+fn client_error_to_spnego(error: crate::client::Error) -> Error {
+    match error {
+        crate::client::Error::Decode { target, message } => Error::Decode { target, message },
+        crate::client::Error::Encode { target, message } => Error::Encode { target, message },
+        crate::client::Error::InvalidString(source) => {
+            Error::InvalidKerberosString(source.to_string())
+        }
+        crate::client::Error::InvalidKerberosString(message) => {
+            Error::InvalidKerberosString(message)
+        }
+        crate::client::Error::UnsupportedEtype(etype) => Error::UnsupportedEtype(etype),
+        crate::client::Error::Crypto(source) => Error::Crypto(source),
+        crate::client::Error::Random(source) => Error::Random(source),
+        crate::client::Error::TimeOverflow => Error::TimeOverflow,
+        other => Error::Client(other.to_string()),
     }
-}
-
-fn kerberos_flags_from_bits(bits: u32) -> rasn_kerberos::KerberosFlags {
-    rasn_kerberos::KerberosFlags::from_slice(&bits.to_be_bytes())
 }
 
 fn current_time() -> Result<(SystemTime, u32), Error> {
@@ -1798,31 +1740,6 @@ fn random_sequence_number() -> Result<u32, Error> {
     let mut bytes = [0; 4];
     getrandom::fill(&mut bytes)?;
     Ok(u32::from_be_bytes(bytes) & 0x3fff_ffff)
-}
-
-fn kerberos_time_from_system_time(time: SystemTime) -> Result<rasn_kerberos::KerberosTime, Error> {
-    let seconds = match time.duration_since(UNIX_EPOCH) {
-        Ok(duration) => duration
-            .as_secs()
-            .try_into()
-            .map_err(|_| Error::TimeOverflow)?,
-        Err(source) => {
-            let duration = source.duration();
-            let seconds: i64 = duration
-                .as_secs()
-                .try_into()
-                .map_err(|_| Error::TimeOverflow)?;
-            if duration.subsec_nanos() == 0 {
-                -seconds
-            } else {
-                -seconds.checked_add(1).ok_or(Error::TimeOverflow)?
-            }
-        }
-    };
-    let utc =
-        chrono::DateTime::<chrono::Utc>::from_timestamp(seconds, 0).ok_or(Error::TimeOverflow)?;
-    let offset = chrono::FixedOffset::east_opt(0).ok_or(Error::TimeOverflow)?;
-    Ok(rasn_kerberos::KerberosTime(utc.with_timezone(&offset)))
 }
 
 fn system_time_from_kerberos_time(time: &rasn_kerberos::KerberosTime) -> Result<SystemTime, Error> {
