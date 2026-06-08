@@ -4,10 +4,14 @@ use std::error::Error;
 use std::time::Duration;
 
 use rskrb5::client::{
-    KRB_ERR_RESPONSE_TOO_BIG, KdcEndpoint, KdcEndpointSource, KdcProtocol, TokioKdcTransport,
+    Error as ClientError, KRB_ERR_RESPONSE_TOO_BIG, KdcEndpoint, KdcEndpointSource, KdcProtocol,
+    TokioKdcTransport,
 };
 use rskrb5::config::Config;
-use rskrb5::kadmin::Request as KpasswdRequest;
+use rskrb5::kadmin::{
+    Error as KadminError, KPASSWD_AUTHERROR, KPASSWD_SUCCESS, Request as KpasswdRequest,
+};
+use rskrb5::keytab::EncryptionKey;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, UdpSocket};
 
@@ -274,6 +278,82 @@ fn tokio_transport_exchanges_configured_kpasswd_request() -> Result<(), Box<dyn 
 }
 
 #[test]
+fn tokio_transport_exchanges_configured_kpasswd_success_result() -> Result<(), Box<dyn Error>> {
+    runtime().block_on(async {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let addr = listener.local_addr()?;
+        let config = config_with_kpasswd_servers([addr.to_string()], 1465);
+        let request = KpasswdRequest::parse(&decode_hex(MARSHALLED_KPASSWD_REQ))?;
+        let expected_request = request.encode()?;
+        let response = kpasswd_reply_frame(
+            0,
+            &kpasswd_result_krb_error(KPASSWD_SUCCESS, "password changed"),
+        );
+        let task = tokio::spawn(async move {
+            let (request, mut socket) = read_tcp_request(&listener).await;
+            assert_eq!(request, expected_request);
+            write_tcp_response(&mut socket, &response).await;
+        });
+
+        let result = TokioKdcTransport::new()
+            .with_timeout(Duration::from_secs(2))
+            .exchange_kpasswd_result_with_config(
+                &config,
+                KdcProtocol::Tcp,
+                "TEST.GOKRB5",
+                &request,
+                &reply_key(),
+            )
+            .await?;
+
+        task.await?;
+        assert_eq!(result.code, KPASSWD_SUCCESS);
+        assert_eq!(result.text, "password changed");
+        Ok::<_, Box<dyn Error>>(())
+    })
+}
+
+#[test]
+fn tokio_transport_exchanges_configured_kpasswd_failure_result() -> Result<(), Box<dyn Error>> {
+    runtime().block_on(async {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let addr = listener.local_addr()?;
+        let config = config_with_kpasswd_servers([addr.to_string()], 1465);
+        let request = KpasswdRequest::parse(&decode_hex(MARSHALLED_KPASSWD_REQ))?;
+        let expected_request = request.encode()?;
+        let response = kpasswd_reply_frame(
+            0,
+            &kpasswd_result_krb_error(KPASSWD_AUTHERROR, "authentication failed"),
+        );
+        let task = tokio::spawn(async move {
+            let (request, mut socket) = read_tcp_request(&listener).await;
+            assert_eq!(request, expected_request);
+            write_tcp_response(&mut socket, &response).await;
+        });
+
+        let error = TokioKdcTransport::new()
+            .with_timeout(Duration::from_secs(2))
+            .exchange_kpasswd_result_with_config(
+                &config,
+                KdcProtocol::Tcp,
+                "TEST.GOKRB5",
+                &request,
+                &reply_key(),
+            )
+            .await
+            .expect_err("non-zero kpasswd result returns error");
+
+        task.await?;
+        assert!(matches!(
+            error,
+            ClientError::Kadmin(KadminError::PasswordChangeFailed { code, text })
+                if code == KPASSWD_AUTHERROR && text == "authentication failed"
+        ));
+        Ok::<_, Box<dyn Error>>(())
+    })
+}
+
+#[test]
 fn tokio_transport_tries_next_configured_kdc_after_tcp_failure() -> Result<(), Box<dyn Error>> {
     runtime().block_on(async {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
@@ -508,6 +588,36 @@ fn response_too_big_error() -> Vec<u8> {
         e_data: None,
     };
     rasn::der::encode(&error).expect("KRB-ERROR encodes")
+}
+
+fn kpasswd_result_krb_error(code: u16, text: &str) -> Vec<u8> {
+    let mut e_data = Vec::with_capacity(2 + text.len());
+    e_data.extend_from_slice(&code.to_be_bytes());
+    e_data.extend_from_slice(text.as_bytes());
+
+    let error = rasn_kerberos::KrbError {
+        pvno: rasn::types::Integer::from(5),
+        msg_type: rasn::types::Integer::from(30),
+        ctime: None,
+        cusec: None,
+        stime: kerberos_time(1_893_553_440),
+        susec: rasn::types::Integer::from(0),
+        error_code: KRB_ERR_RESPONSE_TOO_BIG,
+        crealm: None,
+        cname: None,
+        realm: realm("TEST.GOKRB5"),
+        sname: rasn_principal(&["kadmin", "changepw"]),
+        e_text: Some(kerberos_string(text)),
+        e_data: Some(e_data.into()),
+    };
+    rasn::der::encode(&error).expect("KRB-ERROR encodes")
+}
+
+fn reply_key() -> EncryptionKey {
+    EncryptionKey {
+        etype: 18,
+        value: vec![0; 32],
+    }
 }
 
 fn kpasswd_reply_frame(ap_rep_length: u16, body: &[u8]) -> Vec<u8> {

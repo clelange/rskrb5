@@ -1242,6 +1242,42 @@ impl TokioKdcTransport {
         Ok(crate::kadmin::Reply::parse(&response)?)
     }
 
+    /// Send a framed kpasswd request and return a checked password-change result.
+    pub async fn exchange_kpasswd_result<A>(
+        &self,
+        protocol: KdcProtocol,
+        addr: A,
+        request: &crate::kadmin::Request,
+        reply_key: &EncryptionKey,
+    ) -> Result<crate::kadmin::ChangePasswordResult, Error>
+    where
+        A: ToSocketAddrs + Clone,
+    {
+        let reply = self
+            .exchange_kpasswd_request(protocol, addr, request)
+            .await?;
+        let result = reply.decrypt_result(reply_key)?;
+        result.ensure_success()?;
+        Ok(result)
+    }
+
+    /// Send a framed kpasswd request to a configured server and return a checked result.
+    pub async fn exchange_kpasswd_result_with_config(
+        &self,
+        config: &Config,
+        protocol: KdcProtocol,
+        realm: &str,
+        request: &crate::kadmin::Request,
+        reply_key: &EncryptionKey,
+    ) -> Result<crate::kadmin::ChangePasswordResult, Error> {
+        let reply = self
+            .exchange_kpasswd_request_with_config(config, protocol, realm, request)
+            .await?;
+        let result = reply.decrypt_result(reply_key)?;
+        result.ensure_success()?;
+        Ok(result)
+    }
+
     /// Send an AS-REQ through Tokio transport and process the returned AS-REP.
     pub async fn exchange_as_req<A>(
         &self,
