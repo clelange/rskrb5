@@ -5,8 +5,8 @@ mod data;
 use std::fmt::Write as _;
 
 pub use data::{
-    ASSESSMENTS, Candidate, CandidateAssessment, CandidateReport, Capability, ContractArea,
-    REPORTS, Support, SupportByArea, V8_CONTRACT,
+    ASN1_FIXTURES, ASSESSMENTS, Asn1Fixture, Candidate, CandidateAssessment, CandidateReport,
+    Capability, ContractArea, DerType, REPORTS, Support, SupportByArea, V8_CONTRACT,
 };
 
 /// Render the current compatibility matrix as Markdown.
@@ -16,6 +16,7 @@ pub fn render_markdown() -> String {
 
     render_contract(&mut out);
     render_decision_matrix(&mut out);
+    render_asn1_fixture_matrix(&mut out);
     render_candidate_details(&mut out);
 
     out.push_str("## Decision\n\n");
@@ -58,6 +59,25 @@ fn render_decision_matrix(out: &mut String) {
             write!(out, " {support} |").expect("writing to String cannot fail");
         }
         out.push('\n');
+    }
+    out.push('\n');
+}
+
+fn render_asn1_fixture_matrix(out: &mut String) {
+    out.push_str("## ASN.1 Fixture Probe Matrix\n\n");
+    out.push_str("| Fixture | Type | gokrb5 test | rasn-kerberos | picky-krb |\n");
+    out.push_str("|---|---|---|---:|---:|\n");
+    for fixture in ASN1_FIXTURES {
+        writeln!(
+            out,
+            "| `{}` | {} | {} | {} | {} |",
+            fixture.gokrb5_constant,
+            fixture.der_type.name(),
+            fixture.gokrb5_test,
+            fixture.rasn_kerberos,
+            fixture.picky_krb
+        )
+        .expect("writing to String cannot fail");
     }
     out.push('\n');
 }

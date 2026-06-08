@@ -95,6 +95,102 @@ pub struct ContractArea {
     pub porting_note: &'static str,
 }
 
+/// DER shape represented by a gokrb5 ASN.1 fixture.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DerType {
+    /// RFC 4120 Authenticator.
+    Authenticator,
+    /// RFC 4120 Ticket.
+    Ticket,
+    /// RFC 4120 encrypted ticket part.
+    EncTicketPart,
+    /// KDC request body.
+    KdcReqBody,
+    /// AS-REQ.
+    AsReq,
+    /// TGS-REQ.
+    TgsReq,
+    /// AS-REP.
+    AsRep,
+    /// TGS-REP.
+    TgsRep,
+    /// Encrypted TGS reply part.
+    EncTgsRepPart,
+    /// AP-REQ.
+    ApReq,
+    /// AP-REP.
+    ApRep,
+    /// Encrypted AP reply part.
+    EncApRepPart,
+    /// KRB-SAFE.
+    KrbSafe,
+    /// KRB-PRIV.
+    KrbPriv,
+    /// Encrypted KRB-PRIV part.
+    EncKrbPrivPart,
+    /// KRB-CRED.
+    KrbCred,
+    /// Encrypted KRB-CRED part.
+    EncKrbCredPart,
+    /// KRB-ERROR.
+    KrbError,
+    /// AuthorizationData sequence.
+    AuthorizationData,
+    /// TypedData sequence.
+    TypedData,
+    /// PA-ENC-TS-ENC.
+    PaEncTsEnc,
+    /// EncryptedData.
+    EncryptedData,
+}
+
+impl DerType {
+    /// Display name used in reports.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Authenticator => "Authenticator",
+            Self::Ticket => "Ticket",
+            Self::EncTicketPart => "EncTicketPart",
+            Self::KdcReqBody => "KdcReqBody",
+            Self::AsReq => "AS-REQ",
+            Self::TgsReq => "TGS-REQ",
+            Self::AsRep => "AS-REP",
+            Self::TgsRep => "TGS-REP",
+            Self::EncTgsRepPart => "EncTgsRepPart",
+            Self::ApReq => "AP-REQ",
+            Self::ApRep => "AP-REP",
+            Self::EncApRepPart => "EncApRepPart",
+            Self::KrbSafe => "KRB-SAFE",
+            Self::KrbPriv => "KRB-PRIV",
+            Self::EncKrbPrivPart => "EncKrbPrivPart",
+            Self::KrbCred => "KRB-CRED",
+            Self::EncKrbCredPart => "EncKrbCredPart",
+            Self::KrbError => "KRB-ERROR",
+            Self::AuthorizationData => "AuthorizationData",
+            Self::TypedData => "TypedData",
+            Self::PaEncTsEnc => "PA-ENC-TS-ENC",
+            Self::EncryptedData => "EncryptedData",
+        }
+    }
+}
+
+/// One gokrb5 DER fixture used to measure candidate ASN.1 coverage.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Asn1Fixture {
+    /// Stable short id used by tests.
+    pub id: &'static str,
+    /// gokrb5 testdata constant name.
+    pub gokrb5_constant: &'static str,
+    /// gokrb5 test file where the fixture is exercised.
+    pub gokrb5_test: &'static str,
+    /// DER shape.
+    pub der_type: DerType,
+    /// Expected `rasn-kerberos` decode support for this fixture.
+    pub rasn_kerberos: Support,
+    /// Expected `picky-krb` decode support for this fixture.
+    pub picky_krb: Support,
+}
+
 /// One row in a candidate-specific detail table.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Capability {
@@ -216,6 +312,186 @@ pub const V8_CONTRACT: &[ContractArea] = &[
         gokrb5_tests: "client/*_integration_test.go, credentials/*_integration_test.go, spnego/http_test.go",
         gate: "INTEGRATION=1, TESTPRIVILEGED=1, TESTAD=1",
         porting_note: "Reuse gokrb5 MIT KDC, DNS, short-ticket, referral-domain, HTTP, and AD gates where possible.",
+    },
+];
+
+/// Representative gokrb5 ASN.1 fixtures used for the first dependency decision.
+pub const ASN1_FIXTURES: &[Asn1Fixture] = &[
+    Asn1Fixture {
+        id: "authenticator",
+        gokrb5_constant: "MarshaledKRB5authenticator",
+        gokrb5_test: "types/Authenticator_test.go",
+        der_type: DerType::Authenticator,
+        rasn_kerberos: Support::Yes,
+        picky_krb: Support::Yes,
+    },
+    Asn1Fixture {
+        id: "ticket",
+        gokrb5_constant: "MarshaledKRB5ticket",
+        gokrb5_test: "messages/Ticket_test.go",
+        der_type: DerType::Ticket,
+        rasn_kerberos: Support::Yes,
+        picky_krb: Support::Yes,
+    },
+    Asn1Fixture {
+        id: "enc_ticket_part",
+        gokrb5_constant: "MarshaledKRB5enc_tkt_part",
+        gokrb5_test: "messages/Ticket_test.go",
+        der_type: DerType::EncTicketPart,
+        rasn_kerberos: Support::Yes,
+        picky_krb: Support::Yes,
+    },
+    Asn1Fixture {
+        id: "kdc_req_body",
+        gokrb5_constant: "MarshaledKRB5kdc_req_body",
+        gokrb5_test: "messages/KDCReq_test.go",
+        der_type: DerType::KdcReqBody,
+        rasn_kerberos: Support::Yes,
+        picky_krb: Support::Yes,
+    },
+    Asn1Fixture {
+        id: "as_req",
+        gokrb5_constant: "MarshaledKRB5as_req",
+        gokrb5_test: "messages/KDCReq_test.go",
+        der_type: DerType::AsReq,
+        rasn_kerberos: Support::Yes,
+        picky_krb: Support::Yes,
+    },
+    Asn1Fixture {
+        id: "tgs_req",
+        gokrb5_constant: "MarshaledKRB5tgs_req",
+        gokrb5_test: "messages/KDCReq_test.go",
+        der_type: DerType::TgsReq,
+        rasn_kerberos: Support::Yes,
+        picky_krb: Support::Yes,
+    },
+    Asn1Fixture {
+        id: "as_rep",
+        gokrb5_constant: "MarshaledKRB5as_rep",
+        gokrb5_test: "messages/KDCRep_test.go",
+        der_type: DerType::AsRep,
+        rasn_kerberos: Support::Yes,
+        picky_krb: Support::Yes,
+    },
+    Asn1Fixture {
+        id: "tgs_rep",
+        gokrb5_constant: "MarshaledKRB5tgs_rep",
+        gokrb5_test: "messages/KDCRep_test.go",
+        der_type: DerType::TgsRep,
+        rasn_kerberos: Support::Yes,
+        picky_krb: Support::Yes,
+    },
+    Asn1Fixture {
+        id: "enc_tgs_rep_part",
+        gokrb5_constant: "MarshaledKRB5enc_kdc_rep_part",
+        gokrb5_test: "messages/KDCRep_test.go",
+        der_type: DerType::EncTgsRepPart,
+        rasn_kerberos: Support::Yes,
+        picky_krb: Support::Yes,
+    },
+    Asn1Fixture {
+        id: "ap_req",
+        gokrb5_constant: "MarshaledKRB5ap_req",
+        gokrb5_test: "messages/APReq_test.go",
+        der_type: DerType::ApReq,
+        rasn_kerberos: Support::Yes,
+        picky_krb: Support::Yes,
+    },
+    Asn1Fixture {
+        id: "ap_rep",
+        gokrb5_constant: "MarshaledKRB5ap_rep",
+        gokrb5_test: "messages/APRep_test.go",
+        der_type: DerType::ApRep,
+        rasn_kerberos: Support::Yes,
+        picky_krb: Support::Yes,
+    },
+    Asn1Fixture {
+        id: "enc_ap_rep_part",
+        gokrb5_constant: "MarshaledKRB5ap_rep_enc_part",
+        gokrb5_test: "messages/APRep_test.go",
+        der_type: DerType::EncApRepPart,
+        rasn_kerberos: Support::Yes,
+        picky_krb: Support::Yes,
+    },
+    Asn1Fixture {
+        id: "krb_safe",
+        gokrb5_constant: "MarshaledKRB5safe",
+        gokrb5_test: "messages/KRBSafe_test.go",
+        der_type: DerType::KrbSafe,
+        rasn_kerberos: Support::Yes,
+        picky_krb: Support::No,
+    },
+    Asn1Fixture {
+        id: "krb_priv",
+        gokrb5_constant: "MarshaledKRB5priv",
+        gokrb5_test: "messages/KRBPriv_test.go",
+        der_type: DerType::KrbPriv,
+        rasn_kerberos: Support::Yes,
+        picky_krb: Support::Yes,
+    },
+    Asn1Fixture {
+        id: "enc_krb_priv_part",
+        gokrb5_constant: "MarshaledKRB5enc_priv_part",
+        gokrb5_test: "messages/KRBPriv_test.go",
+        der_type: DerType::EncKrbPrivPart,
+        rasn_kerberos: Support::Yes,
+        picky_krb: Support::Yes,
+    },
+    Asn1Fixture {
+        id: "krb_cred",
+        gokrb5_constant: "MarshaledKRB5cred",
+        gokrb5_test: "messages/KRBCred_test.go",
+        der_type: DerType::KrbCred,
+        rasn_kerberos: Support::Yes,
+        picky_krb: Support::No,
+    },
+    Asn1Fixture {
+        id: "enc_krb_cred_part",
+        gokrb5_constant: "MarshaledKRB5enc_cred_part",
+        gokrb5_test: "messages/KRBCred_test.go",
+        der_type: DerType::EncKrbCredPart,
+        rasn_kerberos: Support::Yes,
+        picky_krb: Support::No,
+    },
+    Asn1Fixture {
+        id: "krb_error",
+        gokrb5_constant: "MarshaledKRB5error",
+        gokrb5_test: "messages/KRBError_test.go",
+        der_type: DerType::KrbError,
+        rasn_kerberos: Support::Yes,
+        picky_krb: Support::Yes,
+    },
+    Asn1Fixture {
+        id: "authorization_data",
+        gokrb5_constant: "MarshaledKRB5authorization_data",
+        gokrb5_test: "types/AuthorizationData_test.go",
+        der_type: DerType::AuthorizationData,
+        rasn_kerberos: Support::Yes,
+        picky_krb: Support::Yes,
+    },
+    Asn1Fixture {
+        id: "typed_data",
+        gokrb5_constant: "MarshaledKRB5typed_data",
+        gokrb5_test: "types/TypedData_test.go",
+        der_type: DerType::TypedData,
+        rasn_kerberos: Support::Yes,
+        picky_krb: Support::No,
+    },
+    Asn1Fixture {
+        id: "pa_enc_ts_enc",
+        gokrb5_constant: "MarshaledKRB5pa_enc_ts",
+        gokrb5_test: "types/PAData_test.go",
+        der_type: DerType::PaEncTsEnc,
+        rasn_kerberos: Support::Yes,
+        picky_krb: Support::Yes,
+    },
+    Asn1Fixture {
+        id: "encrypted_data",
+        gokrb5_constant: "MarshaledKRB5enc_data",
+        gokrb5_test: "types/Cryptosystem_test.go",
+        der_type: DerType::EncryptedData,
+        rasn_kerberos: Support::Yes,
+        picky_krb: Support::Yes,
     },
 ];
 
@@ -470,7 +746,7 @@ const RASN_KERBEROS_CAPABILITIES: &[Capability] = &[
     Capability {
         area: "Message wrappers / exact gokrb5 DER vectors",
         support: Support::Partial,
-        note: "Promising; must be verified against gokrb5's full DER fixture set.",
+        note: "Decodes all 22 representative gokrb5 DER fixture probes; full fixture parity still needs translation.",
     },
     Capability {
         area: "Client AS/TGS exchange",
@@ -503,7 +779,7 @@ const PICKY_KRB_CAPABILITIES: &[Capability] = &[
     Capability {
         area: "Message wrappers / exact gokrb5 DER vectors",
         support: Support::Partial,
-        note: "Has richer Microsoft/Kerberos structs than rasn-kerberos; requires fixture parity checks.",
+        note: "Decodes 18 of 22 representative DER fixture probes; this version lacks KRB-SAFE, KRB-CRED, EncKrbCredPart, and TypedData shapes.",
     },
     Capability {
         area: "PAC",

@@ -1,6 +1,6 @@
 #![cfg(feature = "evaluation")]
 
-use rskrb5::evaluation::{ASSESSMENTS, REPORTS, V8_CONTRACT, render_markdown};
+use rskrb5::evaluation::{ASN1_FIXTURES, ASSESSMENTS, REPORTS, V8_CONTRACT, render_markdown};
 
 #[test]
 fn report_mentions_all_candidates_and_contract_areas() {
@@ -12,6 +12,10 @@ fn report_mentions_all_candidates_and_contract_areas() {
 
     for area in V8_CONTRACT {
         assert!(markdown.contains(area.area));
+    }
+
+    for fixture in ASN1_FIXTURES {
+        assert!(markdown.contains(fixture.gokrb5_constant));
     }
 }
 
