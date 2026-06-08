@@ -17,6 +17,7 @@ const REALM: &str = "TEST.GOKRB5";
 const USER: &str = "testuser1";
 const PASSWORD: &[u8] = b"passwordvalue";
 const TESTUSER1_SALT: &[u8] = b"TEST.GOKRB5testuser1";
+const AES128_ETYPE: i32 = 17;
 const AES256_ETYPE: i32 = 18;
 const AES128_SHA2_ETYPE: i32 = 19;
 const AES256_SHA2_ETYPE: i32 = 20;
@@ -352,6 +353,54 @@ fn docker_mit_kdc_tgs_service_ticket_through_tcp_and_udp() -> Result<(), Box<dyn
             assert_eq!(ticket.client, Principal::user(REALM, USER));
             assert_eq!(ticket.service, service);
             assert_eq!(ticket.session_key.etype, AES256_ETYPE);
+            assert!(!ticket.session_key.value.is_empty());
+            assert!(!ticket.ticket.is_empty());
+            assert!(ticket.end_time > ticket.start_time);
+        }
+
+        Ok::<_, Box<dyn Error>>(())
+    })
+}
+
+#[test]
+fn docker_mit_kdc_aes128_as_tgs_through_tcp_and_udp() -> Result<(), Box<dyn Error>> {
+    if std::env::var("INTEGRATION").as_deref() != Ok("1") {
+        eprintln!("skipping Docker KDC integration test; set INTEGRATION=1 to enable");
+        return Ok(());
+    }
+    let _guard = INTEGRATION_LOCK.lock().expect("integration test lock");
+
+    runtime().block_on(async {
+        let addr = kdc_addr();
+        let transport = TokioKdcTransport::new().with_timeout(Duration::from_secs(10));
+
+        for protocol in [KdcProtocol::Udp, KdcProtocol::Tcp] {
+            eprintln!("running Docker KDC AES128 AS/TGS exchange over {protocol:?} to {addr}");
+            let tgt = transport
+                .login_tgt_with_password(
+                    protocol,
+                    addr.as_str(),
+                    Principal::user(REALM, USER),
+                    PASSWORD,
+                    login_options_with_etypes(protocol, 27, vec![AES128_ETYPE])?,
+                )
+                .await?;
+            assert_eq!(tgt.session_key.etype, AES128_ETYPE);
+            assert!(!tgt.session_key.value.is_empty());
+
+            let service = service_principal();
+            let request = build_tgs_req(
+                &tgt,
+                service.clone(),
+                tgs_options_with_etypes(protocol, 28, vec![AES128_ETYPE])?,
+            )?;
+            let ticket = transport
+                .exchange_tgs_req(protocol, addr.as_str(), &request, &tgt.session_key)
+                .await?;
+
+            assert_eq!(ticket.client, Principal::user(REALM, USER));
+            assert_eq!(ticket.service, service);
+            assert_eq!(ticket.session_key.etype, AES128_ETYPE);
             assert!(!ticket.session_key.value.is_empty());
             assert!(!ticket.ticket.is_empty());
             assert!(ticket.end_time > ticket.start_time);
