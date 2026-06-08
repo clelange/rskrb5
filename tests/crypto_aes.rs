@@ -1,7 +1,7 @@
 use pretty_assertions::assert_eq;
 use rskrb5::crypto::{
-    AesEtype, AesSha1Etype, AesSha2Etype, Error, Rc4HmacEtype, iterations_to_s2kparams, nfold,
-    s2kparams_to_iterations,
+    AesEtype, AesSha1Etype, AesSha2Etype, Error, KerberosEtype, Rc4HmacEtype,
+    iterations_to_s2kparams, nfold, s2kparams_to_iterations,
 };
 
 #[test]
@@ -45,21 +45,24 @@ fn reports_aes_sha2_metadata_and_dispatch() {
     assert_eq!(AesSha2Etype::Aes256.default_s2kparams(), "00008000");
 
     assert_eq!(
-        AesEtype::from_etype_id(17),
-        Some(AesEtype::Sha1(AesSha1Etype::Aes128))
+        KerberosEtype::from_etype_id(17),
+        Some(KerberosEtype::Sha1(AesSha1Etype::Aes128))
     );
     assert_eq!(
-        AesEtype::from_etype_id(20),
-        Some(AesEtype::Sha2(AesSha2Etype::Aes256))
+        KerberosEtype::from_etype_id(20),
+        Some(KerberosEtype::Sha2(AesSha2Etype::Aes256))
     );
     assert_eq!(
-        AesEtype::from_checksum_type_id(19),
-        Some(AesEtype::Sha2(AesSha2Etype::Aes128))
+        KerberosEtype::from_checksum_type_id(19),
+        Some(KerberosEtype::Sha2(AesSha2Etype::Aes128))
     );
     assert_eq!(
-        AesEtype::from_etype_id(23),
-        Some(AesEtype::Rc4Hmac(Rc4HmacEtype))
+        KerberosEtype::from_etype_id(23),
+        Some(KerberosEtype::Rc4Hmac(Rc4HmacEtype))
     );
+
+    let alias: AesEtype = KerberosEtype::Sha1(AesSha1Etype::Aes256);
+    assert_eq!(alias.etype_id(), 18);
 }
 
 #[test]

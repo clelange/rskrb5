@@ -10,7 +10,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use base64::Engine as _;
 
 use crate::client::{Principal, TgsRepSession};
-use crate::crypto::AesEtype;
+use crate::crypto::KerberosEtype;
 use crate::keytab::EncryptionKey;
 use crate::service::{ApRepOptions, ServiceValidator, ValidatedApReq, VerifiedApRep};
 
@@ -182,7 +182,8 @@ impl MicToken {
         data.extend_from_slice(payload);
         data.extend_from_slice(&self.checksum_header());
 
-        let etype = AesEtype::from_etype_id(key.etype).ok_or(Error::UnsupportedEtype(key.etype))?;
+        let etype =
+            KerberosEtype::from_etype_id(key.etype).ok_or(Error::UnsupportedEtype(key.etype))?;
         etype
             .checksum(&key.value, &data, key_usage)
             .map_err(Error::Crypto)
@@ -361,7 +362,8 @@ impl WrapToken {
 
     /// Build an initiator wrap token and compute its checksum.
     pub fn new_initiator(payload: impl Into<Vec<u8>>, key: &EncryptionKey) -> Result<Self, Error> {
-        let etype = AesEtype::from_etype_id(key.etype).ok_or(Error::UnsupportedEtype(key.etype))?;
+        let etype =
+            KerberosEtype::from_etype_id(key.etype).ok_or(Error::UnsupportedEtype(key.etype))?;
         let mut token = Self {
             flags: 0,
             ec: u16::try_from(etype.hmac_len()).map_err(|_| Error::InvalidGssChecksumLength {
@@ -383,7 +385,8 @@ impl WrapToken {
         payload: impl Into<Vec<u8>>,
         key: &EncryptionKey,
     ) -> Result<Self, Error> {
-        let etype = AesEtype::from_etype_id(key.etype).ok_or(Error::UnsupportedEtype(key.etype))?;
+        let etype =
+            KerberosEtype::from_etype_id(key.etype).ok_or(Error::UnsupportedEtype(key.etype))?;
         let mut confounder = vec![0; etype.confounder_len()];
         getrandom::fill(&mut confounder)?;
         Self::new_initiator_sealed_with_confounder(payload, key, &confounder)
@@ -421,7 +424,8 @@ impl WrapToken {
 
         self.flags |= GSS_TOKEN_FLAG_SEALED;
         let payload = self.payload.as_ref().ok_or(Error::MissingGssPayload)?;
-        let etype = AesEtype::from_etype_id(key.etype).ok_or(Error::UnsupportedEtype(key.etype))?;
+        let etype =
+            KerberosEtype::from_etype_id(key.etype).ok_or(Error::UnsupportedEtype(key.etype))?;
         let mut plaintext = Vec::with_capacity(payload.len() + usize::from(self.ec) + 16);
         plaintext.extend_from_slice(payload);
         plaintext.resize(plaintext.len() + usize::from(self.ec), 0);
@@ -445,7 +449,8 @@ impl WrapToken {
             .as_ref()
             .ok_or(Error::MissingGssEncryptedBody)?;
         let encrypted = rotate_left(encrypted_body, usize::from(self.rrc));
-        let etype = AesEtype::from_etype_id(key.etype).ok_or(Error::UnsupportedEtype(key.etype))?;
+        let etype =
+            KerberosEtype::from_etype_id(key.etype).ok_or(Error::UnsupportedEtype(key.etype))?;
         let plaintext = etype.decrypt_message(&key.value, &encrypted, key_usage)?;
 
         let trailer_len = GSS_WRAP_HEADER_LEN + usize::from(self.ec);
@@ -492,7 +497,8 @@ impl WrapToken {
         data.extend_from_slice(payload);
         data.extend_from_slice(&wrap_checksum_header(self.flags, self.snd_seq_num));
 
-        let etype = AesEtype::from_etype_id(key.etype).ok_or(Error::UnsupportedEtype(key.etype))?;
+        let etype =
+            KerberosEtype::from_etype_id(key.etype).ok_or(Error::UnsupportedEtype(key.etype))?;
         etype
             .checksum(&key.value, &data, key_usage)
             .map_err(Error::Crypto)
@@ -1133,7 +1139,7 @@ pub struct AcceptedContext {
 impl AcceptedContext {
     /// Build a `WWW-Authenticate` header containing an AP-REP response token.
     pub fn ap_rep_response_header(&self, options: ApRepOptions) -> Result<String, Error> {
-        let etype = AesEtype::from_etype_id(self.ap_req.session_key.etype)
+        let etype = KerberosEtype::from_etype_id(self.ap_req.session_key.etype)
             .ok_or(Error::UnsupportedEtype(self.ap_req.session_key.etype))?;
         let mut confounder = vec![0; etype.confounder_len()];
         getrandom::fill(&mut confounder)?;
@@ -1175,7 +1181,7 @@ pub fn init_sec_context(
     if options.sequence_number.is_none() {
         options.sequence_number = Some(random_sequence_number()?);
     }
-    let etype = AesEtype::from_etype_id(service_ticket.session_key.etype)
+    let etype = KerberosEtype::from_etype_id(service_ticket.session_key.etype)
         .ok_or(Error::UnsupportedEtype(service_ticket.session_key.etype))?;
     let mut confounder = vec![0; etype.confounder_len()];
     getrandom::fill(&mut confounder)?;
@@ -1206,7 +1212,7 @@ pub fn init_sec_context_with_confounder(
         authorization_data: None,
     };
     let authenticator_der = encode("Authenticator", &authenticator)?;
-    let etype = AesEtype::from_etype_id(service_ticket.session_key.etype)
+    let etype = KerberosEtype::from_etype_id(service_ticket.session_key.etype)
         .ok_or(Error::UnsupportedEtype(service_ticket.session_key.etype))?;
     let cipher = etype.encrypt_message_with_confounder(
         &service_ticket.session_key.value,
@@ -1701,7 +1707,7 @@ fn decrypt_encrypted_data(
     ciphertext: &[u8],
     usage: u32,
 ) -> Result<Vec<u8>, Error> {
-    let etype = AesEtype::from_etype_id(etype_id).ok_or(Error::UnsupportedEtype(etype_id))?;
+    let etype = KerberosEtype::from_etype_id(etype_id).ok_or(Error::UnsupportedEtype(etype_id))?;
     Ok(etype.decrypt_message(key, ciphertext, usage)?)
 }
 

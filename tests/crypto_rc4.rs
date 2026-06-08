@@ -1,5 +1,5 @@
 use pretty_assertions::assert_eq;
-use rskrb5::crypto::{AesEtype, Error, Rc4HmacEtype};
+use rskrb5::crypto::{Error, KerberosEtype, Rc4HmacEtype};
 
 #[test]
 fn reports_rc4_hmac_metadata_and_dispatch() {
@@ -20,12 +20,12 @@ fn reports_rc4_hmac_metadata_and_dispatch() {
     assert_eq!(etype.default_s2kparams(), "");
 
     assert_eq!(
-        AesEtype::from_etype_id(23),
-        Some(AesEtype::Rc4Hmac(Rc4HmacEtype))
+        KerberosEtype::from_etype_id(23),
+        Some(KerberosEtype::Rc4Hmac(Rc4HmacEtype))
     );
     assert_eq!(
-        AesEtype::from_checksum_type_id(-138),
-        Some(AesEtype::Rc4Hmac(Rc4HmacEtype))
+        KerberosEtype::from_checksum_type_id(-138),
+        Some(KerberosEtype::Rc4Hmac(Rc4HmacEtype))
     );
 }
 
@@ -70,7 +70,7 @@ fn rc4_hmac_message_encryption_matches_gokrb5_vector() {
         .expect("message decrypts");
     assert_eq!(decrypted, b"kerberos rc4 message");
 
-    let dispatcher = AesEtype::Rc4Hmac(Rc4HmacEtype);
+    let dispatcher = KerberosEtype::Rc4Hmac(Rc4HmacEtype);
     assert_eq!(
         dispatcher
             .decrypt_message(&key, &encrypted, 2)

@@ -7,7 +7,7 @@
 use std::fmt;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use crate::crypto::{self, AesEtype};
+use crate::crypto::{self, KerberosEtype};
 use crate::keytab::EncryptionKey;
 
 /// `AD-IF-RELEVANT` authorization-data type.
@@ -242,7 +242,7 @@ impl Pac {
             .server_checksum
             .as_ref()
             .ok_or(Error::MissingRequiredBuffer("ServerChecksum"))?;
-        let etype = aes_etype_for_checksum_type(checksum.signature_type)
+        let etype = kerberos_etype_for_checksum_type(checksum.signature_type)
             .ok_or(Error::UnsupportedChecksumType(checksum.signature_type))?;
         if key.etype != etype.etype_id() {
             return Ok(false);
@@ -535,7 +535,7 @@ impl CredentialsInfo {
                 actual: key.etype,
             });
         }
-        let etype = AesEtype::from_etype_id(encryption_type)
+        let etype = KerberosEtype::from_etype_id(encryption_type)
             .ok_or(Error::UnsupportedEncryptionType(encryption_type))?;
         let plaintext = etype.decrypt_message(
             &key.value,
@@ -2104,8 +2104,8 @@ fn filetime_tick_duration(ticks: u64) -> Duration {
     )
 }
 
-fn aes_etype_for_checksum_type(signature_type: u32) -> Option<AesEtype> {
-    AesEtype::from_checksum_type_id(signature_type.try_into().ok()?)
+fn kerberos_etype_for_checksum_type(signature_type: u32) -> Option<KerberosEtype> {
+    KerberosEtype::from_checksum_type_id(signature_type.try_into().ok()?)
 }
 
 fn ntlm_supplemental_flag_set(flags: u32, flag: u32) -> bool {

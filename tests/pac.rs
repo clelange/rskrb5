@@ -3,7 +3,7 @@
 use std::time::{Duration, UNIX_EPOCH};
 
 use pretty_assertions::assert_eq;
-use rskrb5::crypto::{AesEtype, AesSha1Etype};
+use rskrb5::crypto::{AesSha1Etype, KerberosEtype};
 use rskrb5::keytab::{EncryptionKey, Keytab};
 use rskrb5::pac::{
     self, CHECKSUM_HMAC_MD5_UNSIGNED, CHECKSUM_HMAC_SHA1_96_AES256, CLAIM_TYPE_ID_INT64,
@@ -380,7 +380,7 @@ fn parses_credentials_info_header_and_processes_pac_buffer() {
 
 #[test]
 fn decrypts_credentials_info_and_parses_ntlm_supplemental_credential() {
-    let etype = AesEtype::Sha1(AesSha1Etype::Aes256);
+    let etype = KerberosEtype::Sha1(AesSha1Etype::Aes256);
     let key = EncryptionKey {
         etype: etype.etype_id(),
         value: (0u8..32).collect(),

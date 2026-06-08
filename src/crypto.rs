@@ -740,7 +740,7 @@ impl Rc4HmacEtype {
 
 /// Kerberos encryption type supported by this crate.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum AesEtype {
+pub enum KerberosEtype {
     /// RFC3962 AES-SHA1 etype.
     Sha1(AesSha1Etype),
     /// RFC8009 AES-SHA2 etype.
@@ -749,7 +749,7 @@ pub enum AesEtype {
     Rc4Hmac(Rc4HmacEtype),
 }
 
-impl AesEtype {
+impl KerberosEtype {
     /// Return a supported encryption type for a Kerberos etype id.
     pub fn from_etype_id(etype_id: i32) -> Option<Self> {
         AesSha1Etype::from_etype_id(etype_id)
@@ -896,6 +896,9 @@ impl AesEtype {
         }
     }
 }
+
+/// Compatibility alias for the earlier AES-only dispatcher name.
+pub type AesEtype = KerberosEtype;
 
 /// Convert a Kerberos iteration count to RFC3962 string-to-key parameters.
 pub fn iterations_to_s2kparams(iterations: u32) -> String {

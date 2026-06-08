@@ -20,7 +20,7 @@ use crate::ccache;
 #[cfg(feature = "tokio")]
 use crate::config::Config;
 use crate::config::LibDefaults;
-use crate::crypto::AesEtype;
+use crate::crypto::KerberosEtype;
 use crate::keytab::{EncryptionKey, Keytab};
 #[cfg(feature = "tokio")]
 use hickory_resolver::{TokioResolver, proto::rr::RData};
@@ -1544,7 +1544,8 @@ pub fn pa_enc_timestamp_with_confounder(
         pausec: Some(rasn::types::Integer::from(cusec)),
     };
     let plaintext = encode("PA-ENC-TS-ENC", &enc_ts)?;
-    let etype = AesEtype::from_etype_id(key.etype).ok_or(Error::UnsupportedEtype(key.etype))?;
+    let etype =
+        KerberosEtype::from_etype_id(key.etype).ok_or(Error::UnsupportedEtype(key.etype))?;
     let cipher = etype.encrypt_message_with_confounder(
         &key.value,
         &plaintext,
@@ -1569,7 +1570,8 @@ pub fn pa_enc_timestamp(
     cusec: u32,
     kvno: Option<u32>,
 ) -> Result<rasn_kerberos::PaData, Error> {
-    let etype = AesEtype::from_etype_id(key.etype).ok_or(Error::UnsupportedEtype(key.etype))?;
+    let etype =
+        KerberosEtype::from_etype_id(key.etype).ok_or(Error::UnsupportedEtype(key.etype))?;
     let mut confounder = vec![0; etype.confounder_len()];
     getrandom::fill(&mut confounder)?;
     pa_enc_timestamp_with_confounder(key, timestamp, cusec, &confounder, kvno)
@@ -1609,7 +1611,7 @@ pub fn build_tgs_req_for_realm(
     options: TgsReqOptions,
 ) -> Result<BuiltTgsReq, Error> {
     let (timestamp, cusec) = current_preauth_time()?;
-    let etype = AesEtype::from_etype_id(tgt.session_key.etype)
+    let etype = KerberosEtype::from_etype_id(tgt.session_key.etype)
         .ok_or(Error::UnsupportedEtype(tgt.session_key.etype))?;
     let mut confounder = vec![0; etype.confounder_len()];
     getrandom::fill(&mut confounder)?;
@@ -1685,7 +1687,7 @@ pub fn build_tgs_req_for_realm_with_confounder(
         additional_tickets: None,
     };
     let req_body_der = encode("TGS-REQ-BODY", &req_body)?;
-    let etype = AesEtype::from_etype_id(tgt.session_key.etype)
+    let etype = KerberosEtype::from_etype_id(tgt.session_key.etype)
         .ok_or(Error::UnsupportedEtype(tgt.session_key.etype))?;
     let checksum = etype.checksum(
         &tgt.session_key.value,
@@ -2140,7 +2142,7 @@ pub fn select_preauth_key_info(
     requested_etypes: &[i32],
 ) -> Result<PreauthKeyInfo, Error> {
     for etype in requested_etypes {
-        if AesEtype::from_etype_id(*etype).is_none() {
+        if KerberosEtype::from_etype_id(*etype).is_none() {
             continue;
         }
         if let Some(info) = error
@@ -2156,7 +2158,7 @@ pub fn select_preauth_key_info(
         && let Some(etype) = requested_etypes
             .iter()
             .copied()
-            .find(|etype| AesEtype::from_etype_id(*etype).is_some())
+            .find(|etype| KerberosEtype::from_etype_id(*etype).is_some())
     {
         return Ok(PreauthKeyInfo {
             etype,
@@ -2185,8 +2187,8 @@ pub fn derive_password_reply_key(
     password: &[u8],
     key_info: &PreauthKeyInfo,
 ) -> Result<EncryptionKey, Error> {
-    let etype =
-        AesEtype::from_etype_id(key_info.etype).ok_or(Error::UnsupportedEtype(key_info.etype))?;
+    let etype = KerberosEtype::from_etype_id(key_info.etype)
+        .ok_or(Error::UnsupportedEtype(key_info.etype))?;
     let salt = key_info
         .salt
         .clone()
@@ -2492,7 +2494,7 @@ fn decrypt_encrypted_data(
     ciphertext: &[u8],
     usage: u32,
 ) -> Result<Vec<u8>, Error> {
-    let etype = AesEtype::from_etype_id(etype_id).ok_or(Error::UnsupportedEtype(etype_id))?;
+    let etype = KerberosEtype::from_etype_id(etype_id).ok_or(Error::UnsupportedEtype(etype_id))?;
     Ok(etype.decrypt_message(key, ciphertext, usage)?)
 }
 
