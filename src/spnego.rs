@@ -28,6 +28,8 @@ const TAG_CONTEXT_3: u8 = 0xa3;
 const TOK_ID_KRB_AP_REQ: [u8; 2] = [0x01, 0x00];
 const TOK_ID_KRB_AP_REP: [u8; 2] = [0x02, 0x00];
 const TOK_ID_KRB_ERROR: [u8; 2] = [0x03, 0x00];
+const TOK_ID_GSS_MIC: [u8; 2] = [0x04, 0x04];
+const TOK_ID_GSS_WRAP: [u8; 2] = [0x05, 0x04];
 const KRB5_PVNO: i32 = 5;
 const KRB_AP_REQ_MSG_TYPE: i32 = 14;
 const KRB_AP_REP_MSG_TYPE: i32 = 15;
@@ -35,6 +37,10 @@ const AP_REQ_AUTHENTICATOR_USAGE: u32 = 11;
 const AP_REP_ENCPART_USAGE: u32 = 12;
 const TGS_REQ_AP_REQ_AUTHENTICATOR_USAGE: u32 = 7;
 const GSSAPI_CHECKSUM_TYPE: i32 = 32_771;
+const GSS_MIC_HEADER_LEN: usize = 16;
+const GSS_WRAP_HEADER_LEN: usize = 16;
+const GSS_MIC_FILLER: [u8; 5] = [0xff; 5];
+const GSS_WRAP_FILLER: u8 = 0xff;
 
 /// HTTP request header that carries SPNEGO authentication data.
 pub const HTTP_AUTHORIZATION: &str = "Authorization";
@@ -57,6 +63,296 @@ pub const CONTEXT_FLAG_CONF: u32 = 16;
 pub const CONTEXT_FLAG_INTEG: u32 = 32;
 /// GSS-API context flag: anonymity.
 pub const CONTEXT_FLAG_ANON: u32 = 64;
+
+/// RFC4121 token flag: token was sent by the context acceptor.
+pub const GSS_TOKEN_FLAG_SENT_BY_ACCEPTOR: u8 = 0x01;
+/// RFC4121 token flag: token is sealed.
+pub const GSS_TOKEN_FLAG_SEALED: u8 = 0x02;
+/// RFC4121 token flag: token uses an acceptor subkey.
+pub const GSS_TOKEN_FLAG_ACCEPTOR_SUBKEY: u8 = 0x04;
+
+/// GSS-API acceptor seal key usage.
+pub const GSSAPI_ACCEPTOR_SEAL_USAGE: u32 = 22;
+/// GSS-API acceptor sign key usage.
+pub const GSSAPI_ACCEPTOR_SIGN_USAGE: u32 = 23;
+/// GSS-API initiator seal key usage.
+pub const GSSAPI_INITIATOR_SEAL_USAGE: u32 = 24;
+/// GSS-API initiator sign key usage.
+pub const GSSAPI_INITIATOR_SIGN_USAGE: u32 = 25;
+
+/// RFC4121 GSS-API MIC token.
+///
+/// The payload is authenticated but not transmitted in the token bytes, matching
+/// gokrb5's MIC token model.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MicToken {
+    /// RFC4121 token flags.
+    pub flags: u8,
+    /// Sender sequence number.
+    pub snd_seq_num: u64,
+    /// Payload bytes authenticated by this MIC token. Not encoded on the wire.
+    pub payload: Option<Vec<u8>>,
+    /// Token checksum.
+    pub checksum: Option<Vec<u8>>,
+}
+
+impl MicToken {
+    /// Build a MIC token with no payload or checksum.
+    pub fn new(flags: u8, snd_seq_num: u64) -> Self {
+        Self {
+            flags,
+            snd_seq_num,
+            payload: None,
+            checksum: None,
+        }
+    }
+
+    /// Decode a MIC token.
+    pub fn decode(bytes: &[u8], expect_from_acceptor: bool) -> Result<Self, Error> {
+        if bytes.len() < GSS_MIC_HEADER_LEN {
+            return Err(Error::GssTokenTooShort {
+                minimum: GSS_MIC_HEADER_LEN,
+                actual: bytes.len(),
+            });
+        }
+        validate_gss_token_id(&bytes[..2], TOK_ID_GSS_MIC)?;
+        validate_gss_sender(bytes[2], expect_from_acceptor)?;
+        if bytes[3..8] != GSS_MIC_FILLER {
+            return Err(Error::InvalidGssFiller);
+        }
+
+        Ok(Self {
+            flags: bytes[2],
+            snd_seq_num: u64::from_be_bytes(
+                bytes[8..16].try_into().expect("slice length checked above"),
+            ),
+            payload: None,
+            checksum: Some(bytes[GSS_MIC_HEADER_LEN..].to_vec()),
+        })
+    }
+
+    /// Encode this MIC token.
+    pub fn encode(&self) -> Result<Vec<u8>, Error> {
+        let checksum = self.checksum.as_ref().ok_or(Error::MissingGssChecksum)?;
+        let mut bytes = self.checksum_header();
+        bytes.extend_from_slice(checksum);
+        Ok(bytes)
+    }
+
+    /// Set the authenticated payload bytes.
+    pub fn with_payload(mut self, payload: impl Into<Vec<u8>>) -> Self {
+        self.payload = Some(payload.into());
+        self
+    }
+
+    /// Compute and set this token's checksum.
+    pub fn set_checksum(&mut self, key: &EncryptionKey, key_usage: u32) -> Result<(), Error> {
+        if self.checksum.is_some() {
+            return Err(Error::GssChecksumAlreadySet);
+        }
+        self.checksum = Some(self.compute_checksum(key, key_usage)?);
+        Ok(())
+    }
+
+    /// Verify this token's checksum.
+    pub fn verify(&self, key: &EncryptionKey, key_usage: u32) -> Result<bool, Error> {
+        let expected = self.compute_checksum(key, key_usage)?;
+        let actual = self.checksum.as_ref().ok_or(Error::MissingGssChecksum)?;
+        if !constant_time_eq(&expected, actual) {
+            return Err(Error::GssChecksumMismatch);
+        }
+        Ok(true)
+    }
+
+    /// Build an initiator MIC token and compute its checksum.
+    pub fn new_initiator(payload: impl Into<Vec<u8>>, key: &EncryptionKey) -> Result<Self, Error> {
+        let mut token = Self {
+            flags: 0,
+            snd_seq_num: 0,
+            payload: Some(payload.into()),
+            checksum: None,
+        };
+        token.set_checksum(key, GSSAPI_INITIATOR_SIGN_USAGE)?;
+        Ok(token)
+    }
+
+    fn compute_checksum(&self, key: &EncryptionKey, key_usage: u32) -> Result<Vec<u8>, Error> {
+        let payload = self.payload.as_ref().ok_or(Error::MissingGssPayload)?;
+        let mut data = Vec::with_capacity(payload.len() + GSS_MIC_HEADER_LEN);
+        data.extend_from_slice(payload);
+        data.extend_from_slice(&self.checksum_header());
+
+        let etype = AesEtype::from_etype_id(key.etype).ok_or(Error::UnsupportedEtype(key.etype))?;
+        etype
+            .checksum(&key.value, &data, key_usage)
+            .map_err(Error::Crypto)
+    }
+
+    fn checksum_header(&self) -> Vec<u8> {
+        let mut header = Vec::with_capacity(GSS_MIC_HEADER_LEN);
+        header.extend_from_slice(&TOK_ID_GSS_MIC);
+        header.push(self.flags);
+        header.extend_from_slice(&GSS_MIC_FILLER);
+        header.extend_from_slice(&self.snd_seq_num.to_be_bytes());
+        header
+    }
+}
+
+/// RFC4121 unsealed GSS-API Wrap token.
+///
+/// This implements gokrb5's current checksum-only wrap-token behavior. Sealed
+/// confidentiality wrapping is intentionally not implemented yet.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WrapToken {
+    /// RFC4121 token flags.
+    pub flags: u8,
+    /// Extra count, used by gokrb5 as the checksum length for unsealed tokens.
+    pub ec: u16,
+    /// Right rotation count.
+    pub rrc: u16,
+    /// Sender sequence number.
+    pub snd_seq_num: u64,
+    /// Wrapped payload bytes.
+    pub payload: Option<Vec<u8>>,
+    /// Token checksum.
+    pub checksum: Option<Vec<u8>>,
+}
+
+impl WrapToken {
+    /// Build a wrap token with no payload or checksum.
+    pub fn new(flags: u8, snd_seq_num: u64) -> Self {
+        Self {
+            flags,
+            ec: 0,
+            rrc: 0,
+            snd_seq_num,
+            payload: None,
+            checksum: None,
+        }
+    }
+
+    /// Decode an unsealed wrap token.
+    pub fn decode(bytes: &[u8], expect_from_acceptor: bool) -> Result<Self, Error> {
+        if bytes.len() < GSS_WRAP_HEADER_LEN {
+            return Err(Error::GssTokenTooShort {
+                minimum: GSS_WRAP_HEADER_LEN,
+                actual: bytes.len(),
+            });
+        }
+        validate_gss_token_id(&bytes[..2], TOK_ID_GSS_WRAP)?;
+        validate_gss_sender(bytes[2], expect_from_acceptor)?;
+        if bytes[3] != GSS_WRAP_FILLER {
+            return Err(Error::InvalidGssFiller);
+        }
+
+        let ec = u16::from_be_bytes(bytes[4..6].try_into().expect("slice length checked above"));
+        let checksum_len = usize::from(ec);
+        if checksum_len > bytes.len() - GSS_WRAP_HEADER_LEN {
+            return Err(Error::InconsistentWrapChecksumLength {
+                token_len: bytes.len(),
+                checksum_len,
+            });
+        }
+
+        let checksum_start = bytes.len() - checksum_len;
+        Ok(Self {
+            flags: bytes[2],
+            ec,
+            rrc: u16::from_be_bytes(bytes[6..8].try_into().expect("slice length checked above")),
+            snd_seq_num: u64::from_be_bytes(
+                bytes[8..16].try_into().expect("slice length checked above"),
+            ),
+            payload: Some(bytes[GSS_WRAP_HEADER_LEN..checksum_start].to_vec()),
+            checksum: Some(bytes[checksum_start..].to_vec()),
+        })
+    }
+
+    /// Encode this wrap token.
+    pub fn encode(&self) -> Result<Vec<u8>, Error> {
+        let payload = self.payload.as_ref().ok_or(Error::MissingGssPayload)?;
+        let checksum = self.checksum.as_ref().ok_or(Error::MissingGssChecksum)?;
+        if checksum.len() != usize::from(self.ec) {
+            return Err(Error::InvalidGssChecksumLength {
+                expected: usize::from(self.ec),
+                actual: checksum.len(),
+            });
+        }
+
+        let mut bytes = Vec::with_capacity(GSS_WRAP_HEADER_LEN + payload.len() + checksum.len());
+        bytes.extend_from_slice(&TOK_ID_GSS_WRAP);
+        bytes.push(self.flags);
+        bytes.push(GSS_WRAP_FILLER);
+        bytes.extend_from_slice(&self.ec.to_be_bytes());
+        bytes.extend_from_slice(&self.rrc.to_be_bytes());
+        bytes.extend_from_slice(&self.snd_seq_num.to_be_bytes());
+        bytes.extend_from_slice(payload);
+        bytes.extend_from_slice(checksum);
+        Ok(bytes)
+    }
+
+    /// Set wrapped payload bytes.
+    pub fn with_payload(mut self, payload: impl Into<Vec<u8>>) -> Self {
+        self.payload = Some(payload.into());
+        self
+    }
+
+    /// Compute and set this token's checksum.
+    pub fn set_checksum(&mut self, key: &EncryptionKey, key_usage: u32) -> Result<(), Error> {
+        if self.checksum.is_some() {
+            return Err(Error::GssChecksumAlreadySet);
+        }
+        let checksum = self.compute_checksum(key, key_usage)?;
+        if self.ec == 0 {
+            self.ec =
+                u16::try_from(checksum.len()).map_err(|_| Error::InvalidGssChecksumLength {
+                    expected: usize::from(u16::MAX),
+                    actual: checksum.len(),
+                })?;
+        }
+        self.checksum = Some(checksum);
+        Ok(())
+    }
+
+    /// Verify this token's checksum.
+    pub fn verify(&self, key: &EncryptionKey, key_usage: u32) -> Result<bool, Error> {
+        let expected = self.compute_checksum(key, key_usage)?;
+        let actual = self.checksum.as_ref().ok_or(Error::MissingGssChecksum)?;
+        if !constant_time_eq(&expected, actual) {
+            return Err(Error::GssChecksumMismatch);
+        }
+        Ok(true)
+    }
+
+    /// Build an initiator wrap token and compute its checksum.
+    pub fn new_initiator(payload: impl Into<Vec<u8>>, key: &EncryptionKey) -> Result<Self, Error> {
+        let etype = AesEtype::from_etype_id(key.etype).ok_or(Error::UnsupportedEtype(key.etype))?;
+        let mut token = Self {
+            flags: 0,
+            ec: u16::try_from(etype.hmac_len()).map_err(|_| Error::InvalidGssChecksumLength {
+                expected: usize::from(u16::MAX),
+                actual: etype.hmac_len(),
+            })?,
+            rrc: 0,
+            snd_seq_num: 0,
+            payload: Some(payload.into()),
+            checksum: None,
+        };
+        token.set_checksum(key, GSSAPI_INITIATOR_SEAL_USAGE)?;
+        Ok(token)
+    }
+
+    fn compute_checksum(&self, key: &EncryptionKey, key_usage: u32) -> Result<Vec<u8>, Error> {
+        let payload = self.payload.as_ref().ok_or(Error::MissingGssPayload)?;
+        let mut data = Vec::with_capacity(payload.len() + GSS_WRAP_HEADER_LEN);
+        data.extend_from_slice(payload);
+        data.extend_from_slice(&wrap_checksum_header(self.flags, self.snd_seq_num));
+
+        let etype = AesEtype::from_etype_id(key.etype).ok_or(Error::UnsupportedEtype(key.etype))?;
+        etype
+            .checksum(&key.value, &data, key_usage)
+            .map_err(Error::Crypto)
+    }
+}
 
 /// GSS-API object identifier.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -882,6 +1178,48 @@ pub fn authenticator_checksum(flags: &[u32]) -> Vec<u8> {
     checksum
 }
 
+fn validate_gss_token_id(actual: &[u8], expected: [u8; 2]) -> Result<(), Error> {
+    let actual: [u8; 2] = actual.try_into().expect("caller passed exactly two bytes");
+    if actual != expected {
+        return Err(Error::InvalidGssTokenId { expected, actual });
+    }
+    Ok(())
+}
+
+fn validate_gss_sender(flags: u8, expect_from_acceptor: bool) -> Result<(), Error> {
+    let actual_from_acceptor = flags & GSS_TOKEN_FLAG_SENT_BY_ACCEPTOR != 0;
+    if actual_from_acceptor != expect_from_acceptor {
+        return Err(Error::UnexpectedGssTokenSender {
+            expected_from_acceptor: expect_from_acceptor,
+            actual_from_acceptor,
+        });
+    }
+    Ok(())
+}
+
+fn wrap_checksum_header(flags: u8, snd_seq_num: u64) -> Vec<u8> {
+    let mut header = Vec::with_capacity(GSS_WRAP_HEADER_LEN);
+    header.extend_from_slice(&TOK_ID_GSS_WRAP);
+    header.push(flags);
+    header.push(GSS_WRAP_FILLER);
+    header.extend_from_slice(&0u16.to_be_bytes());
+    header.extend_from_slice(&0u16.to_be_bytes());
+    header.extend_from_slice(&snd_seq_num.to_be_bytes());
+    header
+}
+
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+
+    let mut diff = 0;
+    for (left, right) in a.iter().zip(b) {
+        diff |= left ^ right;
+    }
+    diff == 0
+}
+
 /// SPNEGO/GSS token processing error.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -941,6 +1279,75 @@ pub enum Error {
     /// KRB5 token omitted its Kerberos message bytes.
     #[error("KRB5 token does not contain a Kerberos message")]
     MissingKerberosMessage,
+
+    /// GSS-API MIC/Wrap token was too short.
+    #[error("GSS token too short: expected at least {minimum} bytes, got {actual}")]
+    GssTokenTooShort {
+        /// Minimum accepted byte length.
+        minimum: usize,
+        /// Actual byte length.
+        actual: usize,
+    },
+
+    /// GSS-API MIC/Wrap token ID was not the expected value.
+    #[error("invalid GSS token ID: expected {expected:02x?}, got {actual:02x?}")]
+    InvalidGssTokenId {
+        /// Expected two-byte token id.
+        expected: [u8; 2],
+        /// Actual two-byte token id.
+        actual: [u8; 2],
+    },
+
+    /// GSS-API token sender direction did not match the caller's expectation.
+    #[error(
+        "unexpected GSS token sender: expected_from_acceptor={expected_from_acceptor}, actual_from_acceptor={actual_from_acceptor}"
+    )]
+    UnexpectedGssTokenSender {
+        /// Whether caller expected an acceptor token.
+        expected_from_acceptor: bool,
+        /// Whether token flags identify an acceptor token.
+        actual_from_acceptor: bool,
+    },
+
+    /// GSS-API token filler bytes were invalid.
+    #[error("invalid GSS token filler")]
+    InvalidGssFiller,
+
+    /// GSS-API token has no payload for checksum calculation.
+    #[error("GSS token payload has not been set")]
+    MissingGssPayload,
+
+    /// GSS-API token has no checksum.
+    #[error("GSS token checksum has not been set")]
+    MissingGssChecksum,
+
+    /// GSS-API token checksum was already set.
+    #[error("GSS token checksum has already been set")]
+    GssChecksumAlreadySet,
+
+    /// GSS-API token checksum length did not match the header.
+    #[error("invalid GSS checksum length: expected {expected} bytes, got {actual}")]
+    InvalidGssChecksumLength {
+        /// Expected checksum length.
+        expected: usize,
+        /// Actual checksum length.
+        actual: usize,
+    },
+
+    /// GSS-API wrap token EC length exceeded remaining bytes.
+    #[error(
+        "inconsistent wrap checksum length: token has {token_len} bytes, checksum length is {checksum_len}"
+    )]
+    InconsistentWrapChecksumLength {
+        /// Whole token length.
+        token_len: usize,
+        /// Claimed checksum length.
+        checksum_len: usize,
+    },
+
+    /// GSS-API checksum verification failed.
+    #[error("GSS token checksum mismatch")]
+    GssChecksumMismatch,
 
     /// NegTokenInit omitted the mechanism list.
     #[error("NegTokenInit does not contain any mechanism types")]
