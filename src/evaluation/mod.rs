@@ -20,7 +20,7 @@ pub fn render_markdown() -> String {
     render_candidate_details(&mut out);
 
     out.push_str("## Decision\n\n");
-    out.push_str("Proceed with `rskrb5` as the high-level pure-Rust implementation while reusing permissively licensed ASN.1/data-type crates where they pass gokrb5 vectors. Candidate crates remain useful dependencies or references, but none currently supplies a clean gokrb5-equivalent client/service/SPNEGO API. The immediate implementation work is live AS/TGS transport, referrals, renewal, and Docker KDC integration tests.\n");
+    out.push_str("Proceed with `rskrb5` as the high-level pure-Rust implementation while reusing permissively licensed ASN.1/data-type crates where they pass gokrb5 vectors. Candidate crates remain useful dependencies or references, but none currently supplies a clean gokrb5-equivalent client/service/SPNEGO API. The immediate implementation work after the first live AS login path is KRB-ERROR preauthentication negotiation, keytab-backed login helpers, referrals, renewal, and TGS service-ticket integration tests.\n");
     out
 }
 

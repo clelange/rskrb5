@@ -11,7 +11,7 @@ This report is generated from `rskrb5::evaluation` and captures the dependency d
 | keytab | keytab/keytab_test.go | unit | Parse/write keytabs and select keys by service principal, realm, kvno, and enctype. |
 | ccache | credentials/ccache_test.go, credentials/ccache_integration_test.go | unit, INTEGRATION=1 | Implement MIT file ccache parsing/writing plus KDC-issued credential capture. |
 | krb5.conf and host config | config/*_test.go | unit | Preserve gokrb5 parsing semantics, libdefaults, realm lookup, DNS flags, and host mappings. |
-| AS/TGS client flows | client/*_test.go | unit, INTEGRATION=1, TESTAD=1 | Cover password/keytab login, referrals, DNS KDC lookup, renewal, and service tickets. |
+| AS/TGS client flows | client/*_test.go | unit, INTEGRATION=1, TESTAD=1 | Cover password/keytab login, TCP/UDP KDC transport, referrals, DNS KDC lookup, renewal, and service tickets. |
 | AP-REQ/AP-REP service validation | service/*_test.go, messages/Ticket_test.go | unit, INTEGRATION=1 | Decrypt tickets, validate authenticators, enforce clock skew, provide replay cache hooks, and build/verify AP-REP mutual-auth replies. |
 | GSSAPI/SPNEGO HTTP | gssapi/*_test.go, spnego/*_test.go | unit, INTEGRATION=1 | Implement tokens, wrap/MIC behavior, HTTP Negotiate helpers, and Tower/Axum adapters. |
 | PAC / NDR | pac/*_test.go, messages/Ticket_test.go | unit, TESTAD=1 | Parse PAC buffers, NDR validation info, claims, UPN/DNS info, and checksum verification. |
@@ -197,4 +197,4 @@ This report is generated from `rskrb5::evaluation` and captures the dependency d
 
 ## Decision
 
-Proceed with `rskrb5` as the high-level pure-Rust implementation while reusing permissively licensed ASN.1/data-type crates where they pass gokrb5 vectors. Candidate crates remain useful dependencies or references, but none currently supplies a clean gokrb5-equivalent client/service/SPNEGO API. The immediate implementation work is live AS/TGS transport, referrals, renewal, and Docker KDC integration tests.
+Proceed with `rskrb5` as the high-level pure-Rust implementation while reusing permissively licensed ASN.1/data-type crates where they pass gokrb5 vectors. Candidate crates remain useful dependencies or references, but none currently supplies a clean gokrb5-equivalent client/service/SPNEGO API. The immediate implementation work after the first live AS login path is KRB-ERROR preauthentication negotiation, keytab-backed login helpers, referrals, renewal, and TGS service-ticket integration tests.

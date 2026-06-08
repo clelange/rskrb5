@@ -6,12 +6,18 @@
 //! validation. Live KDC discovery and Tokio transport adapters sit above this
 //! runtime-neutral core.
 
+#[cfg(feature = "tokio")]
+use std::future::Future;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::ccache;
 use crate::config::LibDefaults;
 use crate::crypto::AesSha1Etype;
 use crate::keytab::EncryptionKey;
+#[cfg(feature = "tokio")]
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+#[cfg(feature = "tokio")]
+use tokio::net::{TcpStream, ToSocketAddrs, UdpSocket};
 
 const KRB5_PVNO: i32 = 5;
 const KRB_AS_REQ_MSG_TYPE: i32 = 10;
@@ -20,6 +26,12 @@ const KRB_NT_PRINCIPAL: i32 = 1;
 const KRB_NT_SRV_INST: i32 = 2;
 const DEFAULT_TICKET_LIFETIME: Duration = Duration::from_secs(24 * 60 * 60);
 const DEFAULT_TKT_ENCTYPES: &[i32] = &[18, 17];
+#[cfg(feature = "tokio")]
+const DEFAULT_KDC_TIMEOUT: Duration = Duration::from_secs(5);
+#[cfg(feature = "tokio")]
+const DEFAULT_TCP_RESPONSE_LIMIT: usize = 16 * 1024 * 1024;
+#[cfg(feature = "tokio")]
+const MAX_UDP_DATAGRAM: usize = 65_507;
 
 /// PA-ENC-TIMESTAMP preauthentication type.
 pub const PA_ENC_TIMESTAMP: i32 = 2;
@@ -225,6 +237,164 @@ pub trait KdcTransport {
     fn send(&mut self, realm: &str, request: &[u8]) -> Result<Vec<u8>, Error>;
 }
 
+/// KDC wire protocol for Tokio transport operations.
+#[cfg(feature = "tokio")]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum KdcProtocol {
+    /// RFC 4120 UDP transport with raw DER request and response datagrams.
+    Udp,
+    /// RFC 4120 TCP transport with a four-byte big-endian length prefix.
+    Tcp,
+}
+
+/// Tokio-backed KDC transport for explicit TCP or UDP exchanges.
+#[cfg(feature = "tokio")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TokioKdcTransport {
+    timeout: Duration,
+    udp_response_limit: usize,
+    tcp_response_limit: usize,
+}
+
+#[cfg(feature = "tokio")]
+impl Default for TokioKdcTransport {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(feature = "tokio")]
+impl TokioKdcTransport {
+    /// Create a transport with conservative gokrb5-compatible defaults.
+    pub fn new() -> Self {
+        Self {
+            timeout: DEFAULT_KDC_TIMEOUT,
+            udp_response_limit: MAX_UDP_DATAGRAM + 1,
+            tcp_response_limit: DEFAULT_TCP_RESPONSE_LIMIT,
+        }
+    }
+
+    /// Override the timeout applied to each KDC exchange.
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
+        self
+    }
+
+    /// Override the UDP receive buffer size.
+    pub fn with_udp_response_limit(mut self, udp_response_limit: usize) -> Self {
+        self.udp_response_limit = udp_response_limit;
+        self
+    }
+
+    /// Override the maximum accepted TCP response body size.
+    pub fn with_tcp_response_limit(mut self, tcp_response_limit: usize) -> Self {
+        self.tcp_response_limit = tcp_response_limit;
+        self
+    }
+
+    /// Send an encoded KDC request over UDP.
+    pub async fn send_udp<A>(&self, addr: A, request: &[u8]) -> Result<Vec<u8>, Error>
+    where
+        A: ToSocketAddrs,
+    {
+        if request.len() > MAX_UDP_DATAGRAM {
+            return Err(Error::UdpRequestTooLarge {
+                actual: request.len(),
+                limit: MAX_UDP_DATAGRAM,
+            });
+        }
+
+        self.with_transport_timeout(async {
+            let socket = UdpSocket::bind("0.0.0.0:0").await?;
+            socket.connect(addr).await?;
+            socket.send(request).await?;
+
+            let mut response = vec![0; self.udp_response_limit];
+            let len = socket.recv(&mut response).await?;
+            response.truncate(len);
+            Ok(response)
+        })
+        .await
+        .and_then(non_empty_kdc_response)
+    }
+
+    /// Send an encoded KDC request over RFC 4120 TCP framing.
+    pub async fn send_tcp<A>(&self, addr: A, request: &[u8]) -> Result<Vec<u8>, Error>
+    where
+        A: ToSocketAddrs,
+    {
+        let request_len = request
+            .len()
+            .try_into()
+            .map_err(|_| Error::TcpRequestTooLarge {
+                actual: request.len(),
+            })?;
+
+        self.with_transport_timeout(async {
+            let mut stream = TcpStream::connect(addr).await?;
+            stream.write_all(&u32::to_be_bytes(request_len)).await?;
+            stream.write_all(request).await?;
+
+            let mut header = [0; 4];
+            stream.read_exact(&mut header).await?;
+            let response_len = u32::from_be_bytes(header);
+            let response_len_usize = response_len as usize;
+            if response_len_usize > self.tcp_response_limit {
+                return Err(Error::TcpResponseTooLarge {
+                    actual: response_len,
+                    limit: self.tcp_response_limit,
+                });
+            }
+
+            let mut response = vec![0; response_len_usize];
+            stream.read_exact(&mut response).await?;
+            Ok(response)
+        })
+        .await
+        .and_then(non_empty_kdc_response)
+    }
+
+    /// Send an encoded KDC request over the selected protocol.
+    pub async fn send<A>(
+        &self,
+        protocol: KdcProtocol,
+        addr: A,
+        request: &[u8],
+    ) -> Result<Vec<u8>, Error>
+    where
+        A: ToSocketAddrs,
+    {
+        match protocol {
+            KdcProtocol::Udp => self.send_udp(addr, request).await,
+            KdcProtocol::Tcp => self.send_tcp(addr, request).await,
+        }
+    }
+
+    /// Send an AS-REQ through Tokio transport and process the returned AS-REP.
+    pub async fn exchange_as_req<A>(
+        &self,
+        protocol: KdcProtocol,
+        addr: A,
+        request: &BuiltAsReq,
+        reply_key: &EncryptionKey,
+    ) -> Result<AsRepSession, Error>
+    where
+        A: ToSocketAddrs,
+    {
+        let response = self.send(protocol, addr, &request.der).await?;
+        process_as_rep(request, &response, reply_key)
+    }
+
+    async fn with_transport_timeout<F, T>(&self, operation: F) -> Result<T, Error>
+    where
+        F: Future<Output = Result<T, Error>>,
+    {
+        tokio::time::timeout(self.timeout, operation)
+            .await
+            .map_err(|_| Error::TransportTimeout(self.timeout))?
+    }
+}
+
 /// Build a TGT AS-REQ for the supplied client principal.
 pub fn build_tgt_as_req(client: Principal, options: AsReqOptions) -> Result<BuiltAsReq, Error> {
     let service = Principal::tgt_service(client.realm.clone());
@@ -356,7 +526,7 @@ pub fn process_as_rep(
         kdc_rep.enc_part.cipher.as_ref(),
         AS_REP_ENCPART_USAGE,
     )?;
-    let enc_part = decode::<rasn_kerberos::EncAsRepPart>("EncAsRepPart", &plaintext)?.0;
+    let enc_part = decode_as_rep_enc_part(&plaintext)?;
 
     if enc_part.nonce != request.nonce {
         return Err(Error::NonceMismatch {
@@ -495,6 +665,49 @@ pub enum Error {
     #[error("Kerberos time overflows SystemTime")]
     TimeOverflow,
 
+    /// Tokio transport I/O failed.
+    #[cfg(feature = "tokio")]
+    #[error("KDC transport I/O failed: {0}")]
+    Io(#[from] std::io::Error),
+
+    /// Tokio transport exchange timed out.
+    #[cfg(feature = "tokio")]
+    #[error("KDC transport timed out after {0:?}")]
+    TransportTimeout(Duration),
+
+    /// UDP cannot carry the encoded request as one datagram.
+    #[cfg(feature = "tokio")]
+    #[error("KDC UDP request length {actual} exceeds datagram limit {limit}")]
+    UdpRequestTooLarge {
+        /// Encoded request byte length.
+        actual: usize,
+        /// Maximum UDP payload length.
+        limit: usize,
+    },
+
+    /// TCP request length could not fit the RFC 4120 length prefix.
+    #[cfg(feature = "tokio")]
+    #[error("KDC TCP request length {actual} exceeds u32::MAX")]
+    TcpRequestTooLarge {
+        /// Encoded request byte length.
+        actual: usize,
+    },
+
+    /// TCP response length exceeded the configured limit.
+    #[cfg(feature = "tokio")]
+    #[error("KDC TCP response length {actual} exceeds configured limit {limit}")]
+    TcpResponseTooLarge {
+        /// Response length from the TCP frame header.
+        actual: u32,
+        /// Maximum accepted response body length.
+        limit: usize,
+    },
+
+    /// KDC returned no bytes.
+    #[cfg(feature = "tokio")]
+    #[error("KDC returned an empty response")]
+    EmptyKdcResponse,
+
     /// KDC transport failed.
     #[error("KDC transport failed: {0}")]
     Transport(String),
@@ -528,6 +741,27 @@ fn decrypt_encrypted_data(
 ) -> Result<Vec<u8>, Error> {
     let etype = AesSha1Etype::from_etype_id(etype_id).ok_or(Error::UnsupportedEtype(etype_id))?;
     Ok(etype.decrypt_message(key, ciphertext, usage)?)
+}
+
+fn decode_as_rep_enc_part(bytes: &[u8]) -> Result<rasn_kerberos::EncKdcRepPart, Error> {
+    match decode::<rasn_kerberos::EncAsRepPart>("EncAsRepPart", bytes) {
+        Ok(enc_part) => Ok(enc_part.0),
+        Err(as_rep_error) => {
+            // Some KDCs encode the shared encrypted KDC reply part with the
+            // EncTgsRepPart application tag even when returning an AS-REP.
+            decode::<rasn_kerberos::EncTgsRepPart>("EncTgsRepPart", bytes)
+                .map(|enc_part| enc_part.0)
+                .map_err(|_| as_rep_error)
+        }
+    }
+}
+
+#[cfg(feature = "tokio")]
+fn non_empty_kdc_response(response: Vec<u8>) -> Result<Vec<u8>, Error> {
+    if response.is_empty() {
+        return Err(Error::EmptyKdcResponse);
+    }
+    Ok(response)
 }
 
 fn validate_integer(

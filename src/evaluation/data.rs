@@ -305,7 +305,7 @@ pub const V8_CONTRACT: &[ContractArea] = &[
         area: "AS/TGS client flows",
         gokrb5_tests: "client/*_test.go",
         gate: "unit, INTEGRATION=1, TESTAD=1",
-        porting_note: "Cover password/keytab login, referrals, DNS KDC lookup, renewal, and service tickets.",
+        porting_note: "Cover password/keytab login, TCP/UDP KDC transport, referrals, DNS KDC lookup, renewal, and service tickets.",
     },
     ContractArea {
         id: "service",

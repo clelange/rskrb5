@@ -23,7 +23,7 @@ evaluation = [
 ]
 messages = ["dep:chrono", "dep:rasn", "dep:rasn-kerberos"]
 spnego = ["messages", "dep:base64"]
-tokio = ["dep:tokio"]
+tokio = ["messages", "dep:tokio"]
 serde = ["dep:serde"]
 
 [dependencies]

@@ -25,8 +25,9 @@ pure-Rust Kerberos library.
   AES128/AES256-CTS-HMAC-SHA1-96 string-to-key, AES-CTS, checksums, and
   deterministic encrypted-message vectors; client AS exchange primitives cover
   deterministic TGT AS-REQ construction, PA-ENC-TIMESTAMP encryption, a KDC
-  transport boundary, AS-REP encrypted-part decryption and validation, and
-  ccache credential export; service validation covers
+  transport boundary, Tokio TCP/UDP KDC transport, AS-REP encrypted-part
+  decryption and validation, Docker MIT KDC AS login coverage, and ccache
+  credential export; service validation covers
   gokrb5-generated AP-REQ fixtures, service-ticket decryption, authenticator
   decryption, client matching, ticket time checks, clock skew, replay, and
   address-required behavior, plus AP-REP mutual-auth reply generation and
@@ -67,9 +68,9 @@ prek run --all-files --stage pre-push
 ```
 
 The GitHub workflow includes a manual Docker-backed integration job. Run it from
-`workflow_dispatch` with the `integration` input once equivalent Rust
-integration tests exist; it preserves the gokrb5-style `INTEGRATION=1`,
-`TESTPRIVILEGED=1`, and optional `TESTAD=1` gates.
+`workflow_dispatch` with the `integration` input to exercise the live MIT KDC AS
+login test; it preserves the gokrb5-style `INTEGRATION=1`, `TESTPRIVILEGED=1`,
+and optional `TESTAD=1` gates.
 
 ## Distribution Direction
 
