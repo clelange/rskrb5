@@ -89,6 +89,11 @@ fn configured_kdc_endpoint_parses_authorities() -> Result<(), Box<dyn Error>> {
     let default_port = KdcEndpoint::configured(KdcProtocol::Udp, "kdc.test.gokrb5")?;
     assert_eq!(default_port.port, 88);
 
+    let kpasswd_default_port =
+        KdcEndpoint::configured_with_default_port(KdcProtocol::Tcp, "kpasswd.test.gokrb5", 464)?;
+    assert_eq!(kpasswd_default_port.host, "kpasswd.test.gokrb5");
+    assert_eq!(kpasswd_default_port.port, 464);
+
     let ipv6 = KdcEndpoint::configured(KdcProtocol::Tcp, "[::1]:1088")?;
     assert_eq!(ipv6.host, "::1");
     assert_eq!(ipv6.port, 1088);
@@ -177,6 +182,52 @@ fn tokio_transport_sends_tcp_to_configured_realm_kdc() -> Result<(), Box<dyn Err
 
         task.await?;
         assert_eq!(response, b"configured-tcp-as-rep");
+        Ok::<_, Box<dyn Error>>(())
+    })
+}
+
+#[test]
+fn tokio_transport_discovers_configured_kpasswd_servers() -> Result<(), Box<dyn Error>> {
+    runtime().block_on(async {
+        let config = config_with_kpasswd_servers(
+            ["kpasswd.test.gokrb5".to_owned(), "[::1]:7464".to_owned()],
+            1465,
+        );
+
+        let endpoints = TokioKdcTransport::new()
+            .discover_kpasswd_servers(&config, "TEST.GOKRB5", KdcProtocol::Tcp)
+            .await?;
+
+        assert_eq!(endpoints.len(), 2);
+        assert_eq!(endpoints[0].protocol, KdcProtocol::Tcp);
+        assert_eq!(endpoints[0].host, "kpasswd.test.gokrb5");
+        assert_eq!(endpoints[0].port, 464);
+        assert_eq!(endpoints[0].source, KdcEndpointSource::Config);
+        assert_eq!(endpoints[1].host, "::1");
+        assert_eq!(endpoints[1].port, 7464);
+        Ok::<_, Box<dyn Error>>(())
+    })
+}
+
+#[test]
+fn tokio_transport_sends_tcp_to_configured_kpasswd_server() -> Result<(), Box<dyn Error>> {
+    runtime().block_on(async {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let addr = listener.local_addr()?;
+        let config = config_with_kpasswd_servers([addr.to_string()], 1465);
+        let task = tokio::spawn(async move {
+            let (request, mut socket) = read_tcp_request(&listener).await;
+            assert_eq!(request, b"kpasswd-tcp-req");
+            write_tcp_response(&mut socket, b"kpasswd-tcp-rep").await;
+        });
+
+        let response = TokioKdcTransport::new()
+            .with_timeout(Duration::from_secs(2))
+            .send_to_kpasswd_realm(&config, KdcProtocol::Tcp, "TEST.GOKRB5", b"kpasswd-tcp-req")
+            .await?;
+
+        task.await?;
+        assert_eq!(response, b"kpasswd-tcp-rep");
         Ok::<_, Box<dyn Error>>(())
     })
 }
@@ -286,6 +337,35 @@ fn tokio_transport_auto_honors_tcp_only_udp_preference_limit() -> Result<(), Box
     })
 }
 
+#[test]
+fn tokio_transport_auto_kpasswd_honors_tcp_only_udp_preference_limit() -> Result<(), Box<dyn Error>>
+{
+    runtime().block_on(async {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let addr = listener.local_addr()?;
+        let config = config_with_kpasswd_servers([addr.to_string()], 1);
+        let task = tokio::spawn(async move {
+            let (request, mut socket) = read_tcp_request(&listener).await;
+            assert_eq!(request, b"auto-kpasswd-req");
+            write_tcp_response(&mut socket, b"auto-kpasswd-tcp-rep").await;
+        });
+
+        let response = TokioKdcTransport::new()
+            .with_timeout(Duration::from_secs(2))
+            .send_to_kpasswd_realm(
+                &config,
+                KdcProtocol::Auto,
+                "TEST.GOKRB5",
+                b"auto-kpasswd-req",
+            )
+            .await?;
+
+        task.await?;
+        assert_eq!(response, b"auto-kpasswd-tcp-rep");
+        Ok::<_, Box<dyn Error>>(())
+    })
+}
+
 fn config_with_kdcs<I>(kdcs: I) -> Config
 where
     I: IntoIterator<Item = String>,
@@ -315,6 +395,34 @@ where
     for kdc in kdcs {
         input.push_str("  kdc = ");
         input.push_str(&kdc);
+        input.push('\n');
+    }
+    input.push_str(" }\n");
+    Config::parse(&input).expect("config parses")
+}
+
+fn config_with_kpasswd_servers<I>(servers: I, udp_preference_limit: i32) -> Config
+where
+    I: IntoIterator<Item = String>,
+{
+    let mut input = String::from(
+        r#"
+[libdefaults]
+ dns_lookup_kdc = false
+"#,
+    );
+    input.push_str(" udp_preference_limit = ");
+    input.push_str(&udp_preference_limit.to_string());
+    input.push_str(
+        r#"
+
+[realms]
+ TEST.GOKRB5 = {
+"#,
+    );
+    for server in servers {
+        input.push_str("  kpasswd_server = ");
+        input.push_str(&server);
         input.push('\n');
     }
     input.push_str(" }\n");

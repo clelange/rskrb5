@@ -34,7 +34,7 @@ pure-Rust Kerberos library.
   preauthentication, password/keytab TGT login helpers, PA-TGS-REQ
   service-ticket acquisition, a KDC transport boundary, Tokio TCP/UDP/auto
   KDC transport with response-too-big fallback and Docker auto-protocol AS/TGS
-  coverage, `krb5.conf` configured KDC
+  coverage, configured kpasswd transport, `krb5.conf` configured KDC
   discovery, DNS SRV KDC discovery, AS-REP and TGS-REP encrypted-part decryption and validation,
   cross-realm TGS referral following, renewable AS/TGS request flags, explicit
   TGT/service-ticket renewal helpers, Docker MIT KDC AS/TGS login and TGT

@@ -458,7 +458,7 @@ pub struct KdcEndpoint {
     pub protocol: KdcProtocol,
     /// Host name or IP literal.
     pub host: String,
-    /// KDC port.
+    /// Kerberos service port.
     pub port: u16,
     /// How this endpoint was discovered.
     pub source: KdcEndpointSource,
@@ -945,7 +945,16 @@ fn json_time(time: SystemTime) -> String {
 impl KdcEndpoint {
     /// Create a configured endpoint from a `host[:port]` value.
     pub fn configured(protocol: KdcProtocol, value: &str) -> Result<Self, Error> {
-        let (host, port) = parse_kdc_endpoint(value, 88)?;
+        Self::configured_with_default_port(protocol, value, 88)
+    }
+
+    /// Create a configured endpoint from a `host[:port]` value and default port.
+    pub fn configured_with_default_port(
+        protocol: KdcProtocol,
+        value: &str,
+        default_port: u16,
+    ) -> Result<Self, Error> {
+        let (host, port) = parse_kdc_endpoint(value, default_port)?;
         Ok(Self {
             protocol,
             host,
@@ -1131,6 +1140,20 @@ impl TokioKdcTransport {
         }
     }
 
+    /// Discover configured kpasswd endpoints for a realm.
+    pub async fn discover_kpasswd_servers(
+        &self,
+        config: &Config,
+        realm: &str,
+        protocol: KdcProtocol,
+    ) -> Result<Vec<KdcEndpoint>, Error> {
+        config
+            .configured_kpasswd_servers(realm)?
+            .iter()
+            .map(|value| KdcEndpoint::configured_with_default_port(protocol, value, 464))
+            .collect()
+    }
+
     /// Send an encoded request to the first reachable KDC discovered from config.
     pub async fn send_to_realm(
         &self,
@@ -1154,6 +1177,37 @@ impl TokioKdcTransport {
         request: &[u8],
     ) -> Result<Vec<u8>, Error> {
         let endpoints = self.discover_kdcs(config, realm, protocol).await?;
+        self.send_to_endpoints(realm, protocol, endpoints, request)
+            .await
+    }
+
+    /// Send an encoded kpasswd request to the first reachable configured server.
+    pub async fn send_to_kpasswd_realm(
+        &self,
+        config: &Config,
+        protocol: KdcProtocol,
+        realm: &str,
+        request: &[u8],
+    ) -> Result<Vec<u8>, Error> {
+        if protocol == KdcProtocol::Auto {
+            return self
+                .send_to_kpasswd_realm_auto(config, realm, request)
+                .await;
+        }
+        self.send_to_kpasswd_realm_explicit(config, protocol, realm, request)
+            .await
+    }
+
+    async fn send_to_kpasswd_realm_explicit(
+        &self,
+        config: &Config,
+        protocol: KdcProtocol,
+        realm: &str,
+        request: &[u8],
+    ) -> Result<Vec<u8>, Error> {
+        let endpoints = self
+            .discover_kpasswd_servers(config, realm, protocol)
+            .await?;
         self.send_to_endpoints(realm, protocol, endpoints, request)
             .await
     }
@@ -1604,6 +1658,38 @@ impl TokioKdcTransport {
             Ok(response) => Ok(response),
             Err(_) => {
                 self.send_to_realm_explicit(config, second, realm, request)
+                    .await
+            }
+        }
+    }
+
+    async fn send_to_kpasswd_realm_auto(
+        &self,
+        config: &Config,
+        realm: &str,
+        request: &[u8],
+    ) -> Result<Vec<u8>, Error> {
+        let udp_first = auto_uses_udp_first(config, request.len());
+        let (first, second) = if udp_first {
+            (KdcProtocol::Udp, KdcProtocol::Tcp)
+        } else {
+            (KdcProtocol::Tcp, KdcProtocol::Udp)
+        };
+
+        match self
+            .send_to_kpasswd_realm_explicit(config, first, realm, request)
+            .await
+        {
+            Ok(response)
+                if first == KdcProtocol::Udp
+                    && kdc_error_code(&response) == Some(KRB_ERR_RESPONSE_TOO_BIG) =>
+            {
+                self.send_to_kpasswd_realm_explicit(config, second, realm, request)
+                    .await
+            }
+            Ok(response) => Ok(response),
+            Err(_) => {
+                self.send_to_kpasswd_realm_explicit(config, second, realm, request)
                     .await
             }
         }
