@@ -377,6 +377,7 @@ fn service_ticket_session_from_valid_ap_req() -> AsRepSession {
         start_time: timestamp(1_893_553_445),
         end_time: timestamp(1_893_639_845),
         renew_till: None,
+        key_expiration: None,
     }
 }
 

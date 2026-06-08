@@ -350,6 +350,8 @@ pub struct AsRepSession {
     pub end_time: SystemTime,
     /// Renewable-until time, when supplied.
     pub renew_till: Option<SystemTime>,
+    /// Session key expiration time, when supplied.
+    pub key_expiration: Option<SystemTime>,
 }
 
 impl AsRepSession {
@@ -687,6 +689,24 @@ impl TokioClient {
         self.service_tickets.clear();
     }
 
+    /// Return public TGT session metadata as pretty-printed JSON.
+    #[cfg(feature = "serde")]
+    pub fn sessions_json(&self) -> Result<String, serde_json::Error> {
+        let sessions = self.tgt.iter().map(session_json_entry).collect::<Vec<_>>();
+        serde_json::to_string_pretty(&sessions)
+    }
+
+    /// Return public service-ticket cache metadata as pretty-printed JSON.
+    #[cfg(feature = "serde")]
+    pub fn service_ticket_cache_json(&self) -> Result<String, serde_json::Error> {
+        let tickets = self
+            .service_tickets
+            .values()
+            .map(service_ticket_json_entry)
+            .collect::<Vec<_>>();
+        serde_json::to_string_pretty(&tickets)
+    }
+
     /// Insert or replace a service ticket in the cache.
     pub fn cache_service_ticket(&mut self, ticket: TgsRepSession) {
         let key = service_cache_key(&ticket.service);
@@ -864,6 +884,57 @@ impl TokioClient {
         }
         Ok(credentials)
     }
+}
+
+#[cfg(all(feature = "tokio", feature = "serde"))]
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "PascalCase")]
+struct SessionJsonEntry {
+    realm: String,
+    auth_time: String,
+    end_time: String,
+    renew_till: String,
+    session_key_expiration: String,
+}
+
+#[cfg(all(feature = "tokio", feature = "serde"))]
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "PascalCase")]
+struct ServiceTicketJsonEntry {
+    #[serde(rename = "SPN")]
+    spn: String,
+    auth_time: String,
+    start_time: String,
+    end_time: String,
+    renew_till: String,
+}
+
+#[cfg(all(feature = "tokio", feature = "serde"))]
+fn session_json_entry(session: &AsRepSession) -> SessionJsonEntry {
+    SessionJsonEntry {
+        realm: session.service.realm.clone(),
+        auth_time: json_time(session.auth_time),
+        end_time: json_time(session.end_time),
+        renew_till: json_time(session.renew_till.unwrap_or(session.end_time)),
+        session_key_expiration: json_time(session.key_expiration.unwrap_or(session.end_time)),
+    }
+}
+
+#[cfg(all(feature = "tokio", feature = "serde"))]
+fn service_ticket_json_entry(ticket: &TgsRepSession) -> ServiceTicketJsonEntry {
+    ServiceTicketJsonEntry {
+        spn: ticket.service.name(),
+        auth_time: json_time(ticket.auth_time),
+        start_time: json_time(ticket.start_time),
+        end_time: json_time(ticket.end_time),
+        renew_till: json_time(ticket.renew_till.unwrap_or(ticket.end_time)),
+    }
+}
+
+#[cfg(all(feature = "tokio", feature = "serde"))]
+fn json_time(time: SystemTime) -> String {
+    let timestamp: chrono::DateTime<chrono::Utc> = time.into();
+    timestamp.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
 
 #[cfg(feature = "tokio")]
@@ -2002,6 +2073,11 @@ pub fn process_as_rep(
             .as_ref()
             .map(system_time_from_kerberos_time)
             .transpose()?,
+        key_expiration: enc_part
+            .key_expiration
+            .as_ref()
+            .map(system_time_from_kerberos_time)
+            .transpose()?,
     })
 }
 
@@ -2097,6 +2173,11 @@ fn process_tgs_rep_inner(
         end_time: system_time_from_kerberos_time(&enc_part.end_time)?,
         renew_till: enc_part
             .renew_till
+            .as_ref()
+            .map(system_time_from_kerberos_time)
+            .transpose()?,
+        key_expiration: enc_part
+            .key_expiration
             .as_ref()
             .map(system_time_from_kerberos_time)
             .transpose()?,
@@ -2977,6 +3058,7 @@ fn ccache_credential_session(credential: &ccache::Credential) -> AsRepSession {
         end_time: system_time_from_u32_seconds(credential.times.end_time),
         renew_till: (credential.times.renew_till != 0)
             .then(|| system_time_from_u32_seconds(credential.times.renew_till)),
+        key_expiration: None,
     }
 }
 

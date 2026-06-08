@@ -26,7 +26,7 @@ spnego = ["messages", "dep:base64"]
 http = ["spnego", "dep:http_types"]
 tower = ["http", "dep:tower_layer", "dep:tower_service"]
 tokio = ["messages", "dep:hickory-resolver", "dep:tokio", "dep:zeroize"]
-serde = ["dep:serde"]
+serde = ["dep:serde", "dep:serde_json"]
 
 [dependencies]
 aes = "0.9.1"
@@ -49,6 +49,7 @@ rasn = { version = "0.28.13", optional = true }
 rasn-kerberos = { version = "0.28.13", features = ["otp"], optional = true }
 rc4 = "0.2.0"
 serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
 sha1 = "0.11.0"
 sha2 = "0.11.0"
 thiserror = "2"

@@ -929,6 +929,45 @@ fn tokio_client_exports_and_saves_ccache() {
     assert_eq!(loaded, cache);
 }
 
+#[cfg(all(feature = "tokio", feature = "serde"))]
+#[test]
+fn tokio_client_json_snapshots_match_gokrb5_shapes() {
+    let tgt = sample_tgt_session();
+    let service_ticket = sample_service_ticket_session(&tgt);
+    let mut client = TokioClient::from_tgt_session(Config::new(), KdcProtocol::Tcp, tgt.clone());
+    client.cache_service_ticket(service_ticket);
+
+    let sessions = client.sessions_json().expect("sessions JSON renders");
+    assert_eq!(
+        sessions,
+        r#"[
+  {
+    "Realm": "TEST.GOKRB5",
+    "AuthTime": "2030-01-02T03:04:05Z",
+    "EndTime": "2030-01-03T03:04:05Z",
+    "RenewTill": "2030-01-08T03:04:05Z",
+    "SessionKeyExpiration": "2030-01-03T03:04:05Z"
+  }
+]"#
+    );
+
+    let service_tickets = client
+        .service_ticket_cache_json()
+        .expect("service-ticket cache JSON renders");
+    assert_eq!(
+        service_tickets,
+        r#"[
+  {
+    "SPN": "HTTP/host.test.gokrb5",
+    "AuthTime": "2030-01-02T03:04:05Z",
+    "StartTime": "2030-01-02T03:04:06Z",
+    "EndTime": "2030-01-02T05:04:06Z",
+    "RenewTill": "2030-01-08T03:04:06Z"
+  }
+]"#
+    );
+}
+
 #[cfg(feature = "tokio")]
 #[test]
 fn tokio_client_updates_ccache_file_without_duplicate_tickets() {
