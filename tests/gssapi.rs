@@ -3,8 +3,9 @@
 use pretty_assertions::assert_eq;
 use rskrb5::keytab::EncryptionKey;
 use rskrb5::spnego::{
-    Error, GSS_TOKEN_FLAG_SENT_BY_ACCEPTOR, GSSAPI_ACCEPTOR_SEAL_USAGE, GSSAPI_ACCEPTOR_SIGN_USAGE,
-    GSSAPI_INITIATOR_SEAL_USAGE, GSSAPI_INITIATOR_SIGN_USAGE, MicToken, WrapToken,
+    Error, GSS_TOKEN_FLAG_SEALED, GSS_TOKEN_FLAG_SENT_BY_ACCEPTOR, GSSAPI_ACCEPTOR_SEAL_USAGE,
+    GSSAPI_ACCEPTOR_SIGN_USAGE, GSSAPI_INITIATOR_SEAL_USAGE, GSSAPI_INITIATOR_SIGN_USAGE, MicToken,
+    WrapToken,
 };
 
 const MIC_PAYLOAD: &str = "deadbeef";
@@ -15,6 +16,9 @@ const WRAP_FROM_ACCEPTOR: &str = "050401ff000c000000000000575e85d601010000853b72
 const WRAP_FROM_INITIATOR: &str =
     "050400ff000c000000000000000000000101000079a033510b6f127212242b97";
 const WRAP_PAYLOAD: &str = "01010000";
+const WRAP_SEALED_CONFOUNDER: &str = "000102030405060708090a0b0c0d0e0f";
+const WRAP_SEALED_FROM_INITIATOR: &str = "050402ff000000000000000000000000debcb2b270f4152cfe1cde9c62f90d12a59afda0127a094f4b18e8d8b8fc253c63239cc38ef96b6ce3e92c754f8a97b3";
+const WRAP_SEALED_RRC_FROM_INITIATOR: &str = "050402ff00000009000000000000000741b1ec99c834f8c7d3debcb2b270f4152cfe1cde9c62f90d12bde6bc91659577018ad4118b1e18e27263239cc39150a9";
 
 const SESSION_KEY: &str = "14f9bde6b50ec508201a97f74c4e5bd3";
 
@@ -131,6 +135,7 @@ fn wrap_token_decodes_and_roundtrips_gokrb5_vectors() {
             snd_seq_num: u64::from_be_bytes(acceptor_bytes[8..16].try_into().unwrap()),
             payload: Some(decode_hex(WRAP_PAYLOAD)),
             checksum: Some(acceptor_bytes[20..].to_vec()),
+            encrypted_body: None,
         }
     );
     assert_eq!(
@@ -149,6 +154,7 @@ fn wrap_token_decodes_and_roundtrips_gokrb5_vectors() {
             snd_seq_num: 0,
             payload: Some(decode_hex(WRAP_PAYLOAD)),
             checksum: Some(initiator_bytes[20..].to_vec()),
+            encrypted_body: None,
         }
     );
     assert_eq!(
@@ -220,12 +226,118 @@ fn wrap_token_verifies_and_builds_initiator_token() {
             snd_seq_num: 0,
             payload: Some(decode_hex(WRAP_PAYLOAD)),
             checksum: Some(decode_hex(&WRAP_FROM_INITIATOR[40..])),
+            encrypted_body: None,
         }
     );
     assert_eq!(
         hex_encode(&initiator.encode().expect("initiator wrap encodes")),
         WRAP_FROM_INITIATOR
     );
+}
+
+#[test]
+fn sealed_wrap_token_encrypts_decrypts_and_roundtrips() {
+    let key = session_key();
+    let token = WrapToken::new_initiator_sealed_with_confounder(
+        decode_hex(WRAP_PAYLOAD),
+        &key,
+        &decode_hex(WRAP_SEALED_CONFOUNDER),
+    )
+    .expect("sealed initiator wrap builds");
+
+    assert_eq!(token.flags, GSS_TOKEN_FLAG_SEALED);
+    assert_eq!(token.ec, 0);
+    assert_eq!(token.rrc, 0);
+    assert_eq!(token.snd_seq_num, 0);
+    assert_eq!(token.payload, Some(decode_hex(WRAP_PAYLOAD)));
+    assert!(token.checksum.is_none());
+    assert!(token.encrypted_body.is_some());
+
+    let encoded = token.encode().expect("sealed wrap encodes");
+    assert_eq!(hex_encode(&encoded), WRAP_SEALED_FROM_INITIATOR);
+    let decoded = WrapToken::decode(&encoded, false).expect("sealed wrap decodes");
+    assert!(decoded.is_sealed());
+    assert!(decoded.payload.is_none());
+    assert_eq!(
+        decoded
+            .decrypt_payload(&key, GSSAPI_INITIATOR_SEAL_USAGE)
+            .expect("sealed wrap decrypts"),
+        decode_hex(WRAP_PAYLOAD)
+    );
+    assert!(
+        decoded
+            .verify(&key, GSSAPI_INITIATOR_SEAL_USAGE)
+            .expect("sealed wrap verifies")
+    );
+
+    let mut decoded = decoded;
+    assert_eq!(
+        decoded
+            .decrypt_and_set_payload(&key, GSSAPI_INITIATOR_SEAL_USAGE)
+            .expect("sealed wrap decrypts into token"),
+        decode_hex(WRAP_PAYLOAD).as_slice()
+    );
+    assert_eq!(decoded.payload, Some(decode_hex(WRAP_PAYLOAD)));
+}
+
+#[test]
+fn sealed_wrap_token_supports_rrc_rotation() {
+    let key = session_key();
+    let mut token = WrapToken::new(GSS_TOKEN_FLAG_SEALED, 7).with_payload(decode_hex(WRAP_PAYLOAD));
+    token.rrc = 9;
+    token
+        .encrypt_payload_with_confounder(
+            &key,
+            GSSAPI_INITIATOR_SEAL_USAGE,
+            &decode_hex(WRAP_SEALED_CONFOUNDER),
+        )
+        .expect("sealed wrap encrypts");
+
+    let encoded = token.encode().expect("rotated sealed wrap encodes");
+    assert_eq!(hex_encode(&encoded), WRAP_SEALED_RRC_FROM_INITIATOR);
+    assert_eq!(u16::from_be_bytes(encoded[6..8].try_into().unwrap()), 9);
+
+    let decoded = WrapToken::decode(&encoded, false).expect("rotated sealed wrap decodes");
+    assert_eq!(decoded.rrc, 9);
+    assert_eq!(
+        decoded
+            .decrypt_payload(&key, GSSAPI_INITIATOR_SEAL_USAGE)
+            .expect("rotated sealed wrap decrypts"),
+        decode_hex(WRAP_PAYLOAD)
+    );
+}
+
+#[test]
+fn sealed_wrap_token_rejects_tampering_and_wrong_usage() {
+    let key = session_key();
+    let token = WrapToken::new_initiator_sealed_with_confounder(
+        decode_hex(WRAP_PAYLOAD),
+        &key,
+        &decode_hex(WRAP_SEALED_CONFOUNDER),
+    )
+    .expect("sealed initiator wrap builds");
+    let mut decoded =
+        WrapToken::decode(&token.encode().expect("sealed wrap encodes"), false).expect("decodes");
+
+    assert!(matches!(
+        decoded.decrypt_payload(&key, GSSAPI_ACCEPTOR_SEAL_USAGE),
+        Err(Error::Crypto(_))
+    ));
+
+    decoded.snd_seq_num = 1;
+    assert!(matches!(
+        decoded.decrypt_payload(&key, GSSAPI_INITIATOR_SEAL_USAGE),
+        Err(Error::InvalidGssEncryptedHeader)
+    ));
+
+    let mut encoded = token.encode().expect("sealed wrap encodes");
+    let last = encoded.len() - 1;
+    encoded[last] ^= 0x01;
+    let decoded = WrapToken::decode(&encoded, false).expect("tampered sealed wrap still parses");
+    assert!(matches!(
+        decoded.decrypt_payload(&key, GSSAPI_INITIATOR_SEAL_USAGE),
+        Err(Error::Crypto(_))
+    ));
 }
 
 fn session_key() -> EncryptionKey {

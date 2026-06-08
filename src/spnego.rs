@@ -198,15 +198,13 @@ impl MicToken {
     }
 }
 
-/// RFC4121 unsealed GSS-API Wrap token.
-///
-/// This implements gokrb5's current checksum-only wrap-token behavior. Sealed
-/// confidentiality wrapping is intentionally not implemented yet.
+/// RFC4121 GSS-API Wrap token.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WrapToken {
     /// RFC4121 token flags.
     pub flags: u8,
-    /// Extra count, used by gokrb5 as the checksum length for unsealed tokens.
+    /// Extra count. This is the checksum length for unsealed tokens and the
+    /// filler length for sealed tokens.
     pub ec: u16,
     /// Right rotation count.
     pub rrc: u16,
@@ -214,8 +212,11 @@ pub struct WrapToken {
     pub snd_seq_num: u64,
     /// Wrapped payload bytes.
     pub payload: Option<Vec<u8>>,
-    /// Token checksum.
+    /// Token checksum for unsealed tokens.
     pub checksum: Option<Vec<u8>>,
+    /// Encrypted token body for sealed tokens, stored exactly as transmitted
+    /// after the 16-byte Wrap header, including any right rotation.
+    pub encrypted_body: Option<Vec<u8>>,
 }
 
 impl WrapToken {
@@ -228,10 +229,14 @@ impl WrapToken {
             snd_seq_num,
             payload: None,
             checksum: None,
+            encrypted_body: None,
         }
     }
 
-    /// Decode an unsealed wrap token.
+    /// Decode a wrap token.
+    ///
+    /// Sealed tokens can be parsed without a key, but their payload is only
+    /// available after [`Self::decrypt_payload`] or [`Self::decrypt_and_set_payload`].
     pub fn decode(bytes: &[u8], expect_from_acceptor: bool) -> Result<Self, Error> {
         if bytes.len() < GSS_WRAP_HEADER_LEN {
             return Err(Error::GssTokenTooShort {
@@ -246,6 +251,25 @@ impl WrapToken {
         }
 
         let ec = u16::from_be_bytes(bytes[4..6].try_into().expect("slice length checked above"));
+        let rrc = u16::from_be_bytes(bytes[6..8].try_into().expect("slice length checked above"));
+        let snd_seq_num =
+            u64::from_be_bytes(bytes[8..16].try_into().expect("slice length checked above"));
+        if bytes[2] & GSS_TOKEN_FLAG_SEALED != 0 {
+            let encrypted_body = bytes[GSS_WRAP_HEADER_LEN..].to_vec();
+            if encrypted_body.is_empty() {
+                return Err(Error::MissingGssEncryptedBody);
+            }
+            return Ok(Self {
+                flags: bytes[2],
+                ec,
+                rrc,
+                snd_seq_num,
+                payload: None,
+                checksum: None,
+                encrypted_body: Some(encrypted_body),
+            });
+        }
+
         let checksum_len = usize::from(ec);
         if checksum_len > bytes.len() - GSS_WRAP_HEADER_LEN {
             return Err(Error::InconsistentWrapChecksumLength {
@@ -258,17 +282,26 @@ impl WrapToken {
         Ok(Self {
             flags: bytes[2],
             ec,
-            rrc: u16::from_be_bytes(bytes[6..8].try_into().expect("slice length checked above")),
-            snd_seq_num: u64::from_be_bytes(
-                bytes[8..16].try_into().expect("slice length checked above"),
-            ),
+            rrc,
+            snd_seq_num,
             payload: Some(bytes[GSS_WRAP_HEADER_LEN..checksum_start].to_vec()),
             checksum: Some(bytes[checksum_start..].to_vec()),
+            encrypted_body: None,
         })
     }
 
     /// Encode this wrap token.
     pub fn encode(&self) -> Result<Vec<u8>, Error> {
+        if self.is_sealed() {
+            let encrypted_body = self
+                .encrypted_body
+                .as_ref()
+                .ok_or(Error::MissingGssEncryptedBody)?;
+            let mut bytes = self.header(self.rrc);
+            bytes.extend_from_slice(encrypted_body);
+            return Ok(bytes);
+        }
+
         let payload = self.payload.as_ref().ok_or(Error::MissingGssPayload)?;
         let checksum = self.checksum.as_ref().ok_or(Error::MissingGssChecksum)?;
         if checksum.len() != usize::from(self.ec) {
@@ -279,12 +312,7 @@ impl WrapToken {
         }
 
         let mut bytes = Vec::with_capacity(GSS_WRAP_HEADER_LEN + payload.len() + checksum.len());
-        bytes.extend_from_slice(&TOK_ID_GSS_WRAP);
-        bytes.push(self.flags);
-        bytes.push(GSS_WRAP_FILLER);
-        bytes.extend_from_slice(&self.ec.to_be_bytes());
-        bytes.extend_from_slice(&self.rrc.to_be_bytes());
-        bytes.extend_from_slice(&self.snd_seq_num.to_be_bytes());
+        bytes.extend_from_slice(&self.header(self.rrc));
         bytes.extend_from_slice(payload);
         bytes.extend_from_slice(checksum);
         Ok(bytes)
@@ -301,6 +329,9 @@ impl WrapToken {
         if self.checksum.is_some() {
             return Err(Error::GssChecksumAlreadySet);
         }
+        if self.is_sealed() {
+            return Err(Error::SealedGssTokenNeedsEncryption);
+        }
         let checksum = self.compute_checksum(key, key_usage)?;
         if self.ec == 0 {
             self.ec =
@@ -315,6 +346,11 @@ impl WrapToken {
 
     /// Verify this token's checksum.
     pub fn verify(&self, key: &EncryptionKey, key_usage: u32) -> Result<bool, Error> {
+        if self.is_sealed() {
+            self.decrypt_payload(key, key_usage)?;
+            return Ok(true);
+        }
+
         let expected = self.compute_checksum(key, key_usage)?;
         let actual = self.checksum.as_ref().ok_or(Error::MissingGssChecksum)?;
         if !constant_time_eq(&expected, actual) {
@@ -336,9 +372,118 @@ impl WrapToken {
             snd_seq_num: 0,
             payload: Some(payload.into()),
             checksum: None,
+            encrypted_body: None,
         };
         token.set_checksum(key, GSSAPI_INITIATOR_SEAL_USAGE)?;
         Ok(token)
+    }
+
+    /// Build an initiator sealed wrap token with a random confounder.
+    pub fn new_initiator_sealed(
+        payload: impl Into<Vec<u8>>,
+        key: &EncryptionKey,
+    ) -> Result<Self, Error> {
+        let etype = AesEtype::from_etype_id(key.etype).ok_or(Error::UnsupportedEtype(key.etype))?;
+        let mut confounder = vec![0; etype.confounder_len()];
+        getrandom::fill(&mut confounder)?;
+        Self::new_initiator_sealed_with_confounder(payload, key, &confounder)
+    }
+
+    /// Build an initiator sealed wrap token with an explicit confounder.
+    pub fn new_initiator_sealed_with_confounder(
+        payload: impl Into<Vec<u8>>,
+        key: &EncryptionKey,
+        confounder: &[u8],
+    ) -> Result<Self, Error> {
+        let mut token = Self {
+            flags: GSS_TOKEN_FLAG_SEALED,
+            ec: 0,
+            rrc: 0,
+            snd_seq_num: 0,
+            payload: Some(payload.into()),
+            checksum: None,
+            encrypted_body: None,
+        };
+        token.encrypt_payload_with_confounder(key, GSSAPI_INITIATOR_SEAL_USAGE, confounder)?;
+        Ok(token)
+    }
+
+    /// Encrypt this token's payload as a sealed RFC4121 Wrap token.
+    pub fn encrypt_payload_with_confounder(
+        &mut self,
+        key: &EncryptionKey,
+        key_usage: u32,
+        confounder: &[u8],
+    ) -> Result<(), Error> {
+        if self.encrypted_body.is_some() {
+            return Err(Error::GssEncryptedBodyAlreadySet);
+        }
+
+        self.flags |= GSS_TOKEN_FLAG_SEALED;
+        let payload = self.payload.as_ref().ok_or(Error::MissingGssPayload)?;
+        let etype = AesEtype::from_etype_id(key.etype).ok_or(Error::UnsupportedEtype(key.etype))?;
+        let mut plaintext = Vec::with_capacity(payload.len() + usize::from(self.ec) + 16);
+        plaintext.extend_from_slice(payload);
+        plaintext.resize(plaintext.len() + usize::from(self.ec), 0);
+        plaintext.extend_from_slice(&self.header(0));
+
+        let encrypted =
+            etype.encrypt_message_with_confounder(&key.value, &plaintext, key_usage, confounder)?;
+        self.encrypted_body = Some(rotate_right(&encrypted, usize::from(self.rrc)));
+        self.checksum = None;
+        Ok(())
+    }
+
+    /// Decrypt and return the payload of a sealed Wrap token.
+    pub fn decrypt_payload(&self, key: &EncryptionKey, key_usage: u32) -> Result<Vec<u8>, Error> {
+        if !self.is_sealed() {
+            return Err(Error::GssTokenNotSealed);
+        }
+
+        let encrypted_body = self
+            .encrypted_body
+            .as_ref()
+            .ok_or(Error::MissingGssEncryptedBody)?;
+        let encrypted = rotate_left(encrypted_body, usize::from(self.rrc));
+        let etype = AesEtype::from_etype_id(key.etype).ok_or(Error::UnsupportedEtype(key.etype))?;
+        let plaintext = etype.decrypt_message(&key.value, &encrypted, key_usage)?;
+
+        let trailer_len = GSS_WRAP_HEADER_LEN + usize::from(self.ec);
+        if plaintext.len() < trailer_len {
+            return Err(Error::GssDecryptedTokenTooShort {
+                minimum: trailer_len,
+                actual: plaintext.len(),
+            });
+        }
+
+        let header_start = plaintext.len() - GSS_WRAP_HEADER_LEN;
+        let embedded_header = &plaintext[header_start..];
+        let expected_header = self.header(0);
+        if embedded_header != expected_header {
+            return Err(Error::InvalidGssEncryptedHeader);
+        }
+
+        let payload_len = plaintext.len() - trailer_len;
+        Ok(plaintext[..payload_len].to_vec())
+    }
+
+    /// Decrypt a sealed token and store its payload on this value.
+    pub fn decrypt_and_set_payload(
+        &mut self,
+        key: &EncryptionKey,
+        key_usage: u32,
+    ) -> Result<&[u8], Error> {
+        let payload = self.decrypt_payload(key, key_usage)?;
+        self.payload = Some(payload);
+        Ok(self
+            .payload
+            .as_deref()
+            .expect("payload was set immediately above"))
+    }
+
+    /// Whether this Wrap token has the RFC4121 sealed/confidentiality flag.
+    pub fn is_sealed(&self) -> bool {
+        self.flags & GSS_TOKEN_FLAG_SEALED != 0
     }
 
     fn compute_checksum(&self, key: &EncryptionKey, key_usage: u32) -> Result<Vec<u8>, Error> {
@@ -351,6 +496,10 @@ impl WrapToken {
         etype
             .checksum(&key.value, &data, key_usage)
             .map_err(Error::Crypto)
+    }
+
+    fn header(&self, rrc: u16) -> Vec<u8> {
+        wrap_header(self.flags, self.ec, rrc, self.snd_seq_num)
     }
 }
 
@@ -1198,14 +1347,49 @@ fn validate_gss_sender(flags: u8, expect_from_acceptor: bool) -> Result<(), Erro
 }
 
 fn wrap_checksum_header(flags: u8, snd_seq_num: u64) -> Vec<u8> {
+    wrap_header(flags, 0, 0, snd_seq_num)
+}
+
+fn wrap_header(flags: u8, ec: u16, rrc: u16, snd_seq_num: u64) -> Vec<u8> {
     let mut header = Vec::with_capacity(GSS_WRAP_HEADER_LEN);
     header.extend_from_slice(&TOK_ID_GSS_WRAP);
     header.push(flags);
     header.push(GSS_WRAP_FILLER);
-    header.extend_from_slice(&0u16.to_be_bytes());
-    header.extend_from_slice(&0u16.to_be_bytes());
+    header.extend_from_slice(&ec.to_be_bytes());
+    header.extend_from_slice(&rrc.to_be_bytes());
     header.extend_from_slice(&snd_seq_num.to_be_bytes());
     header
+}
+
+fn rotate_right(bytes: &[u8], count: usize) -> Vec<u8> {
+    if bytes.is_empty() {
+        return Vec::new();
+    }
+    let count = count % bytes.len();
+    if count == 0 {
+        return bytes.to_vec();
+    }
+
+    let split = bytes.len() - count;
+    let mut out = Vec::with_capacity(bytes.len());
+    out.extend_from_slice(&bytes[split..]);
+    out.extend_from_slice(&bytes[..split]);
+    out
+}
+
+fn rotate_left(bytes: &[u8], count: usize) -> Vec<u8> {
+    if bytes.is_empty() {
+        return Vec::new();
+    }
+    let count = count % bytes.len();
+    if count == 0 {
+        return bytes.to_vec();
+    }
+
+    let mut out = Vec::with_capacity(bytes.len());
+    out.extend_from_slice(&bytes[count..]);
+    out.extend_from_slice(&bytes[..count]);
+    out
 }
 
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
@@ -1325,6 +1509,22 @@ pub enum Error {
     #[error("GSS token checksum has already been set")]
     GssChecksumAlreadySet,
 
+    /// GSS-API sealed token encrypted body was absent.
+    #[error("GSS sealed token encrypted body has not been set")]
+    MissingGssEncryptedBody,
+
+    /// GSS-API sealed token encrypted body was already set.
+    #[error("GSS sealed token encrypted body has already been set")]
+    GssEncryptedBodyAlreadySet,
+
+    /// GSS-API token needs encryption instead of a separate checksum.
+    #[error("GSS sealed token must be encrypted, not checksummed")]
+    SealedGssTokenNeedsEncryption,
+
+    /// GSS-API token was not sealed.
+    #[error("GSS token is not sealed")]
+    GssTokenNotSealed,
+
     /// GSS-API token checksum length did not match the header.
     #[error("invalid GSS checksum length: expected {expected} bytes, got {actual}")]
     InvalidGssChecksumLength {
@@ -1348,6 +1548,19 @@ pub enum Error {
     /// GSS-API checksum verification failed.
     #[error("GSS token checksum mismatch")]
     GssChecksumMismatch,
+
+    /// GSS-API sealed token decrypted to too few bytes.
+    #[error("GSS decrypted token too short: expected at least {minimum} bytes, got {actual}")]
+    GssDecryptedTokenTooShort {
+        /// Minimum accepted byte length.
+        minimum: usize,
+        /// Actual byte length.
+        actual: usize,
+    },
+
+    /// GSS-API sealed token embedded header did not match the clear header.
+    #[error("GSS sealed token embedded header mismatch")]
+    InvalidGssEncryptedHeader,
 
     /// NegTokenInit omitted the mechanism list.
     #[error("NegTokenInit does not contain any mechanism types")]
