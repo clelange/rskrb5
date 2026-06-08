@@ -2,9 +2,11 @@
 
 use pretty_assertions::assert_eq;
 use rasn::types::Integer;
+use rskrb5::crypto::KerberosEtype;
 use rskrb5::kadmin::{
-    ChangePasswdData, ChangePasswordResult, Error as KadminError, KPASSWD_AUTHERROR,
-    KPASSWD_SUCCESS, Reply, Request,
+    ChangePasswdData, ChangePasswordResult, EncKrbPrivPartOptions, Error as KadminError,
+    KPASSWD_AUTHERROR, KPASSWD_SUCCESS, KRB_PRIV_ENCPART_USAGE, KRB_PRIV_MSG_TYPE, KRB_PRIV_PVNO,
+    Reply, Request, build_krb_priv_with_confounder, ipv4_host_address, ipv6_host_address,
 };
 use rskrb5::keytab::EncryptionKey;
 
@@ -40,6 +42,49 @@ fn change_passwd_data_builds_password_only_payload() {
     assert_eq!(decoded.new_passwd.as_ref(), b"newpassword");
     assert!(decoded.targ_name.is_none());
     assert!(decoded.targ_realm.is_none());
+}
+
+#[test]
+fn krb_priv_builder_encrypts_change_password_payload() {
+    let data = ChangePasswdData::new(b"newpassword")
+        .encode_der()
+        .expect("ChangePasswdData encodes");
+    let key = EncryptionKey {
+        etype: 18,
+        value: vec![0x11; 32],
+    };
+    let sender_address = ipv4_host_address([127, 0, 0, 1]);
+    let recipient_address = ipv6_host_address([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+    let options = EncKrbPrivPartOptions::new(sender_address.clone())
+        .with_sequence_number(7)
+        .with_recipient_address(recipient_address.clone());
+    let etype = KerberosEtype::from_etype_id(key.etype).expect("AES256 etype");
+    let confounder = vec![0x22; etype.confounder_len()];
+
+    let krb_priv =
+        build_krb_priv_with_confounder(&data, options, &key, &confounder).expect("KRB-PRIV builds");
+
+    assert_eq!(krb_priv.pvno, Integer::from(KRB_PRIV_PVNO));
+    assert_eq!(krb_priv.msg_type, Integer::from(KRB_PRIV_MSG_TYPE));
+    assert_eq!(krb_priv.enc_part.etype, key.etype);
+    assert!(krb_priv.enc_part.kvno.is_none());
+
+    let plaintext = etype
+        .decrypt_message(
+            &key.value,
+            krb_priv.enc_part.cipher.as_ref(),
+            KRB_PRIV_ENCPART_USAGE,
+        )
+        .expect("KRB-PRIV decrypts");
+    let enc_part: rasn_kerberos::EncKrbPrivPart =
+        rasn::der::decode(&plaintext).expect("EncKrbPrivPart decodes");
+    let decoded_data =
+        ChangePasswdData::decode_der(enc_part.user_data.as_ref()).expect("payload decodes");
+
+    assert_eq!(decoded_data, ChangePasswdData::new(b"newpassword"));
+    assert_eq!(enc_part.sender_address, sender_address);
+    assert_eq!(enc_part.recipient_address, Some(recipient_address));
+    assert_eq!(enc_part.seq_number, Some(7));
 }
 
 #[test]

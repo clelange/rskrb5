@@ -10,6 +10,10 @@ pub const CHANGE_PASSWORD_REQUEST_VERSION: u16 = 0xff80;
 pub const CHANGE_PASSWORD_REPLY_VERSION: u16 = 1;
 /// Key usage for encrypted KRB-PRIV payloads.
 pub const KRB_PRIV_ENCPART_USAGE: u32 = 13;
+/// Kerberos protocol version used by KRB-PRIV.
+pub const KRB_PRIV_PVNO: i32 = 5;
+/// KRB-PRIV message type.
+pub const KRB_PRIV_MSG_TYPE: i32 = 21;
 /// Password change succeeded.
 pub const KPASSWD_SUCCESS: u16 = 0;
 /// Request was malformed.
@@ -79,6 +83,114 @@ impl ChangePasswdData {
     pub fn encode_der(&self) -> Result<Vec<u8>, Error> {
         encode("ChangePasswdData", self)
     }
+}
+
+/// Options for constructing an encrypted KRB-PRIV payload.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EncKrbPrivPartOptions {
+    /// Optional sender timestamp.
+    pub timestamp: Option<rasn_kerberos::KerberosTime>,
+    /// Optional sender timestamp microseconds.
+    pub usec: Option<rasn_kerberos::Microseconds>,
+    /// Optional sender sequence number.
+    pub seq_number: Option<u32>,
+    /// Sender host address.
+    pub sender_address: rasn_kerberos::HostAddress,
+    /// Optional recipient host address.
+    pub recipient_address: Option<rasn_kerberos::HostAddress>,
+}
+
+impl EncKrbPrivPartOptions {
+    /// Construct options with the required sender address.
+    pub fn new(sender_address: rasn_kerberos::HostAddress) -> Self {
+        Self {
+            timestamp: None,
+            usec: None,
+            seq_number: None,
+            sender_address,
+            recipient_address: None,
+        }
+    }
+
+    /// Set the sender timestamp and microseconds.
+    pub fn with_timestamp(mut self, timestamp: rasn_kerberos::KerberosTime, usec: u32) -> Self {
+        self.timestamp = Some(timestamp);
+        self.usec = Some(Integer::from(usec));
+        self
+    }
+
+    /// Set the sender sequence number.
+    pub fn with_sequence_number(mut self, seq_number: u32) -> Self {
+        self.seq_number = Some(seq_number);
+        self
+    }
+
+    /// Set the optional recipient address.
+    pub fn with_recipient_address(mut self, recipient_address: rasn_kerberos::HostAddress) -> Self {
+        self.recipient_address = Some(recipient_address);
+        self
+    }
+}
+
+/// Construct a Kerberos host address.
+pub fn host_address(addr_type: i32, address: impl AsRef<[u8]>) -> rasn_kerberos::HostAddress {
+    rasn_kerberos::HostAddress {
+        addr_type,
+        address: address.as_ref().to_vec().into(),
+    }
+}
+
+/// Construct an IPv4 Kerberos host address.
+pub fn ipv4_host_address(octets: [u8; 4]) -> rasn_kerberos::HostAddress {
+    host_address(rasn_kerberos::HostAddress::IPV4, octets)
+}
+
+/// Construct an IPv6 Kerberos host address.
+pub fn ipv6_host_address(octets: [u8; 16]) -> rasn_kerberos::HostAddress {
+    host_address(rasn_kerberos::HostAddress::IPV6, octets)
+}
+
+/// Build an unencrypted KRB-PRIV part around application data.
+pub fn build_enc_krb_priv_part(
+    user_data: impl AsRef<[u8]>,
+    options: EncKrbPrivPartOptions,
+) -> rasn_kerberos::EncKrbPrivPart {
+    rasn_kerberos::EncKrbPrivPart {
+        user_data: user_data.as_ref().to_vec().into(),
+        timestamp: options.timestamp,
+        usec: options.usec,
+        seq_number: options.seq_number,
+        sender_address: options.sender_address,
+        recipient_address: options.recipient_address,
+    }
+}
+
+/// Build a KRB-PRIV message using a caller-supplied confounder.
+pub fn build_krb_priv_with_confounder(
+    user_data: impl AsRef<[u8]>,
+    options: EncKrbPrivPartOptions,
+    key: &EncryptionKey,
+    confounder: &[u8],
+) -> Result<rasn_kerberos::KrbPriv, Error> {
+    let enc_part = build_enc_krb_priv_part(user_data, options);
+    let plaintext = encode("EncKrbPrivPart", &enc_part)?;
+    let etype =
+        KerberosEtype::from_etype_id(key.etype).ok_or(Error::UnsupportedEtype(key.etype))?;
+    let cipher = etype
+        .encrypt_message_with_confounder(&key.value, &plaintext, KRB_PRIV_ENCPART_USAGE, confounder)
+        .map_err(|source| Error::Crypto {
+            message: source.to_string(),
+        })?;
+
+    Ok(rasn_kerberos::KrbPriv {
+        pvno: Integer::from(KRB_PRIV_PVNO),
+        msg_type: Integer::from(KRB_PRIV_MSG_TYPE),
+        enc_part: rasn_kerberos::EncryptedData {
+            etype: key.etype,
+            kvno: None,
+            cipher: cipher.into(),
+        },
+    })
 }
 
 /// Password-change request frame containing AP-REQ and KRB-PRIV messages.
