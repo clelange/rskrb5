@@ -3,11 +3,14 @@
 use std::time::{Duration, UNIX_EPOCH};
 
 use pretty_assertions::assert_eq;
-use rskrb5::keytab::Keytab;
+use rskrb5::client::{AsRepSession, Principal};
+use rskrb5::crypto::AesSha1Etype;
+use rskrb5::keytab::{EncryptionKey, Keytab};
 use rskrb5::service::{ApRepOptions, ServiceValidator};
 use rskrb5::spnego::{
-    self, CONTEXT_FLAG_CONF, CONTEXT_FLAG_INTEG, Krb5MechToken, Krb5TokenId, NegState,
-    NegTokenInit, NegTokenResp, NegotiationToken, ObjectIdentifier, SpnegoToken,
+    self, CONTEXT_FLAG_CONF, CONTEXT_FLAG_INTEG, InitiatorContextOptions, Krb5MechToken,
+    Krb5TokenId, NegState, NegTokenInit, NegTokenResp, NegotiationToken, ObjectIdentifier,
+    SpnegoToken,
 };
 
 const KRB5_TOKEN: &str = concat!(
@@ -87,6 +90,7 @@ const VALID_AP_REQ: &str = concat!(
     "db192d415375581bdf9a2bfe73d19c13ba1d983bf513",
 );
 const AP_REP_CONFOUNDER: &str = "000102030405060708090a0b0c0d0e0f";
+const VALID_SESSION_KEY: &str = "8845cbaccbf11cb9f467fd577ba51c70d73de6554980a05395bf319e18bdda07";
 const AP_REP_RESPONSE_HEADER: &str = concat!(
     "Negotiate oXwweqADCgEAoQsGCSqGSIb3EgECAqJmBGRgYgYJKoZIhvcSAQICAgBvUzBRoAMCA",
     "QWhAwIBD6JFMEOgAwIBEqI8BDppQ8cwkzFMwZgOlePIcX3CimzQtTGRdViU5aDq1oZTFG",
@@ -253,6 +257,94 @@ fn validates_service_ap_req_from_spnego_header_and_builds_ap_rep_response() {
 }
 
 #[test]
+fn builds_client_spnego_header_from_service_ticket() {
+    let service_ticket = service_ticket_session_from_valid_ap_req();
+    let context = spnego::init_sec_context_with_confounder(
+        &service_ticket,
+        InitiatorContextOptions::new().with_sequence_number(Some(42)),
+        timestamp(1_893_553_447),
+        123_456,
+        &decode_hex(AP_REP_CONFOUNDER),
+    )
+    .expect("client SPNEGO context builds");
+
+    assert_eq!(context.client, Principal::user("TEST.GOKRB5", "testuser1"));
+    assert_eq!(
+        context.service,
+        Principal::new("TEST.GOKRB5", 1, ["HTTP", "host.test.gokrb5"])
+    );
+    assert_eq!(context.sequence_number, Some(42));
+
+    let parsed = spnego::parse_negotiate_header(&context.header).expect("header parses");
+    assert_eq!(parsed, context.spnego_token);
+    assert_eq!(
+        parsed.krb5_ap_req().expect("AP-REQ in SPNEGO"),
+        context.ap_req_der
+    );
+
+    let ap_req: rasn_kerberos::ApReq =
+        rasn::der::decode(&context.ap_req_der).expect("AP-REQ decodes");
+    assert_eq!(ap_req.msg_type, 14.into());
+    assert_eq!(ap_req.ap_options.0.as_raw_slice(), &[0, 0, 0, 0]);
+    assert_eq!(ap_req.authenticator.etype, 18);
+
+    let authenticator_bytes = AesSha1Etype::Aes256
+        .decrypt_message(
+            &service_ticket.session_key.value,
+            ap_req.authenticator.cipher.as_ref(),
+            11,
+        )
+        .expect("authenticator decrypts");
+    let authenticator: rasn_kerberos::Authenticator =
+        rasn::der::decode(&authenticator_bytes).expect("Authenticator decodes");
+    let checksum = authenticator.cksum.expect("GSS checksum exists");
+    assert_eq!(checksum.r#type, 32_771);
+    assert_eq!(hex_encode(checksum.checksum.as_ref()), AUTH_CHECKSUM);
+    assert_eq!(authenticator.seq_number, Some(42));
+
+    let keytab = Keytab::parse(&decode_hex(HTTP_KEYTAB)).expect("HTTP keytab parses");
+    let mut validator =
+        ServiceValidator::new(&keytab).with_now(UNIX_EPOCH + Duration::from_secs(1_893_553_447));
+    let accepted = spnego::accept_sec_context_header(&mut validator, &context.header)
+        .expect("client SPNEGO header validates");
+    assert_eq!(accepted.ap_req.client.name(), "testuser1");
+    assert_eq!(accepted.ap_req.service.name(), "HTTP/host.test.gokrb5");
+    assert_eq!(accepted.ap_req.sequence_number, Some(42));
+}
+
+#[test]
+fn verifies_spnego_ap_rep_response_header_as_client() {
+    let service_ticket = service_ticket_session_from_valid_ap_req();
+    let context = spnego::init_sec_context_with_confounder(
+        &service_ticket,
+        InitiatorContextOptions::new().with_sequence_number(Some(42)),
+        timestamp(1_893_553_447),
+        123_456,
+        &decode_hex(AP_REP_CONFOUNDER),
+    )
+    .expect("client SPNEGO context builds");
+    let keytab = Keytab::parse(&decode_hex(HTTP_KEYTAB)).expect("HTTP keytab parses");
+    let mut validator =
+        ServiceValidator::new(&keytab).with_now(UNIX_EPOCH + Duration::from_secs(1_893_553_447));
+    let accepted = spnego::accept_sec_context_header(&mut validator, &context.header)
+        .expect("client SPNEGO header validates");
+    let response_header = accepted
+        .ap_rep_response_header_with_confounder(
+            &decode_hex(AP_REP_CONFOUNDER),
+            ApRepOptions::default(),
+        )
+        .expect("AP-REP response header builds");
+
+    let verified = context
+        .verify_ap_rep_response_header(&response_header)
+        .expect("client verifies AP-REP response header");
+
+    assert_eq!(verified.ctime, context.authenticator_ctime);
+    assert_eq!(verified.cusec, context.authenticator_cusec);
+    assert_eq!(verified.authenticator_time, context.authenticator_time);
+}
+
+#[test]
 fn negotiation_token_enum_roundtrips() {
     let init = NegotiationToken::decode(&decode_hex(NEG_TOKEN_INIT)).expect("init choice decodes");
     assert!(matches!(init, NegotiationToken::Init(_)));
@@ -267,6 +359,29 @@ fn negotiation_token_enum_roundtrips() {
         hex_encode(&resp.encode().expect("resp choice encodes")),
         NEG_TOKEN_RESP
     );
+}
+
+fn service_ticket_session_from_valid_ap_req() -> AsRepSession {
+    let ap_req: rasn_kerberos::ApReq =
+        rasn::der::decode(&decode_hex(VALID_AP_REQ)).expect("AP-REQ fixture decodes");
+    AsRepSession {
+        client: Principal::user("TEST.GOKRB5", "testuser1"),
+        service: Principal::new("TEST.GOKRB5", 1, ["HTTP", "host.test.gokrb5"]),
+        session_key: EncryptionKey {
+            etype: 18,
+            value: decode_hex(VALID_SESSION_KEY),
+        },
+        ticket: rasn::der::encode(&ap_req.ticket).expect("ticket encodes"),
+        ticket_flags: [0; 4],
+        auth_time: timestamp(1_893_553_445),
+        start_time: timestamp(1_893_553_445),
+        end_time: timestamp(1_893_639_845),
+        renew_till: None,
+    }
+}
+
+fn timestamp(seconds: u64) -> std::time::SystemTime {
+    UNIX_EPOCH + Duration::from_secs(seconds)
 }
 
 fn decode_hex(input: &str) -> Vec<u8> {

@@ -1,13 +1,18 @@
 //! SPNEGO and GSS-API Kerberos token helpers.
 //!
-//! This module covers the service-side wrapper layer around the Kerberos
-//! messages handled by [`crate::service`]: GSS-API KRB5 mech tokens, SPNEGO
+//! This module covers the wrapper layer around the Kerberos messages handled by
+//! [`crate::client`] and [`crate::service`]: GSS-API KRB5 mech tokens, SPNEGO
 //! NegTokenInit/NegTokenResp negotiation tokens, and HTTP `Negotiate` header
 //! encoding/decoding.
 
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
 use base64::Engine as _;
 
-use crate::service::{ApRepOptions, ServiceValidator, ValidatedApReq};
+use crate::client::{Principal, TgsRepSession};
+use crate::crypto::AesSha1Etype;
+use crate::keytab::EncryptionKey;
+use crate::service::{ApRepOptions, ServiceValidator, ValidatedApReq, VerifiedApRep};
 
 const TAG_SEQUENCE: u8 = 0x30;
 const TAG_OBJECT_IDENTIFIER: u8 = 0x06;
@@ -23,6 +28,13 @@ const TAG_CONTEXT_3: u8 = 0xa3;
 const TOK_ID_KRB_AP_REQ: [u8; 2] = [0x01, 0x00];
 const TOK_ID_KRB_AP_REP: [u8; 2] = [0x02, 0x00];
 const TOK_ID_KRB_ERROR: [u8; 2] = [0x03, 0x00];
+const KRB5_PVNO: i32 = 5;
+const KRB_AP_REQ_MSG_TYPE: i32 = 14;
+const KRB_AP_REP_MSG_TYPE: i32 = 15;
+const AP_REQ_AUTHENTICATOR_USAGE: u32 = 11;
+const AP_REP_ENCPART_USAGE: u32 = 12;
+const TGS_REQ_AP_REQ_AUTHENTICATOR_USAGE: u32 = 7;
+const GSSAPI_CHECKSUM_TYPE: i32 = 32_771;
 
 /// HTTP request header that carries SPNEGO authentication data.
 pub const HTTP_AUTHORIZATION: &str = "Authorization";
@@ -522,6 +534,150 @@ impl SpnegoToken {
     }
 }
 
+/// Options for building a client SPNEGO AP-REQ initiator token.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InitiatorContextOptions {
+    /// GSS-API context flags to place in the authenticator checksum.
+    pub context_flags: Vec<u32>,
+    /// AP-REQ option bit string.
+    pub ap_option_bits: u32,
+    /// Optional client-selected subkey.
+    pub subkey: Option<EncryptionKey>,
+    /// Optional client sequence number.
+    ///
+    /// [`init_sec_context`] fills a random gokrb5-compatible sequence number
+    /// when this is absent. [`init_sec_context_with_confounder`] preserves the
+    /// explicit value so tests can remain deterministic.
+    pub sequence_number: Option<u32>,
+}
+
+impl InitiatorContextOptions {
+    /// Construct options matching gokrb5's default HTTP SPNEGO flags.
+    pub fn new() -> Self {
+        Self {
+            context_flags: vec![CONTEXT_FLAG_INTEG, CONTEXT_FLAG_CONF],
+            ap_option_bits: 0,
+            subkey: None,
+            sequence_number: None,
+        }
+    }
+
+    /// Override GSS-API context flags.
+    pub fn with_context_flags(mut self, context_flags: impl Into<Vec<u32>>) -> Self {
+        self.context_flags = context_flags.into();
+        self
+    }
+
+    /// Override AP-REQ option bits.
+    pub fn with_ap_option_bits(mut self, ap_option_bits: u32) -> Self {
+        self.ap_option_bits = ap_option_bits;
+        self
+    }
+
+    /// Set or clear the client-selected subkey.
+    pub fn with_subkey(mut self, subkey: Option<EncryptionKey>) -> Self {
+        self.subkey = subkey;
+        self
+    }
+
+    /// Set or clear the client sequence number.
+    pub fn with_sequence_number(mut self, sequence_number: Option<u32>) -> Self {
+        self.sequence_number = sequence_number;
+        self
+    }
+}
+
+impl Default for InitiatorContextOptions {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Built client SPNEGO initiator context.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InitiatorContext {
+    /// ASN.1 AP-REQ message.
+    pub ap_req: rasn_kerberos::ApReq,
+    /// DER-encoded AP-REQ bytes.
+    pub ap_req_der: Vec<u8>,
+    /// KRB5 mech token carrying the AP-REQ.
+    pub krb5_token: Krb5MechToken,
+    /// SPNEGO NegTokenInit context token.
+    pub spnego_token: SpnegoToken,
+    /// HTTP `Authorization` header value.
+    pub header: String,
+    /// Client principal placed in the authenticator.
+    pub client: Principal,
+    /// Service principal from the ticket.
+    pub service: Principal,
+    /// Service-ticket session key used for AP-REP verification.
+    pub session_key: EncryptionKey,
+    /// Authenticator `ctime` without `cusec`.
+    pub authenticator_ctime: SystemTime,
+    /// Authenticator microsecond field.
+    pub authenticator_cusec: u32,
+    /// Authenticator timestamp including `cusec`.
+    pub authenticator_time: SystemTime,
+    /// Optional client sequence number supplied in the authenticator.
+    pub sequence_number: Option<u32>,
+}
+
+impl InitiatorContext {
+    /// Verify an AP-REP wrapped in a SPNEGO `Negotiate` response header.
+    pub fn verify_ap_rep_response_header(&self, header: &str) -> Result<VerifiedApRep, Error> {
+        let token = parse_negotiate_header(header)?;
+        let response = match token {
+            SpnegoToken::Resp(response) => response,
+            SpnegoToken::Init(_) => {
+                return Err(Error::WrongNegotiationToken {
+                    expected: "NegTokenResp",
+                    actual: "NegTokenInit",
+                });
+            }
+        };
+        let response_token = response.response_token.ok_or(Error::MissingMechToken)?;
+        let krb5 = Krb5MechToken::decode(&response_token)?;
+        if krb5.token_id != Krb5TokenId::ApRep {
+            return Err(Error::MissingApRep);
+        }
+        self.verify_ap_rep(&krb5.message)
+    }
+
+    /// Verify an AP-REP message against this initiator's AP-REQ timestamp.
+    pub fn verify_ap_rep(&self, bytes: &[u8]) -> Result<VerifiedApRep, Error> {
+        let ap_rep = decode::<rasn_kerberos::ApRep>("AP-REP", bytes)?;
+        validate_integer("pvno", &ap_rep.pvno, KRB5_PVNO)?;
+        validate_integer("msg-type", &ap_rep.msg_type, KRB_AP_REP_MSG_TYPE)?;
+        let plaintext = decrypt_encrypted_data(
+            ap_rep.enc_part.etype,
+            &self.session_key.value,
+            ap_rep.enc_part.cipher.as_ref(),
+            AP_REP_ENCPART_USAGE,
+        )?;
+        let enc_part = decode::<rasn_kerberos::EncApRepPart>("EncApRepPart", &plaintext)?;
+        let ctime = system_time_from_kerberos_time(&enc_part.ctime)?;
+        let cusec = integer_to_u32("ap-rep.cusec", &enc_part.cusec)?;
+        let authenticator_time = ctime
+            .checked_add(Duration::from_micros(cusec.into()))
+            .ok_or(Error::TimeOverflow)?;
+
+        if ctime != self.authenticator_ctime || cusec != self.authenticator_cusec {
+            return Err(Error::ApRepTimestampMismatch {
+                expected: self.authenticator_time,
+                actual: authenticator_time,
+            });
+        }
+
+        Ok(VerifiedApRep {
+            ctime,
+            cusec,
+            authenticator_time,
+            subkey: enc_part.subkey.as_ref().map(encryption_key_from_rasn),
+            sequence_number: enc_part.seq_number,
+        })
+    }
+}
+
 /// Validated SPNEGO service context.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AcceptedContext {
@@ -554,6 +710,99 @@ pub fn accept_sec_context_header(
     Ok(AcceptedContext {
         ap_req: validator.validate_ap_req(&ap_req)?,
     })
+}
+
+/// Build a client SPNEGO initiator token from a TGS service-ticket session.
+pub fn init_sec_context(
+    service_ticket: &TgsRepSession,
+    mut options: InitiatorContextOptions,
+) -> Result<InitiatorContext, Error> {
+    let (timestamp, cusec) = current_time()?;
+    if options.sequence_number.is_none() {
+        options.sequence_number = Some(random_sequence_number()?);
+    }
+    let etype = AesSha1Etype::from_etype_id(service_ticket.session_key.etype)
+        .ok_or(Error::UnsupportedEtype(service_ticket.session_key.etype))?;
+    let mut confounder = vec![0; etype.confounder_len()];
+    getrandom::fill(&mut confounder)?;
+    init_sec_context_with_confounder(service_ticket, options, timestamp, cusec, &confounder)
+}
+
+/// Build a client SPNEGO initiator token with deterministic timestamp and confounder.
+pub fn init_sec_context_with_confounder(
+    service_ticket: &TgsRepSession,
+    options: InitiatorContextOptions,
+    timestamp: SystemTime,
+    cusec: u32,
+    confounder: &[u8],
+) -> Result<InitiatorContext, Error> {
+    let ticket = decode::<rasn_kerberos::Ticket>("Ticket", &service_ticket.ticket)?;
+    let authenticator = rasn_kerberos::Authenticator {
+        authenticator_vno: rasn::types::Integer::from(KRB5_PVNO),
+        crealm: kerberos_string(&service_ticket.client.realm)?,
+        cname: principal_to_rasn(&service_ticket.client)?,
+        cksum: Some(rasn_kerberos::Checksum {
+            r#type: GSSAPI_CHECKSUM_TYPE,
+            checksum: authenticator_checksum(&options.context_flags).into(),
+        }),
+        cusec: rasn::types::Integer::from(cusec),
+        ctime: kerberos_time_from_system_time(timestamp)?,
+        subkey: options.subkey.as_ref().map(encryption_key_to_rasn),
+        seq_number: options.sequence_number,
+        authorization_data: None,
+    };
+    let authenticator_der = encode("Authenticator", &authenticator)?;
+    let etype = AesSha1Etype::from_etype_id(service_ticket.session_key.etype)
+        .ok_or(Error::UnsupportedEtype(service_ticket.session_key.etype))?;
+    let cipher = etype.encrypt_message_with_confounder(
+        &service_ticket.session_key.value,
+        &authenticator_der,
+        authenticator_usage(&ticket.sname),
+        confounder,
+    )?;
+    let authenticator_kvno = ticket.enc_part.kvno;
+    let ap_req = rasn_kerberos::ApReq {
+        pvno: rasn::types::Integer::from(KRB5_PVNO),
+        msg_type: rasn::types::Integer::from(KRB_AP_REQ_MSG_TYPE),
+        ap_options: rasn_kerberos::ApOptions(kerberos_flags_from_bits(options.ap_option_bits)),
+        ticket,
+        authenticator: rasn_kerberos::EncryptedData {
+            etype: service_ticket.session_key.etype,
+            kvno: authenticator_kvno,
+            cipher: cipher.into(),
+        },
+    };
+    let ap_req_der = encode("AP-REQ", &ap_req)?;
+    let krb5_token = Krb5MechToken::ap_req(ap_req_der.clone());
+    let krb5_token_der = krb5_token.encode()?;
+    let spnego_token = SpnegoToken::Init(NegTokenInit::krb5(krb5_token_der));
+    let header = negotiate_header(&spnego_token)?;
+    let authenticator_time = timestamp
+        .checked_add(Duration::from_micros(cusec.into()))
+        .ok_or(Error::TimeOverflow)?;
+
+    Ok(InitiatorContext {
+        ap_req,
+        ap_req_der,
+        krb5_token,
+        spnego_token,
+        header,
+        client: service_ticket.client.clone(),
+        service: service_ticket.service.clone(),
+        session_key: service_ticket.session_key.clone(),
+        authenticator_ctime: timestamp,
+        authenticator_cusec: cusec,
+        authenticator_time,
+        sequence_number: options.sequence_number,
+    })
+}
+
+/// Build only the HTTP `Authorization` header value for a SPNEGO initiator token.
+pub fn authorization_header(
+    service_ticket: &TgsRepSession,
+    options: InitiatorContextOptions,
+) -> Result<String, Error> {
+    Ok(init_sec_context(service_ticket, options)?.header)
 }
 
 /// Decode an HTTP `Negotiate` header into a SPNEGO token.
@@ -696,6 +945,10 @@ pub enum Error {
     #[error("SPNEGO token does not carry a KRB5 AP-REQ")]
     MissingApReq,
 
+    /// SPNEGO token does not carry an AP-REP.
+    #[error("SPNEGO token does not carry a KRB5 AP-REP")]
+    MissingApRep,
+
     /// A negotiation token had the wrong CHOICE variant.
     #[error("expected {expected}, got {actual}")]
     WrongNegotiationToken {
@@ -721,9 +974,233 @@ pub enum Error {
     #[error("base64 decode error: {0}")]
     Base64(base64::DecodeError),
 
+    /// ASN.1 DER decode failed.
+    #[error("failed to decode {target}: {message}")]
+    Decode {
+        /// Decoded type name.
+        target: &'static str,
+        /// Decoder error text.
+        message: String,
+    },
+
+    /// ASN.1 DER encode failed.
+    #[error("failed to encode {target}: {message}")]
+    Encode {
+        /// Encoded type name.
+        target: &'static str,
+        /// Encoder error text.
+        message: String,
+    },
+
+    /// A Kerberos string value could not be constructed.
+    #[error("invalid Kerberos string value: {0}")]
+    InvalidKerberosString(String),
+
+    /// A Kerberos integer could not fit in the expected Rust type.
+    #[error("integer field {field} is out of range: {value}")]
+    IntegerOutOfRange {
+        /// Field name.
+        field: &'static str,
+        /// Integer value.
+        value: String,
+    },
+
+    /// Message field did not contain the expected value.
+    #[error("invalid {field}: expected {expected}, got {actual}")]
+    InvalidMessage {
+        /// Field name.
+        field: &'static str,
+        /// Expected value.
+        expected: i32,
+        /// Actual value.
+        actual: String,
+    },
+
+    /// The encrypted data etype is not implemented yet.
+    #[error("unsupported encryption type: {0}")]
+    UnsupportedEtype(i32),
+
+    /// Crypto operation failed.
+    #[error("crypto error: {0}")]
+    Crypto(#[from] crate::crypto::Error),
+
+    /// Random byte generation failed.
+    #[error("random byte generation failed: {0}")]
+    Random(#[from] getrandom::Error),
+
+    /// A Kerberos time could not be represented as a `SystemTime`.
+    #[error("Kerberos time overflows SystemTime")]
+    TimeOverflow,
+
+    /// AP-REP did not echo the AP-REQ authenticator timestamp.
+    #[error("AP-REP timestamp mismatch: expected {expected:?}, got {actual:?}")]
+    ApRepTimestampMismatch {
+        /// Expected AP-REQ authenticator timestamp.
+        expected: SystemTime,
+        /// Timestamp supplied by AP-REP.
+        actual: SystemTime,
+    },
+
     /// Service AP-REQ validation failed.
     #[error("service validation error: {0}")]
     Service(#[from] crate::service::Error),
+}
+
+fn decode<T>(target: &'static str, bytes: &[u8]) -> Result<T, Error>
+where
+    T: rasn::Decode,
+{
+    rasn::der::decode(bytes).map_err(|source| Error::Decode {
+        target,
+        message: source.to_string(),
+    })
+}
+
+fn encode<T>(target: &'static str, value: &T) -> Result<Vec<u8>, Error>
+where
+    T: rasn::Encode,
+{
+    rasn::der::encode(value).map_err(|source| Error::Encode {
+        target,
+        message: source.to_string(),
+    })
+}
+
+fn decrypt_encrypted_data(
+    etype_id: i32,
+    key: &[u8],
+    ciphertext: &[u8],
+    usage: u32,
+) -> Result<Vec<u8>, Error> {
+    let etype = AesSha1Etype::from_etype_id(etype_id).ok_or(Error::UnsupportedEtype(etype_id))?;
+    Ok(etype.decrypt_message(key, ciphertext, usage)?)
+}
+
+fn validate_integer(
+    field: &'static str,
+    actual: &rasn::types::Integer,
+    expected: i32,
+) -> Result<(), Error> {
+    if actual != &rasn::types::Integer::from(expected) {
+        return Err(Error::InvalidMessage {
+            field,
+            expected,
+            actual: actual.to_string(),
+        });
+    }
+    Ok(())
+}
+
+fn integer_to_u32(field: &'static str, value: &rasn::types::Integer) -> Result<u32, Error> {
+    value
+        .to_string()
+        .parse::<u32>()
+        .map_err(|_| Error::IntegerOutOfRange {
+            field,
+            value: value.to_string(),
+        })
+}
+
+fn principal_to_rasn(value: &Principal) -> Result<rasn_kerberos::PrincipalName, Error> {
+    Ok(rasn_kerberos::PrincipalName {
+        r#type: value.name_type,
+        string: value
+            .components
+            .iter()
+            .map(|component| kerberos_string(component))
+            .collect::<Result<Vec<_>, _>>()?,
+    })
+}
+
+fn kerberos_string(value: &str) -> Result<rasn_kerberos::KerberosString, Error> {
+    rasn_kerberos::KerberosString::from_bytes(value.as_bytes())
+        .map_err(|source| Error::InvalidKerberosString(source.to_string()))
+}
+
+fn encryption_key_to_rasn(key: &EncryptionKey) -> rasn_kerberos::EncryptionKey {
+    rasn_kerberos::EncryptionKey {
+        r#type: key.etype,
+        value: key.value.clone().into(),
+    }
+}
+
+fn encryption_key_from_rasn(value: &rasn_kerberos::EncryptionKey) -> EncryptionKey {
+    EncryptionKey {
+        etype: value.r#type,
+        value: value.value.as_ref().to_vec(),
+    }
+}
+
+fn authenticator_usage(service: &rasn_kerberos::PrincipalName) -> u32 {
+    if service
+        .string
+        .first()
+        .is_some_and(|component| component.as_bytes() == b"krbtgt")
+    {
+        TGS_REQ_AP_REQ_AUTHENTICATOR_USAGE
+    } else {
+        AP_REQ_AUTHENTICATOR_USAGE
+    }
+}
+
+fn kerberos_flags_from_bits(bits: u32) -> rasn_kerberos::KerberosFlags {
+    rasn_kerberos::KerberosFlags::from_slice(&bits.to_be_bytes())
+}
+
+fn current_time() -> Result<(SystemTime, u32), Error> {
+    let now = SystemTime::now();
+    let elapsed = now
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| Error::TimeOverflow)?;
+    Ok((
+        UNIX_EPOCH + Duration::from_secs(elapsed.as_secs()),
+        elapsed.subsec_micros(),
+    ))
+}
+
+fn random_sequence_number() -> Result<u32, Error> {
+    let mut bytes = [0; 4];
+    getrandom::fill(&mut bytes)?;
+    Ok(u32::from_be_bytes(bytes) & 0x3fff_ffff)
+}
+
+fn kerberos_time_from_system_time(time: SystemTime) -> Result<rasn_kerberos::KerberosTime, Error> {
+    let seconds = match time.duration_since(UNIX_EPOCH) {
+        Ok(duration) => duration
+            .as_secs()
+            .try_into()
+            .map_err(|_| Error::TimeOverflow)?,
+        Err(source) => {
+            let duration = source.duration();
+            let seconds: i64 = duration
+                .as_secs()
+                .try_into()
+                .map_err(|_| Error::TimeOverflow)?;
+            if duration.subsec_nanos() == 0 {
+                -seconds
+            } else {
+                -seconds.checked_add(1).ok_or(Error::TimeOverflow)?
+            }
+        }
+    };
+    let utc =
+        chrono::DateTime::<chrono::Utc>::from_timestamp(seconds, 0).ok_or(Error::TimeOverflow)?;
+    let offset = chrono::FixedOffset::east_opt(0).ok_or(Error::TimeOverflow)?;
+    Ok(rasn_kerberos::KerberosTime(utc.with_timezone(&offset)))
+}
+
+fn system_time_from_kerberos_time(time: &rasn_kerberos::KerberosTime) -> Result<SystemTime, Error> {
+    let seconds = time.0.timestamp();
+    let nanos = time.0.timestamp_subsec_nanos();
+    if seconds >= 0 {
+        UNIX_EPOCH
+            .checked_add(Duration::new(seconds as u64, nanos))
+            .ok_or(Error::TimeOverflow)
+    } else {
+        UNIX_EPOCH
+            .checked_sub(Duration::new(seconds.unsigned_abs(), nanos))
+            .ok_or(Error::TimeOverflow)
+    }
 }
 
 #[derive(Clone, Copy)]
