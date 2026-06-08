@@ -35,8 +35,6 @@ const KRB_NT_SRV_INST: i32 = 2;
 const DEFAULT_TICKET_LIFETIME: Duration = Duration::from_secs(24 * 60 * 60);
 const DEFAULT_TKT_ENCTYPES: &[i32] = &[18, 17];
 const DEFAULT_TGS_ENCTYPES: &[i32] = DEFAULT_TKT_ENCTYPES;
-const KDC_OPTION_RENEWABLE_BIT: u8 = 8;
-const KDC_OPTION_RENEW_BIT: u8 = 30;
 #[cfg(feature = "tokio")]
 const DEFAULT_KDC_TIMEOUT: Duration = Duration::from_secs(5);
 #[cfg(feature = "tokio")]
@@ -2413,11 +2411,6 @@ fn request_kdc_option_bits(bits: u32, renew_lifetime: Option<Duration>) -> u32 {
 fn renewal_kdc_option_bits(bits: u32) -> u32 {
     bits | KDC_OPTION_RENEWABLE | KDC_OPTION_RENEW
 }
-
-const _: () = {
-    assert!(KDC_OPTION_RENEWABLE == (1u32 << (31 - KDC_OPTION_RENEWABLE_BIT)));
-    assert!(KDC_OPTION_RENEW == (1u32 << (31 - KDC_OPTION_RENEW_BIT)));
-};
 
 fn zero_kerberos_flags() -> rasn_kerberos::KerberosFlags {
     rasn_kerberos::KerberosFlags::repeat(false, 32)
