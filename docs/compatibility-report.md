@@ -33,30 +33,60 @@ This report is generated from `rskrb5::evaluation` and captures the decision gat
 
 ## ASN.1 Fixture Probe Matrix
 
-| Fixture | Type | gokrb5 test | rasn-kerberos | picky-krb |
-|---|---|---|---:|---:|
-| `MarshaledKRB5authenticator` | Authenticator | types/Authenticator_test.go | yes | yes |
-| `MarshaledKRB5ticket` | Ticket | messages/Ticket_test.go | yes | yes |
-| `MarshaledKRB5enc_tkt_part` | EncTicketPart | messages/Ticket_test.go | yes | yes |
-| `MarshaledKRB5kdc_req_body` | KdcReqBody | messages/KDCReq_test.go | yes | yes |
-| `MarshaledKRB5as_req` | AS-REQ | messages/KDCReq_test.go | yes | yes |
-| `MarshaledKRB5tgs_req` | TGS-REQ | messages/KDCReq_test.go | yes | yes |
-| `MarshaledKRB5as_rep` | AS-REP | messages/KDCRep_test.go | yes | yes |
-| `MarshaledKRB5tgs_rep` | TGS-REP | messages/KDCRep_test.go | yes | yes |
-| `MarshaledKRB5enc_kdc_rep_part` | EncTgsRepPart | messages/KDCRep_test.go | yes | yes |
-| `MarshaledKRB5ap_req` | AP-REQ | messages/APReq_test.go | yes | yes |
-| `MarshaledKRB5ap_rep` | AP-REP | messages/APRep_test.go | yes | yes |
-| `MarshaledKRB5ap_rep_enc_part` | EncApRepPart | messages/APRep_test.go | yes | yes |
-| `MarshaledKRB5safe` | KRB-SAFE | messages/KRBSafe_test.go | yes | no |
-| `MarshaledKRB5priv` | KRB-PRIV | messages/KRBPriv_test.go | yes | yes |
-| `MarshaledKRB5enc_priv_part` | EncKrbPrivPart | messages/KRBPriv_test.go | yes | yes |
-| `MarshaledKRB5cred` | KRB-CRED | messages/KRBCred_test.go | yes | no |
-| `MarshaledKRB5enc_cred_part` | EncKrbCredPart | messages/KRBCred_test.go | yes | no |
-| `MarshaledKRB5error` | KRB-ERROR | messages/KRBError_test.go | yes | yes |
-| `MarshaledKRB5authorization_data` | AuthorizationData | types/AuthorizationData_test.go | yes | yes |
-| `MarshaledKRB5typed_data` | TypedData | types/TypedData_test.go | yes | no |
-| `MarshaledKRB5pa_enc_ts` | PA-ENC-TS-ENC | types/PAData_test.go | yes | yes |
-| `MarshaledKRB5enc_data` | EncryptedData | types/Cryptosystem_test.go | yes | yes |
+| Fixture | Type | gokrb5 test | rasn decode | rasn round-trip | picky decode | picky round-trip |
+|---|---|---|---:|---:|---:|---:|
+| `MarshaledKRB5authenticator` | Authenticator | types/Authenticator_test.go | yes | yes | yes | yes |
+| `MarshaledKRB5authenticatorOptionalsEmpty` | Authenticator | types/Authenticator_test.go | yes | yes | yes | yes |
+| `MarshaledKRB5authenticatorOptionalsNULL` | Authenticator | types/Authenticator_test.go | yes | yes | yes | yes |
+| `MarshaledKRB5ticket` | Ticket | messages/Ticket_test.go | yes | yes | yes | yes |
+| `MarshaledKRB5keyblock` | EncryptionKey | types/Cryptosystem_test.go | yes | yes | yes | yes |
+| `MarshaledKRB5enc_tkt_part` | EncTicketPart | messages/Ticket_test.go | yes | yes | yes | yes |
+| `MarshaledKRB5enc_tkt_partOptionalsNULL` | EncTicketPart | messages/Ticket_test.go | yes | yes | yes | yes |
+| `MarshaledKRB5kdc_req_body` | KdcReqBody | messages/KDCReq_test.go | yes | yes | yes | yes |
+| `MarshaledKRB5kdc_req_bodyOptionalsNULLexceptsecond_ticket` | KdcReqBody | messages/KDCReq_test.go | yes | yes | yes | yes |
+| `MarshaledKRB5kdc_req_bodyOptionalsNULLexceptserver` | KdcReqBody | messages/KDCReq_test.go | yes | yes | yes | yes |
+| `MarshaledKRB5as_req` | AS-REQ | messages/KDCReq_test.go | yes | yes | yes | yes |
+| `MarshaledKRB5as_reqOptionalsNULLexceptsecond_ticket` | AS-REQ | messages/KDCReq_test.go | yes | yes | yes | yes |
+| `MarshaledKRB5as_reqOptionalsNULLexceptserver` | AS-REQ | messages/KDCReq_test.go | yes | yes | yes | yes |
+| `MarshaledKRB5tgs_req` | TGS-REQ | messages/KDCReq_test.go | yes | yes | yes | yes |
+| `MarshaledKRB5tgs_reqOptionalsNULLexceptsecond_ticket` | TGS-REQ | messages/KDCReq_test.go | yes | yes | yes | yes |
+| `MarshaledKRB5tgs_reqOptionalsNULLexceptserver` | TGS-REQ | messages/KDCReq_test.go | yes | yes | yes | yes |
+| `MarshaledKRB5as_rep` | AS-REP | messages/KDCRep_test.go | yes | yes | yes | yes |
+| `MarshaledKRB5as_repOptionalsNULL` | AS-REP | messages/KDCRep_test.go | yes | yes | yes | yes |
+| `MarshaledKRB5tgs_rep` | TGS-REP | messages/KDCRep_test.go | yes | yes | yes | yes |
+| `MarshaledKRB5tgs_repOptionalsNULL` | TGS-REP | messages/KDCRep_test.go | yes | yes | yes | yes |
+| `MarshaledKRB5enc_kdc_rep_part` | EncTgsRepPart | messages/KDCRep_test.go | yes | yes | yes | yes |
+| `MarshaledKRB5enc_kdc_rep_partOptionalsNULL` | EncTgsRepPart | messages/KDCRep_test.go | yes | yes | yes | yes |
+| `MarshaledKRB5ap_req` | AP-REQ | messages/APReq_test.go | yes | yes | yes | yes |
+| `MarshaledKRB5ap_rep` | AP-REP | messages/APRep_test.go | yes | yes | yes | yes |
+| `MarshaledKRB5ap_rep_enc_part` | EncApRepPart | messages/APRep_test.go | yes | yes | yes | yes |
+| `MarshaledKRB5ap_rep_enc_partOptionalsNULL` | EncApRepPart | messages/APRep_test.go | yes | yes | yes | yes |
+| `MarshaledKRB5safe` | KRB-SAFE | messages/KRBSafe_test.go | yes | yes | no | no |
+| `MarshaledKRB5safeOptionalsNULL` | KRB-SAFE | messages/KRBSafe_test.go | yes | yes | no | no |
+| `MarshaledKRB5priv` | KRB-PRIV | messages/KRBPriv_test.go | yes | yes | yes | yes |
+| `MarshaledKRB5enc_priv_part` | EncKrbPrivPart | messages/KRBPriv_test.go | yes | yes | yes | no |
+| `MarshaledKRB5enc_priv_partOptionalsNULL` | EncKrbPrivPart | messages/KRBPriv_test.go | yes | yes | yes | yes |
+| `MarshaledKRB5cred` | KRB-CRED | messages/KRBCred_test.go | yes | yes | no | no |
+| `MarshaledKRB5enc_cred_part` | EncKrbCredPart | messages/KRBCred_test.go | yes | yes | no | no |
+| `MarshaledKRB5enc_cred_partOptionalsNULL` | EncKrbCredPart | messages/KRBCred_test.go | yes | yes | no | no |
+| `MarshaledKRB5error` | KRB-ERROR | messages/KRBError_test.go | yes | yes | yes | no |
+| `MarshaledKRB5errorOptionalsNULL` | KRB-ERROR | messages/KRBError_test.go | yes | yes | yes | no |
+| `MarshaledKRB5authorization_data` | AuthorizationData | types/AuthorizationData_test.go | yes | yes | yes | yes |
+| `MarshaledKRB5ad_kdcissued` | AD-KDCIssued | types/AuthorizationData_test.go | yes | yes | no | no |
+| `MarshaledKRB5padata_sequence` | PA-DATA sequence | types/PAData_test.go | yes | yes | yes | yes |
+| `MarshaledKRB5padataSequenceEmpty` | PA-DATA sequence | types/PAData_test.go | yes | yes | yes | yes |
+| `MarshaledKRB5typed_data` | TypedData | types/TypedData_test.go | yes | yes | no | no |
+| `MarshaledKRB5pa_enc_ts` | PA-ENC-TS-ENC | types/PAData_test.go | yes | yes | yes | yes |
+| `MarshaledKRB5pa_enc_tsNoUsec` | PA-ENC-TS-ENC | types/PAData_test.go | yes | yes | yes | yes |
+| `MarshaledKRB5etype_info` | ETYPE-INFO | types/PAData_test.go | yes | yes | no | no |
+| `MarshaledKRB5etype_infoOnly1` | ETYPE-INFO | types/PAData_test.go | yes | yes | no | no |
+| `MarshaledKRB5etype_infoNoInfo` | ETYPE-INFO | types/PAData_test.go | yes | yes | no | no |
+| `MarshaledKRB5etype_info2` | ETYPE-INFO2 | types/PAData_test.go | yes | yes | yes | yes |
+| `MarshaledKRB5etype_info2Only1` | ETYPE-INFO2 | types/PAData_test.go | yes | yes | yes | yes |
+| `MarshaledKRB5enc_data` | EncryptedData | types/Cryptosystem_test.go | yes | yes | yes | yes |
+| `MarshaledKRB5enc_dataMSBSetkvno` | EncryptedData | types/Cryptosystem_test.go | yes | no | yes | yes |
+| `MarshaledKRB5enc_dataKVNONegOne` | EncryptedData | types/Cryptosystem_test.go | yes | no | yes | yes |
+| `MarshaledChangePasswdData` | ChangePasswdData | kadmin/changepasswddata_test.go | no | no | yes | yes |
 
 ## rasn-kerberos
 
@@ -66,7 +96,7 @@ This report is generated from `rskrb5::evaluation` and captures the decision gat
 | Area | Support | Note |
 |---|---:|---|
 | Kerberos ASN.1 data types | yes | Provides RFC 4120 types and DER encode/decode through rasn. |
-| Message wrappers / exact gokrb5 DER vectors | partial | Decodes all 22 representative gokrb5 DER fixture probes; full fixture parity still needs translation. |
+| Message wrappers / exact gokrb5 DER vectors | partial | The translated fixture matrix records decode and exact DER round-trip support across gokrb5 ASN.1 unit-test vectors. |
 | Client AS/TGS exchange | no | Data types only; no authentication behavior. |
 | Service AP-REQ verification | no | No replay cache, decryption, or verifier behavior. |
 | SPNEGO/GSSAPI | no | No HTTP Negotiate or GSSAPI context implementation. |
@@ -80,7 +110,7 @@ This report is generated from `rskrb5::evaluation` and captures the decision gat
 | Area | Support | Note |
 |---|---:|---|
 | Kerberos ASN.1 data types | yes | Provides Kerberos DER structures and message types. |
-| Message wrappers / exact gokrb5 DER vectors | partial | Decodes 18 of 22 representative DER fixture probes; this version lacks KRB-SAFE, KRB-CRED, EncKrbCredPart, and TypedData shapes. |
+| Message wrappers / exact gokrb5 DER vectors | partial | The translated fixture matrix records decode and exact DER round-trip support, with visible gaps for missing Kerberos shapes. |
 | PAC | partial | Parses PAC container data, but not the full gokrb5 PAC/NDR surface by itself. |
 | Client AS/TGS exchange | no | No complete client flow. |
 | Service AP-REQ verification | no | No complete verifier/replay-cache flow. |

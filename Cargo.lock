@@ -646,6 +646,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72b0ddc4446287cdbfbb4dd2787cc106eb3d490f40c4ae0e4a7be7354a45f1d1"
 dependencies = [
  "rasn",
+ "rasn-pkix",
+]
+
+[[package]]
+name = "rasn-pkix"
+version = "0.28.13"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dd8a385ace6c844d2389fdfe8c82637dd742d7b997a6fb5826dbb97f4539057e"
+dependencies = [
+ "rasn",
 ]
 
 [[package]]
@@ -653,6 +663,7 @@ name = "rskrb5"
 version = "0.0.0"
 dependencies = [
  "hex",
+ "picky-asn1",
  "picky-asn1-der",
  "picky-krb",
  "pretty_assertions",

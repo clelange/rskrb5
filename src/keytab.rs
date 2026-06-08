@@ -1,0 +1,431 @@
+//! Kerberos keytab parsing and serialization.
+//!
+//! This module covers the MIT keytab file format surface needed before client
+//! and service flows can consume long-term keys.
+
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+const KEYTAB_FIRST_BYTE: u8 = 5;
+
+/// Parsed keytab file.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Keytab {
+    version: u8,
+    entries: Vec<Entry>,
+}
+
+impl Keytab {
+    /// Create an empty version 2 keytab.
+    pub fn new() -> Self {
+        Self {
+            version: 2,
+            entries: Vec::new(),
+        }
+    }
+
+    /// Parse keytab bytes.
+    pub fn parse(bytes: &[u8]) -> Result<Self, Error> {
+        if bytes.len() < 2 {
+            return Err(Error::TooShort {
+                actual: bytes.len(),
+            });
+        }
+        if bytes[0] != KEYTAB_FIRST_BYTE {
+            return Err(Error::InvalidFirstByte(bytes[0]));
+        }
+        let version = bytes[1];
+        if version != 1 && version != 2 {
+            return Err(Error::InvalidVersion(version));
+        }
+
+        let endian = Endian::for_version(version);
+        let mut offset = 2;
+        let mut entries = Vec::new();
+
+        while bytes.len().saturating_sub(offset) >= 4 {
+            let entry_len = read_i32(bytes, &mut offset, endian)?;
+            if entry_len == 0 {
+                break;
+            }
+            if entry_len < 0 {
+                let skip = entry_len
+                    .checked_abs()
+                    .ok_or(Error::LengthOverflow)?
+                    .try_into()
+                    .map_err(|_| Error::LengthOverflow)?;
+                checked_advance(bytes, &mut offset, skip)?;
+                continue;
+            }
+
+            let entry_len: usize = entry_len.try_into().map_err(|_| Error::LengthOverflow)?;
+            let end = checked_end(bytes, offset, entry_len)?;
+            let mut entry_offset = 0;
+            let entry_bytes = &bytes[offset..end];
+            offset = end;
+
+            let principal = Principal::parse(entry_bytes, &mut entry_offset, version, endian)?;
+            let timestamp = read_u32(entry_bytes, &mut entry_offset, endian)?;
+            let kvno8 = read_u8(entry_bytes, &mut entry_offset)?;
+            let etype = read_i16(entry_bytes, &mut entry_offset, endian)? as i32;
+            let key_len = read_i16(entry_bytes, &mut entry_offset, endian)?;
+            if key_len < 0 {
+                return Err(Error::NegativeLength(key_len.into()));
+            }
+            let key_value = read_bytes(entry_bytes, &mut entry_offset, key_len as usize)?.to_vec();
+
+            let mut kvno = if entry_bytes.len().saturating_sub(entry_offset) >= 4 {
+                read_u32(entry_bytes, &mut entry_offset, endian)?
+            } else {
+                kvno8.into()
+            };
+            if kvno == 0 {
+                kvno = kvno8.into();
+            }
+
+            entries.push(Entry {
+                principal,
+                timestamp,
+                kvno8,
+                key: EncryptionKey {
+                    etype,
+                    value: key_value,
+                },
+                kvno,
+            });
+        }
+
+        Ok(Self { version, entries })
+    }
+
+    /// Serialize the keytab to bytes.
+    pub fn to_bytes(&self) -> Result<Vec<u8>, Error> {
+        let endian = Endian::for_version(self.version);
+        let mut out = vec![KEYTAB_FIRST_BYTE, self.version];
+        for entry in &self.entries {
+            let mut body = Vec::new();
+            entry.principal.write_to(&mut body, self.version, endian)?;
+            write_u32(&mut body, entry.timestamp, endian);
+            body.push(entry.kvno8);
+            write_u16_checked(&mut body, entry.key.etype, endian)?;
+            write_u16_checked(&mut body, entry.key.value.len(), endian)?;
+            body.extend_from_slice(&entry.key.value);
+            write_u32(&mut body, entry.kvno, endian);
+
+            let body_len: i32 = body.len().try_into().map_err(|_| Error::LengthOverflow)?;
+            write_i32(&mut out, body_len, endian);
+            out.extend_from_slice(&body);
+        }
+        Ok(out)
+    }
+
+    /// Keytab file format version.
+    pub fn version(&self) -> u8 {
+        self.version
+    }
+
+    /// Parsed entries.
+    pub fn entries(&self) -> &[Entry] {
+        &self.entries
+    }
+
+    /// Mutable parsed entries, useful for tests and construction.
+    pub fn entries_mut(&mut self) -> &mut Vec<Entry> {
+        &mut self.entries
+    }
+
+    /// Find the newest key matching principal components, realm, kvno, and
+    /// encryption type. A `kvno` of `0` matches any kvno, mirroring gokrb5.
+    pub fn find_key(
+        &self,
+        principal_components: &[&str],
+        realm: &str,
+        kvno: u32,
+        etype: i32,
+    ) -> Result<(&EncryptionKey, u32), Error> {
+        let mut selected: Option<&Entry> = None;
+        for entry in &self.entries {
+            if entry.principal.realm == realm
+                && entry.principal.components.len() == principal_components.len()
+                && entry
+                    .principal
+                    .components
+                    .iter()
+                    .zip(principal_components)
+                    .all(|(left, right)| left == right)
+                && entry.key.etype == etype
+                && (kvno == 0 || entry.kvno == kvno)
+            {
+                match selected {
+                    Some(current) if current.timestamp >= entry.timestamp => {}
+                    _ => selected = Some(entry),
+                }
+            }
+        }
+
+        selected
+            .map(|entry| (&entry.key, entry.kvno))
+            .ok_or_else(|| Error::NoMatchingKey {
+                principal: principal_components.join("/"),
+                realm: realm.to_owned(),
+                kvno,
+                etype,
+            })
+    }
+}
+
+impl Default for Keytab {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// A keytab entry.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Entry {
+    /// Principal for the key.
+    pub principal: Principal,
+    /// POSIX timestamp in seconds.
+    pub timestamp: u32,
+    /// 8-bit key version number stored in the fixed entry fields.
+    pub kvno8: u8,
+    /// Long-term key material.
+    pub key: EncryptionKey,
+    /// 32-bit key version number, falling back to `kvno8` when absent or zero.
+    pub kvno: u32,
+}
+
+impl Entry {
+    /// Entry timestamp as `SystemTime`.
+    pub fn system_time(&self) -> SystemTime {
+        UNIX_EPOCH + Duration::from_secs(self.timestamp.into())
+    }
+}
+
+/// Keytab principal.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Principal {
+    /// Principal realm.
+    pub realm: String,
+    /// Principal name components.
+    pub components: Vec<String>,
+    /// Kerberos name type. Version 1 keytabs omit this and parse as `0`.
+    pub name_type: i32,
+}
+
+impl Principal {
+    fn parse(bytes: &[u8], offset: &mut usize, version: u8, endian: Endian) -> Result<Self, Error> {
+        let mut component_count = read_i16(bytes, offset, endian)?;
+        if version == 1 {
+            component_count = component_count
+                .checked_sub(1)
+                .ok_or(Error::LengthOverflow)?;
+        }
+        if component_count < 0 {
+            return Err(Error::NegativeLength(component_count.into()));
+        }
+
+        let realm = read_counted_string(bytes, offset, endian)?;
+        let mut components = Vec::with_capacity(component_count as usize);
+        for _ in 0..component_count {
+            components.push(read_counted_string(bytes, offset, endian)?);
+        }
+
+        let name_type = if version == 1 {
+            0
+        } else {
+            read_i32(bytes, offset, endian)?
+        };
+
+        Ok(Self {
+            realm,
+            components,
+            name_type,
+        })
+    }
+
+    fn write_to(&self, out: &mut Vec<u8>, version: u8, endian: Endian) -> Result<(), Error> {
+        let component_count = if version == 1 {
+            self.components
+                .len()
+                .checked_add(1)
+                .ok_or(Error::LengthOverflow)?
+        } else {
+            self.components.len()
+        };
+        write_u16_checked(out, component_count, endian)?;
+        write_counted_string(out, &self.realm, endian)?;
+        for component in &self.components {
+            write_counted_string(out, component, endian)?;
+        }
+        if version != 1 {
+            write_i32(out, self.name_type, endian);
+        }
+        Ok(())
+    }
+}
+
+/// Kerberos encryption key as stored in a keytab.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EncryptionKey {
+    /// Kerberos encryption type id.
+    pub etype: i32,
+    /// Raw key bytes.
+    pub value: Vec<u8>,
+}
+
+/// Keytab parsing and serialization error.
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    /// Input is too short to contain the keytab header.
+    #[error("keytab is too short: {actual} bytes")]
+    TooShort {
+        /// Actual input length.
+        actual: usize,
+    },
+    /// Keytab does not start with the required first byte.
+    #[error("invalid keytab first byte: {0}")]
+    InvalidFirstByte(u8),
+    /// Unsupported keytab version.
+    #[error("invalid keytab version: {0}")]
+    InvalidVersion(u8),
+    /// A read would exceed the input length.
+    #[error("keytab data is truncated at offset {offset}; need {needed} bytes, have {remaining}")]
+    Truncated {
+        /// Offset where the read started.
+        offset: usize,
+        /// Bytes needed.
+        needed: usize,
+        /// Bytes remaining from offset.
+        remaining: usize,
+    },
+    /// A signed length was negative where the field cannot be negative.
+    #[error("negative keytab length: {0}")]
+    NegativeLength(i32),
+    /// A length cannot fit in the target integer type.
+    #[error("keytab length overflow")]
+    LengthOverflow,
+    /// Principal strings must be valid UTF-8.
+    #[error("invalid keytab string: {0}")]
+    InvalidString(#[from] std::str::Utf8Error),
+    /// Key lookup did not find a matching entry.
+    #[error("matching key not found in keytab for {principal}@{realm}, kvno {kvno}, etype {etype}")]
+    NoMatchingKey {
+        /// Principal components joined by `/`.
+        principal: String,
+        /// Principal realm.
+        realm: String,
+        /// Requested kvno, or 0 for latest.
+        kvno: u32,
+        /// Requested encryption type.
+        etype: i32,
+    },
+}
+
+#[derive(Clone, Copy, Debug)]
+enum Endian {
+    Big,
+    Little,
+}
+
+impl Endian {
+    fn for_version(version: u8) -> Self {
+        if version == 1 && cfg!(target_endian = "little") {
+            Self::Little
+        } else {
+            Self::Big
+        }
+    }
+}
+
+fn checked_end(bytes: &[u8], offset: usize, len: usize) -> Result<usize, Error> {
+    let end = offset.checked_add(len).ok_or(Error::LengthOverflow)?;
+    if end > bytes.len() {
+        return Err(Error::Truncated {
+            offset,
+            needed: len,
+            remaining: bytes.len().saturating_sub(offset),
+        });
+    }
+    Ok(end)
+}
+
+fn checked_advance(bytes: &[u8], offset: &mut usize, len: usize) -> Result<(), Error> {
+    *offset = checked_end(bytes, *offset, len)?;
+    Ok(())
+}
+
+fn read_bytes<'a>(bytes: &'a [u8], offset: &mut usize, len: usize) -> Result<&'a [u8], Error> {
+    let start = *offset;
+    let end = checked_end(bytes, start, len)?;
+    *offset = end;
+    Ok(&bytes[start..end])
+}
+
+fn read_u8(bytes: &[u8], offset: &mut usize) -> Result<u8, Error> {
+    Ok(read_bytes(bytes, offset, 1)?[0])
+}
+
+fn read_i16(bytes: &[u8], offset: &mut usize, endian: Endian) -> Result<i16, Error> {
+    let raw = read_bytes(bytes, offset, 2)?;
+    Ok(match endian {
+        Endian::Big => i16::from_be_bytes([raw[0], raw[1]]),
+        Endian::Little => i16::from_le_bytes([raw[0], raw[1]]),
+    })
+}
+
+fn read_i32(bytes: &[u8], offset: &mut usize, endian: Endian) -> Result<i32, Error> {
+    let raw = read_bytes(bytes, offset, 4)?;
+    Ok(match endian {
+        Endian::Big => i32::from_be_bytes([raw[0], raw[1], raw[2], raw[3]]),
+        Endian::Little => i32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]),
+    })
+}
+
+fn read_u32(bytes: &[u8], offset: &mut usize, endian: Endian) -> Result<u32, Error> {
+    let raw = read_bytes(bytes, offset, 4)?;
+    Ok(match endian {
+        Endian::Big => u32::from_be_bytes([raw[0], raw[1], raw[2], raw[3]]),
+        Endian::Little => u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]),
+    })
+}
+
+fn read_counted_string(bytes: &[u8], offset: &mut usize, endian: Endian) -> Result<String, Error> {
+    let len = read_i16(bytes, offset, endian)?;
+    if len < 0 {
+        return Err(Error::NegativeLength(len.into()));
+    }
+    let raw = read_bytes(bytes, offset, len as usize)?;
+    Ok(std::str::from_utf8(raw)?.to_owned())
+}
+
+fn write_i32(out: &mut Vec<u8>, value: i32, endian: Endian) {
+    out.extend_from_slice(&match endian {
+        Endian::Big => value.to_be_bytes(),
+        Endian::Little => value.to_le_bytes(),
+    });
+}
+
+fn write_u32(out: &mut Vec<u8>, value: u32, endian: Endian) {
+    out.extend_from_slice(&match endian {
+        Endian::Big => value.to_be_bytes(),
+        Endian::Little => value.to_le_bytes(),
+    });
+}
+
+fn write_u16_checked<T>(out: &mut Vec<u8>, value: T, endian: Endian) -> Result<(), Error>
+where
+    T: TryInto<u16>,
+{
+    let value = value.try_into().map_err(|_| Error::LengthOverflow)?;
+    out.extend_from_slice(&match endian {
+        Endian::Big => value.to_be_bytes(),
+        Endian::Little => value.to_le_bytes(),
+    });
+    Ok(())
+}
+
+fn write_counted_string(out: &mut Vec<u8>, value: &str, endian: Endian) -> Result<(), Error> {
+    write_u16_checked(out, value.len(), endian)?;
+    out.extend_from_slice(value.as_bytes());
+    Ok(())
+}

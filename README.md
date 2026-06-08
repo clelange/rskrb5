@@ -13,9 +13,10 @@ pure-Rust Kerberos library.
 
 - `rasn-kerberos` and `picky-krb` are treated as dependency candidates for
   Kerberos DER/data types.
-- The current ASN.1 spike checks 22 representative gokrb5 DER fixtures:
-  `rasn-kerberos` decodes all 22, while `picky-krb` decodes 18 and lacks some
-  KRB-SAFE/KRB-CRED/TypedData shapes in the tested version.
+- The ASN.1 spike now checks 51 gokrb5 unit-test fixtures with separate decode
+  and exact DER round-trip expectations for `rasn-kerberos` and `picky-krb`.
+- The first real module is `keytab`: it parses, serializes, and selects keys
+  from MIT keytab data against gokrb5 fixtures.
 - `sspi-rs` is treated as a mature Negotiate/Kerberos collaboration or facade
   candidate.
 - `krb5-rs` is not used as a base implementation because the published crate is

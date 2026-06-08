@@ -65,17 +65,21 @@ fn render_decision_matrix(out: &mut String) {
 
 fn render_asn1_fixture_matrix(out: &mut String) {
     out.push_str("## ASN.1 Fixture Probe Matrix\n\n");
-    out.push_str("| Fixture | Type | gokrb5 test | rasn-kerberos | picky-krb |\n");
-    out.push_str("|---|---|---|---:|---:|\n");
+    out.push_str(
+        "| Fixture | Type | gokrb5 test | rasn decode | rasn round-trip | picky decode | picky round-trip |\n",
+    );
+    out.push_str("|---|---|---|---:|---:|---:|---:|\n");
     for fixture in ASN1_FIXTURES {
         writeln!(
             out,
-            "| `{}` | {} | {} | {} | {} |",
+            "| `{}` | {} | {} | {} | {} | {} | {} |",
             fixture.gokrb5_constant,
             fixture.der_type.name(),
             fixture.gokrb5_test,
             fixture.rasn_kerberos,
-            fixture.picky_krb
+            fixture.rasn_kerberos_roundtrip,
+            fixture.picky_krb,
+            fixture.picky_krb_roundtrip
         )
         .expect("writing to String cannot fail");
     }

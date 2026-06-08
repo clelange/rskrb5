@@ -9,6 +9,8 @@
 #[cfg(feature = "evaluation")]
 pub mod evaluation;
 
+pub mod keytab;
+
 /// Current crate-level result type.
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -23,4 +25,8 @@ pub enum Error {
     /// A candidate ASN.1/DER decoder failed.
     #[error("candidate decode failed: {0}")]
     Decode(String),
+
+    /// Keytab parsing or serialization failed.
+    #[error("keytab error: {0}")]
+    Keytab(#[from] keytab::Error),
 }
