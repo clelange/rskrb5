@@ -8,10 +8,11 @@ use rskrb5::pac::{
     self, CHECKSUM_HMAC_MD5_UNSIGNED, CHECKSUM_HMAC_SHA1_96_AES256, CLAIM_TYPE_ID_INT64,
     CLAIM_TYPE_ID_STRING, CLAIM_TYPE_ID_UINT64, CLAIMS_COMPRESSION_FORMAT_NONE,
     CLAIMS_COMPRESSION_FORMAT_XPRESS_HUFF, CLAIMS_SOURCE_TYPE_AD, ClaimValues, ClaimsInfo,
-    ClaimsSetMetadata, ClientInfo, INFO_TYPE_PAC_CLIENT_CLAIMS_INFO, INFO_TYPE_PAC_CLIENT_INFO,
-    INFO_TYPE_PAC_DEVICE_CLAIMS_INFO, INFO_TYPE_PAC_KDC_SIGNATURE_DATA,
-    INFO_TYPE_PAC_SERVER_SIGNATURE_DATA, INFO_TYPE_UPN_DNS_INFO, KerbValidationInfo, Pac,
-    SignatureData, UpnDnsInfo,
+    ClaimsSetMetadata, ClientInfo, DeviceInfo, INFO_TYPE_PAC_CLIENT_CLAIMS_INFO,
+    INFO_TYPE_PAC_CLIENT_INFO, INFO_TYPE_PAC_DEVICE_CLAIMS_INFO, INFO_TYPE_PAC_DEVICE_INFO,
+    INFO_TYPE_PAC_KDC_SIGNATURE_DATA, INFO_TYPE_PAC_SERVER_SIGNATURE_DATA,
+    INFO_TYPE_S4U_DELEGATION_INFO, INFO_TYPE_UPN_DNS_INFO, KerbValidationInfo, Pac,
+    S4UDelegationInfo, SignatureData, UpnDnsInfo,
 };
 
 mod common;
@@ -250,6 +251,54 @@ fn processes_client_and_device_claims_pac_buffers() {
         entry.values,
         ClaimValues::String(vec![CLAIMS_ENTRY_VALUE_STR.to_string()])
     );
+}
+
+#[test]
+fn parses_s4u_delegation_info() {
+    let bytes = s4u_delegation_info_bytes();
+    let info = S4UDelegationInfo::parse(&bytes).expect("S4U delegation info parses");
+
+    assert_eq!(info.s4u2proxy_target.value, "HTTP/backend");
+    assert_eq!(info.transited_list_size, 2);
+    assert_eq!(
+        info.s4u_transited_services
+            .iter()
+            .map(|service| service.value.as_str())
+            .collect::<Vec<_>>(),
+        vec!["HTTP/front", "HTTP/mid"]
+    );
+}
+
+#[test]
+fn parses_device_info() {
+    let bytes = device_info_bytes();
+    let info = DeviceInfo::parse(&bytes).expect("device info parses");
+
+    assert_device_info(&info);
+}
+
+#[test]
+fn processes_s4u_delegation_and_device_info_pac_buffers() {
+    let pac = Pac::parse_and_process(&single_buffer_pac(
+        INFO_TYPE_S4U_DELEGATION_INFO,
+        &s4u_delegation_info_bytes(),
+    ))
+    .expect("PAC parses");
+    assert_eq!(
+        pac.s4u_delegation_info
+            .as_ref()
+            .expect("S4U info parsed")
+            .s4u2proxy_target
+            .value,
+        "HTTP/backend"
+    );
+
+    let pac = Pac::parse_and_process(&single_buffer_pac(
+        INFO_TYPE_PAC_DEVICE_INFO,
+        &device_info_bytes(),
+    ))
+    .expect("PAC parses");
+    assert_device_info(pac.device_info.as_ref().expect("device info parsed"));
 }
 
 #[test]
@@ -494,6 +543,168 @@ fn group(relative_id: u32, attributes: u32) -> pac::GroupMembership {
     pac::GroupMembership {
         relative_id,
         attributes,
+    }
+}
+
+fn assert_device_info(info: &DeviceInfo) {
+    assert_eq!(info.user_id, 1201);
+    assert_eq!(info.primary_group_id, 515);
+    assert_eq!(
+        info.account_domain_id
+            .as_ref()
+            .expect("account domain SID")
+            .to_string(),
+        "S-1-5-21-1-2-3"
+    );
+    assert_eq!(info.account_group_count, 2);
+    assert_eq!(info.account_group_ids, vec![group(515, 7), group(1201, 7)]);
+    assert_eq!(info.sid_count, 1);
+    assert_eq!(info.extra_sids.len(), 1);
+    assert_eq!(info.extra_sids[0].sid.to_string(), "S-1-18-1");
+    assert_eq!(info.extra_sids[0].attributes, 7);
+    assert_eq!(info.domain_group_count, 1);
+    assert_eq!(info.domain_group.len(), 1);
+    assert_eq!(info.domain_group[0].domain_id.to_string(), "S-1-5-21-9-8-7");
+    assert_eq!(info.domain_group[0].group_count, 2);
+    assert_eq!(
+        info.domain_group[0].group_ids,
+        vec![group(2201, 536870919), group(2202, 536870919)]
+    );
+    assert_eq!(
+        info.group_membership_sids(),
+        vec![
+            "S-1-5-21-1-2-3-515",
+            "S-1-5-21-1-2-3-1201",
+            "S-1-18-1",
+            "S-1-5-21-9-8-7-2201",
+            "S-1-5-21-9-8-7-2202",
+        ]
+    );
+}
+
+fn s4u_delegation_info_bytes() -> Vec<u8> {
+    let mut object = Vec::new();
+    push_rpc_unicode_string_descriptor(&mut object, "HTTP/backend", 0x0002_0004);
+    push_u32(&mut object, 2);
+    push_u32(&mut object, 0x0002_0008);
+    push_deferred_rpc_unicode_string(&mut object, "HTTP/backend");
+    push_u32(&mut object, 2);
+    push_rpc_unicode_string_descriptor(&mut object, "HTTP/front", 0x0002_000c);
+    push_rpc_unicode_string_descriptor(&mut object, "HTTP/mid", 0x0002_0010);
+    push_deferred_rpc_unicode_string(&mut object, "HTTP/front");
+    push_deferred_rpc_unicode_string(&mut object, "HTTP/mid");
+    ndr_wrapped(object)
+}
+
+fn device_info_bytes() -> Vec<u8> {
+    let mut object = Vec::new();
+    push_u32(&mut object, 1201);
+    push_u32(&mut object, 515);
+    push_u32(&mut object, 0x0002_0004);
+    push_u32(&mut object, 2);
+    push_u32(&mut object, 0x0002_0008);
+    push_u32(&mut object, 1);
+    push_u32(&mut object, 0x0002_000c);
+    push_u32(&mut object, 1);
+    push_u32(&mut object, 0x0002_0010);
+
+    push_deferred_sid(&mut object, &[21, 1, 2, 3]);
+    push_group_memberships(&mut object, &[group(515, 7), group(1201, 7)]);
+    push_u32(&mut object, 1);
+    push_u32(&mut object, 0x0002_0014);
+    push_u32(&mut object, 7);
+    push_deferred_sid_with_authority(&mut object, 18, &[1]);
+
+    push_u32(&mut object, 1);
+    push_u32(&mut object, 0x0002_0018);
+    push_u32(&mut object, 2);
+    push_u32(&mut object, 0x0002_001c);
+    push_deferred_sid(&mut object, &[21, 9, 8, 7]);
+    push_group_memberships(
+        &mut object,
+        &[group(2201, 536870919), group(2202, 536870919)],
+    );
+
+    ndr_wrapped(object)
+}
+
+fn ndr_wrapped(object: Vec<u8>) -> Vec<u8> {
+    let object_len = u32::try_from(object.len() + 4).expect("NDR object length fits");
+    let mut bytes = Vec::with_capacity(20 + object.len());
+    bytes.extend_from_slice(&[0x01, 0x10, 0x08, 0x00]);
+    bytes.extend_from_slice(&[0xcc; 4]);
+    push_u32(&mut bytes, object_len);
+    push_u32(&mut bytes, 0);
+    push_u32(&mut bytes, 0x0002_0000);
+    bytes.extend_from_slice(&object);
+    bytes
+}
+
+fn push_rpc_unicode_string_descriptor(bytes: &mut Vec<u8>, value: &str, referent_id: u32) {
+    let len = u16::try_from(value.encode_utf16().count() * 2).expect("string length fits");
+    push_u16(bytes, len);
+    push_u16(bytes, len);
+    push_u32(bytes, referent_id);
+}
+
+fn push_deferred_rpc_unicode_string(bytes: &mut Vec<u8>, value: &str) {
+    let units = value.encode_utf16().collect::<Vec<_>>();
+    push_u32(
+        bytes,
+        u32::try_from(units.len()).expect("UTF-16 length fits"),
+    );
+    push_u32(bytes, 0);
+    push_u32(
+        bytes,
+        u32::try_from(units.len()).expect("UTF-16 length fits"),
+    );
+    for unit in units {
+        push_u16(bytes, unit);
+    }
+    align_vec(bytes, 4);
+}
+
+fn push_group_memberships(bytes: &mut Vec<u8>, groups: &[pac::GroupMembership]) {
+    push_u32(
+        bytes,
+        u32::try_from(groups.len()).expect("group count fits"),
+    );
+    for group in groups {
+        push_u32(bytes, group.relative_id);
+        push_u32(bytes, group.attributes);
+    }
+}
+
+fn push_deferred_sid(bytes: &mut Vec<u8>, sub_authorities: &[u32]) {
+    push_deferred_sid_with_authority(bytes, 5, sub_authorities);
+}
+
+fn push_deferred_sid_with_authority(bytes: &mut Vec<u8>, authority: u64, sub_authorities: &[u32]) {
+    push_u32(
+        bytes,
+        u32::try_from(sub_authorities.len()).expect("SID sub-authority count fits"),
+    );
+    bytes.push(1);
+    bytes.push(u8::try_from(sub_authorities.len()).expect("SID sub-authority count fits"));
+    let authority_bytes = authority.to_be_bytes();
+    bytes.extend_from_slice(&authority_bytes[2..]);
+    for sub_authority in sub_authorities {
+        push_u32(bytes, *sub_authority);
+    }
+    align_vec(bytes, 4);
+}
+
+fn push_u16(bytes: &mut Vec<u8>, value: u16) {
+    bytes.extend_from_slice(&value.to_le_bytes());
+}
+
+fn push_u32(bytes: &mut Vec<u8>, value: u32) {
+    bytes.extend_from_slice(&value.to_le_bytes());
+}
+
+fn align_vec(bytes: &mut Vec<u8>, alignment: usize) {
+    while !bytes.len().is_multiple_of(alignment) {
+        bytes.push(0);
     }
 }
 

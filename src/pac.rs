@@ -98,6 +98,10 @@ pub struct Pac {
     pub client_info: Option<ClientInfo>,
     /// Parsed UPN/DNS info, if present and processed.
     pub upn_dns_info: Option<UpnDnsInfo>,
+    /// Parsed S4U delegation info, if present and processed.
+    pub s4u_delegation_info: Option<S4UDelegationInfo>,
+    /// Parsed device info, if present and processed.
+    pub device_info: Option<DeviceInfo>,
     /// Parsed client claims info, if present and processed.
     pub client_claims_info: Option<ClaimsInfo>,
     /// Parsed device claims info, if present and processed.
@@ -149,6 +153,8 @@ impl Pac {
             kdc_checksum: None,
             client_info: None,
             upn_dns_info: None,
+            s4u_delegation_info: None,
+            device_info: None,
             client_claims_info: None,
             device_claims_info: None,
         })
@@ -187,6 +193,12 @@ impl Pac {
                 }
                 INFO_TYPE_UPN_DNS_INFO if self.upn_dns_info.is_none() => {
                     self.upn_dns_info = Some(UpnDnsInfo::parse(bytes)?);
+                }
+                INFO_TYPE_S4U_DELEGATION_INFO if self.s4u_delegation_info.is_none() => {
+                    self.s4u_delegation_info = Some(S4UDelegationInfo::parse(bytes)?);
+                }
+                INFO_TYPE_PAC_DEVICE_INFO if self.device_info.is_none() => {
+                    self.device_info = Some(DeviceInfo::parse(bytes)?);
                 }
                 INFO_TYPE_PAC_CLIENT_CLAIMS_INFO if self.client_claims_info.is_none() => {
                     self.client_claims_info = Some(ClaimsInfo::parse(bytes)?);
@@ -463,6 +475,148 @@ impl UpnDnsInfo {
             upn,
             dns_domain,
         })
+    }
+}
+
+/// PAC S4U delegation information.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct S4UDelegationInfo {
+    /// Principal to which the application can forward the ticket.
+    pub s4u2proxy_target: RpcUnicodeString,
+    /// Number of transited services.
+    pub transited_list_size: u32,
+    /// Delegated services transited by the client and subsequent services.
+    pub s4u_transited_services: Vec<RpcUnicodeString>,
+}
+
+impl S4UDelegationInfo {
+    /// Parse NDR-encoded S4U delegation information.
+    pub fn parse(bytes: &[u8]) -> Result<Self, Error> {
+        let mut reader = Reader::new(bytes);
+        read_ndr_wrapper(&mut reader, "S4UDelegationInfo")?;
+
+        let s4u2proxy_target = RpcUnicodeStringDescriptor::read(&mut reader)?;
+        let transited_list_size = read_ndr_u32(&mut reader)?;
+        let s4u_transited_services_ref = read_ndr_u32(&mut reader)?;
+
+        let s4u2proxy_target =
+            read_deferred_unicode_string(&mut reader, s4u2proxy_target, "S4U2proxyTarget")?;
+        let s4u_transited_services = read_deferred_rpc_unicode_strings(
+            &mut reader,
+            s4u_transited_services_ref,
+            transited_list_size,
+            "S4UTransitedServices",
+        )?;
+        ensure_zero_trailing(&mut reader, "S4UDelegationInfo")?;
+
+        Ok(Self {
+            s4u2proxy_target,
+            transited_list_size,
+            s4u_transited_services,
+        })
+    }
+}
+
+/// PAC device information.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DeviceInfo {
+    /// Device account RID.
+    pub user_id: u32,
+    /// Device primary group RID.
+    pub primary_group_id: u32,
+    /// Domain SID for the device account.
+    pub account_domain_id: Option<Sid>,
+    /// Number of account-domain groups.
+    pub account_group_count: u32,
+    /// Account-domain group memberships.
+    pub account_group_ids: Vec<GroupMembership>,
+    /// Number of extra SIDs.
+    pub sid_count: u32,
+    /// Extra SIDs for groups outside the account domain.
+    pub extra_sids: Vec<SidAndAttributes>,
+    /// Number of domain group sets.
+    pub domain_group_count: u32,
+    /// Domain group memberships.
+    pub domain_group: Vec<DomainGroupMembership>,
+}
+
+impl DeviceInfo {
+    /// Parse NDR-encoded PAC device information.
+    pub fn parse(bytes: &[u8]) -> Result<Self, Error> {
+        let mut reader = Reader::new(bytes);
+        read_ndr_wrapper(&mut reader, "DeviceInfo")?;
+
+        let user_id = read_ndr_u32(&mut reader)?;
+        let primary_group_id = read_ndr_u32(&mut reader)?;
+        let account_domain_id_ref = read_ndr_u32(&mut reader)?;
+        let account_group_count = read_ndr_u32(&mut reader)?;
+        let account_group_ids_ref = read_ndr_u32(&mut reader)?;
+        let sid_count = read_ndr_u32(&mut reader)?;
+        let extra_sids_ref = read_ndr_u32(&mut reader)?;
+        let domain_group_count = read_ndr_u32(&mut reader)?;
+        let domain_group_ref = read_ndr_u32(&mut reader)?;
+
+        let account_domain_id = read_deferred_sid(
+            &mut reader,
+            account_domain_id_ref,
+            "DeviceInfo.AccountDomainID",
+        )?;
+        let account_group_ids = read_deferred_group_memberships(
+            &mut reader,
+            account_group_ids_ref,
+            account_group_count,
+            "DeviceInfo.AccountGroupIDs",
+        )?;
+        let extra_sids = read_deferred_sid_and_attributes(
+            &mut reader,
+            extra_sids_ref,
+            sid_count,
+            "DeviceInfo.ExtraSIDs",
+        )?;
+        let domain_group = read_deferred_domain_group_memberships(
+            &mut reader,
+            domain_group_ref,
+            domain_group_count,
+            "DeviceInfo.DomainGroup",
+        )?;
+        ensure_zero_trailing(&mut reader, "DeviceInfo")?;
+
+        Ok(Self {
+            user_id,
+            primary_group_id,
+            account_domain_id,
+            account_group_count,
+            account_group_ids,
+            sid_count,
+            extra_sids,
+            domain_group_count,
+            domain_group,
+        })
+    }
+
+    /// Return SIDs for account-domain groups, extra SIDs, and domain groups.
+    pub fn group_membership_sids(&self) -> Vec<String> {
+        let mut sids = Vec::new();
+        if let Some(account_domain_sid) = &self.account_domain_id {
+            for group in &self.account_group_ids {
+                sids.push(format!("{account_domain_sid}-{}", group.relative_id));
+            }
+        }
+        for extra_sid in &self.extra_sids {
+            let sid = extra_sid.sid.to_string();
+            if !sids.iter().any(|existing| existing == &sid) {
+                sids.push(sid);
+            }
+        }
+        for domain_group in &self.domain_group {
+            for group in &domain_group.group_ids {
+                let sid = format!("{}-{}", domain_group.domain_id, group.relative_id);
+                if !sids.iter().any(|existing| existing == &sid) {
+                    sids.push(sid);
+                }
+            }
+        }
+        sids
     }
 }
 
@@ -746,6 +900,17 @@ pub struct SidAndAttributes {
     pub sid: Sid,
     /// SID attributes.
     pub attributes: u32,
+}
+
+/// Device domain group memberships.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DomainGroupMembership {
+    /// Domain SID.
+    pub domain_id: Sid,
+    /// Number of group memberships in `group_ids`.
+    pub group_count: u32,
+    /// Groups within `domain_id`.
+    pub group_ids: Vec<GroupMembership>,
 }
 
 /// Parsed KERB_VALIDATION_INFO.
@@ -1089,6 +1254,41 @@ fn read_deferred_u8_array(
     let bytes = reader.read_bytes(len)?.to_vec();
     reader.align(4)?;
     Ok(bytes)
+}
+
+fn read_deferred_rpc_unicode_strings(
+    reader: &mut Reader<'_>,
+    referent_id: u32,
+    count: u32,
+    target: &'static str,
+) -> Result<Vec<RpcUnicodeString>, Error> {
+    if referent_id == 0 {
+        if count == 0 {
+            return Ok(Vec::new());
+        }
+        return Err(Error::MissingNdrPointer(target));
+    }
+
+    let max_count = read_ndr_reasonable_count(reader, target)?;
+    if max_count != count {
+        return Err(Error::CountMismatch {
+            target,
+            expected: count,
+            actual: max_count,
+        });
+    }
+
+    let count = usize::try_from(count).map_err(|_| Error::LengthOverflow)?;
+    let mut descriptors = Vec::with_capacity(count);
+    for _ in 0..count {
+        descriptors.push(RpcUnicodeStringDescriptor::read(reader)?);
+    }
+
+    let mut strings = Vec::with_capacity(count);
+    for descriptor in descriptors {
+        strings.push(read_deferred_unicode_string(reader, descriptor, target)?);
+    }
+    Ok(strings)
 }
 
 fn read_deferred_claims_arrays(
@@ -1572,6 +1772,49 @@ fn read_deferred_sid_and_attributes(
         out.push(SidAndAttributes { sid, attributes });
     }
     Ok(out)
+}
+
+fn read_deferred_domain_group_memberships(
+    reader: &mut Reader<'_>,
+    referent_id: u32,
+    count: u32,
+    target: &'static str,
+) -> Result<Vec<DomainGroupMembership>, Error> {
+    if referent_id == 0 {
+        if count == 0 {
+            return Ok(Vec::new());
+        }
+        return Err(Error::MissingNdrPointer(target));
+    }
+
+    let max_count = read_reasonable_count(reader, target)?;
+    if max_count != count {
+        return Err(Error::CountMismatch {
+            target,
+            expected: count,
+            actual: max_count,
+        });
+    }
+
+    let count = usize::try_from(count).map_err(|_| Error::LengthOverflow)?;
+    let mut descriptors = Vec::with_capacity(count);
+    for _ in 0..count {
+        descriptors.push((reader.read_u32()?, reader.read_u32()?, reader.read_u32()?));
+    }
+
+    let mut groups = Vec::with_capacity(count);
+    for (domain_id_ref, group_count, group_ids_ref) in descriptors {
+        let domain_id = read_deferred_sid(reader, domain_id_ref, target)?
+            .ok_or(Error::MissingNdrPointer(target))?;
+        let group_ids =
+            read_deferred_group_memberships(reader, group_ids_ref, group_count, target)?;
+        groups.push(DomainGroupMembership {
+            domain_id,
+            group_count,
+            group_ids,
+        });
+    }
+    Ok(groups)
 }
 
 fn read_reasonable_count(reader: &mut Reader<'_>, target: &'static str) -> Result<u32, Error> {
