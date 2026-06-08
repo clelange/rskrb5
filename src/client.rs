@@ -675,8 +675,15 @@ impl TokioClient {
     /// Perform AS login with the configured long-term credential.
     pub async fn login(&mut self) -> Result<&AsRepSession, Error> {
         let Some(credentials) = self.credentials.clone() else {
-            if let Some(tgt) = &self.tgt {
-                return Ok(tgt);
+            let Some(tgt) = self.tgt.clone() else {
+                return Err(Error::NoClientCredentials);
+            };
+            let now = SystemTime::now();
+            if session_valid_at(&tgt, now) {
+                return Ok(self.tgt.as_ref().expect("TGT was just checked"));
+            }
+            if session_renewable_at(&tgt, now) {
+                return self.renew_tgt().await;
             }
             return Err(Error::NoClientCredentials);
         };

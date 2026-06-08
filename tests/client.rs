@@ -724,6 +724,60 @@ fn tokio_client_from_ccache_prefers_current_tgt_over_future_duplicate() {
 
 #[cfg(feature = "tokio")]
 #[test]
+fn tokio_client_login_returns_current_cache_only_tgt() {
+    let tgt = sample_tgt_session();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("current time is after unix epoch")
+        .as_secs() as u32;
+
+    let mut cache = ccache::CCache::new(ccache::Principal::new(
+        "TEST.GOKRB5",
+        1,
+        vec!["testuser1".to_owned()],
+    ));
+    let mut tgt_credential = tgt.to_ccache_credential().expect("TGT converts");
+    make_credential_current(&mut tgt_credential, now);
+    cache.credentials_mut().push(tgt_credential);
+
+    let mut client = TokioClient::from_ccache(Config::new(), KdcProtocol::Tcp, &cache);
+    let session = runtime()
+        .block_on(client.login())
+        .expect("current cache-only TGT is returned");
+
+    assert_eq!(session.client, tgt.client);
+    assert_eq!(session.service, tgt.service);
+    assert_eq!(session.session_key, tgt.session_key);
+}
+
+#[cfg(feature = "tokio")]
+#[test]
+fn tokio_client_login_rejects_expired_cache_only_tgt() {
+    let tgt = sample_tgt_session();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("current time is after unix epoch")
+        .as_secs() as u32;
+
+    let mut cache = ccache::CCache::new(ccache::Principal::new(
+        "TEST.GOKRB5",
+        1,
+        vec!["testuser1".to_owned()],
+    ));
+    let mut tgt_credential = tgt.to_ccache_credential().expect("TGT converts");
+    make_credential_expired(&mut tgt_credential, now);
+    cache.credentials_mut().push(tgt_credential);
+
+    let mut client = TokioClient::from_ccache(Config::new(), KdcProtocol::Tcp, &cache);
+    let error = runtime()
+        .block_on(client.login())
+        .expect_err("expired cache-only TGT is not returned");
+
+    assert!(matches!(error, Error::NoClientCredentials));
+}
+
+#[cfg(feature = "tokio")]
+#[test]
 fn tokio_client_from_ccache_prefers_current_service_ticket_over_future_duplicate() {
     let tgt = sample_tgt_session();
     let mut current_service_ticket = sample_service_ticket_session(&tgt);
