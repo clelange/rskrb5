@@ -970,6 +970,52 @@ impl TokioClient {
         Ok(crate::spnego::authorization_header(&ticket, options)?)
     }
 
+    /// Change this client's password using generated timestamp and sequence metadata.
+    pub async fn change_password(
+        &mut self,
+        new_password: impl AsRef<[u8]>,
+        sender_address: rasn_kerberos::HostAddress,
+    ) -> Result<crate::kadmin::ChangePasswordResult, Error> {
+        let (timestamp, cusec) = current_preauth_time()?;
+        let sequence_number = random_nonce()?;
+        self.change_password_with_options(
+            new_password,
+            KpasswdRequestOptions::new(timestamp, cusec, sequence_number, sender_address),
+        )
+        .await
+    }
+
+    /// Change this client's password using explicit kpasswd request metadata.
+    pub async fn change_password_with_options(
+        &mut self,
+        new_password: impl AsRef<[u8]>,
+        options: KpasswdRequestOptions,
+    ) -> Result<crate::kadmin::ChangePasswordResult, Error> {
+        let target = self.client.clone();
+        let service = Principal::new(
+            target.realm.clone(),
+            KRB_NT_SRV_INST,
+            ["kadmin".to_owned(), "changepw".to_owned()],
+        );
+        let ticket = self.get_service_ticket(service).await?;
+        let change_data = crate::kadmin::ChangePasswdData::for_target(
+            new_password,
+            target.name_type,
+            target.components.iter().map(String::as_str),
+            &target.realm,
+        )?;
+        let request = build_kpasswd_request(&ticket, &change_data, options)?;
+        self.transport
+            .exchange_kpasswd_result_with_config(
+                &self.config,
+                self.protocol,
+                &target.realm,
+                &request.request,
+                &request.reply_key,
+            )
+            .await
+    }
+
     async fn ensure_tgt(&mut self) -> Result<AsRepSession, Error> {
         if let Some(tgt) = self.tgt.clone() {
             let now = SystemTime::now();

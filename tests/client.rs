@@ -26,9 +26,14 @@ use rskrb5::client::{KdcProtocol, TokioClient};
 use rskrb5::config::Config;
 use rskrb5::crypto::AesSha1Etype;
 use rskrb5::kadmin::{
-    ChangePasswdData, KRB_PRIV_ENCPART_USAGE, Request as KpasswdRequest, ipv4_host_address,
+    ChangePasswdData, KPASSWD_SUCCESS, KRB_PRIV_ENCPART_USAGE, Request as KpasswdRequest,
+    ipv4_host_address,
 };
 use rskrb5::keytab::{EncryptionKey, Entry as KeytabEntry, Keytab, Principal as KeytabPrincipal};
+#[cfg(feature = "tokio")]
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+#[cfg(feature = "tokio")]
+use tokio::net::TcpListener;
 
 const REPLY_KEY: &str = "9cad00bbc72d703258e911dc18e6d5487cf737bf67fd111f0c2463ad6033bf51";
 const SESSION_KEY: &str = "8845cbaccbf11cb9f467fd577ba51c70d73de6554980a05395bf319e18bdda07";
@@ -1289,6 +1294,89 @@ fn tokio_client_updates_ccache_file_without_duplicate_tickets() {
     );
 }
 
+#[cfg(feature = "tokio")]
+#[test]
+fn tokio_client_changes_password_with_cached_changepw_ticket() {
+    runtime().block_on(async {
+        let tgt = sample_tgt_session();
+        let changepw = Principal::new("TEST.GOKRB5", 2, ["kadmin", "changepw"]);
+        let request = build_tgs_req_with_confounder(
+            &tgt,
+            changepw,
+            TgsReqOptions::new(timestamp(1_893_553_450), 0x2233_4455).with_etypes(vec![18]),
+            timestamp(1_893_553_451),
+            654_321,
+            &decode_hex(TGS_REQ_CONFOUNDER),
+        )
+        .expect("changepw TGS-REQ builds");
+        let response = synthetic_tgs_rep(&request, request.nonce, &tgt.session_key);
+        let mut changepw_ticket =
+            process_tgs_rep(&request, &response, &tgt.session_key).expect("TGS-REP validates");
+        let now = SystemTime::now();
+        changepw_ticket.start_time = now
+            .checked_sub(Duration::from_secs(60))
+            .expect("start time");
+        changepw_ticket.end_time = now
+            .checked_add(Duration::from_secs(60 * 60))
+            .expect("end time");
+        changepw_ticket.renew_till = Some(
+            now.checked_add(Duration::from_secs(2 * 60 * 60))
+                .expect("renew time"),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind local kpasswd listener");
+        let addr = listener.local_addr().expect("local listener address");
+        let mut client = TokioClient::from_tgt_session(
+            config_with_kpasswd_server(addr.to_string()),
+            KdcProtocol::Tcp,
+            tgt,
+        );
+        client.cache_service_ticket(changepw_ticket);
+        let task = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept client");
+            let mut header = [0; 4];
+            socket
+                .read_exact(&mut header)
+                .await
+                .expect("read request length");
+            let request_len = u32::from_be_bytes(header) as usize;
+            let mut request = vec![0; request_len];
+            socket.read_exact(&mut request).await.expect("read request");
+            let parsed = KpasswdRequest::parse(&request).expect("kpasswd request parses");
+            assert_eq!(parsed.ap_req.msg_type, rasn::types::Integer::from(14));
+            assert_eq!(parsed.krb_priv.msg_type, rasn::types::Integer::from(21));
+
+            let response = kpasswd_reply_frame(
+                0,
+                &kpasswd_result_krb_error(KPASSWD_SUCCESS, "password changed"),
+            );
+            socket
+                .write_all(&(response.len() as u32).to_be_bytes())
+                .await
+                .expect("write response length");
+            socket.write_all(&response).await.expect("write response");
+        });
+
+        let result = client
+            .change_password_with_options(
+                b"newpassword",
+                KpasswdRequestOptions::new(
+                    timestamp(1_893_553_452),
+                    456_789,
+                    42,
+                    ipv4_host_address([127, 0, 0, 1]),
+                ),
+            )
+            .await
+            .expect("change password succeeds");
+
+        task.await.expect("kpasswd listener task completes");
+        assert_eq!(result.code, KPASSWD_SUCCESS);
+        assert_eq!(result.text, "password changed");
+    });
+}
+
 #[test]
 fn parses_kdc_preauth_required_error_and_selects_etype_info2() {
     let error_bytes = synthetic_preauth_required_error();
@@ -1944,6 +2032,60 @@ fn config_without_kdcs() -> Config {
 "#,
     )
     .expect("config parses")
+}
+
+#[cfg(feature = "tokio")]
+fn config_with_kpasswd_server(server: String) -> Config {
+    let input = format!(
+        r#"
+[libdefaults]
+ dns_lookup_kdc = false
+ udp_preference_limit = 1
+
+[realms]
+ TEST.GOKRB5 = {{
+  kpasswd_server = {server}
+ }}
+"#,
+    );
+    Config::parse(&input).expect("config parses")
+}
+
+#[cfg(feature = "tokio")]
+fn kpasswd_reply_frame(ap_rep_length: u16, body: &[u8]) -> Vec<u8> {
+    let message_length = 6 + body.len();
+    assert!(u16::try_from(message_length).is_ok());
+
+    let mut frame = Vec::with_capacity(message_length);
+    frame.extend_from_slice(&(message_length as u16).to_be_bytes());
+    frame.extend_from_slice(&1u16.to_be_bytes());
+    frame.extend_from_slice(&ap_rep_length.to_be_bytes());
+    frame.extend_from_slice(body);
+    frame
+}
+
+#[cfg(feature = "tokio")]
+fn kpasswd_result_krb_error(code: u16, text: &str) -> Vec<u8> {
+    let mut e_data = Vec::with_capacity(2 + text.len());
+    e_data.extend_from_slice(&code.to_be_bytes());
+    e_data.extend_from_slice(text.as_bytes());
+
+    let error = rasn_kerberos::KrbError {
+        pvno: rasn::types::Integer::from(5),
+        msg_type: rasn::types::Integer::from(30),
+        ctime: None,
+        cusec: None,
+        stime: kerberos_time(1_893_553_440),
+        susec: rasn::types::Integer::from(0),
+        error_code: 52,
+        crealm: None,
+        cname: None,
+        realm: realm("TEST.GOKRB5"),
+        sname: rasn_principal(&Principal::new("TEST.GOKRB5", 2, ["kadmin", "changepw"])),
+        e_text: Some(kerberos_string(text)),
+        e_data: Some(e_data.into()),
+    };
+    rasn::der::encode(&error).expect("KRB-ERROR encodes")
 }
 
 #[cfg(feature = "tokio")]
