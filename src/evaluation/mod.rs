@@ -55,7 +55,7 @@ fn render_decision_matrix(out: &mut String) {
         write!(out, "| {} |", assessment.candidate.name()).expect("writing to String cannot fail");
         for area in V8_CONTRACT {
             let support = assessment.support_for(area.id);
-            write!(out, " {} |", support).expect("writing to String cannot fail");
+            write!(out, " {support} |").expect("writing to String cannot fail");
         }
         out.push('\n');
     }
