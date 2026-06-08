@@ -71,9 +71,15 @@ pub const CLAIM_TYPE_ID_BOOLEAN: u16 = 6;
 const PAC_HEADER_LEN: usize = 8;
 const PAC_INFO_BUFFER_LEN: usize = 16;
 const PAC_SERVER_CHECKSUM_KEY_USAGE: u32 = 17;
+const PAC_CREDENTIALS_KEY_USAGE: u32 = 16;
 const WINDOWS_TICKS_PER_SECOND: u64 = 10_000_000;
 const WINDOWS_TO_UNIX_SECONDS: u64 = 11_644_473_600;
 const MAX_REASONABLE_NDR_COUNT: u32 = 1_000_000;
+
+/// NTLM supplemental credential LM OWF flag index.
+pub const NTLM_SUPPLEMENTAL_CRED_LMOWF: u32 = 31;
+/// NTLM supplemental credential NT OWF flag index.
+pub const NTLM_SUPPLEMENTAL_CRED_NTOWF: u32 = 30;
 
 /// Parsed PAC container and selected processed buffers.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -94,6 +100,10 @@ pub struct Pac {
     pub server_checksum: Option<SignatureData>,
     /// Parsed KDC checksum, if present and processed.
     pub kdc_checksum: Option<SignatureData>,
+    /// Parsed credentials info, if present and processed.
+    ///
+    /// The encrypted nested credential data still requires the AS reply key.
+    pub credentials_info: Option<CredentialsInfo>,
     /// Parsed client info, if present and processed.
     pub client_info: Option<ClientInfo>,
     /// Parsed UPN/DNS info, if present and processed.
@@ -151,6 +161,7 @@ impl Pac {
             kerb_validation_info: None,
             server_checksum: None,
             kdc_checksum: None,
+            credentials_info: None,
             client_info: None,
             upn_dns_info: None,
             s4u_delegation_info: None,
@@ -187,6 +198,9 @@ impl Pac {
                     let checksum = SignatureData::parse(bytes)?;
                     buffer.copy_zeroed_signature(&mut self.zero_signature_data, &checksum)?;
                     self.kdc_checksum = Some(checksum);
+                }
+                INFO_TYPE_CREDENTIALS if self.credentials_info.is_none() => {
+                    self.credentials_info = Some(CredentialsInfo::parse(bytes)?);
                 }
                 INFO_TYPE_PAC_CLIENT_INFO if self.client_info.is_none() => {
                     self.client_info = Some(ClientInfo::parse(bytes)?);
@@ -475,6 +489,159 @@ impl UpnDnsInfo {
             upn,
             dns_domain,
         })
+    }
+}
+
+/// PAC credentials info.
+///
+/// This PAC buffer is not NDR-wrapped. The nested credential data is encrypted
+/// with key usage 16 and normally requires the AS reply key, so service-side PAC
+/// processing records the encrypted bytes without decrypting them.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CredentialsInfo {
+    /// Credentials info version. The Microsoft format requires zero.
+    pub version: u32,
+    /// Kerberos encryption type used for the encrypted credential data.
+    pub encryption_type: u32,
+    /// Encrypted NDR-encoded `CredentialData`.
+    pub encrypted_credential_data: Vec<u8>,
+}
+
+impl CredentialsInfo {
+    /// Parse PAC credentials info without decrypting the nested credential data.
+    pub fn parse(bytes: &[u8]) -> Result<Self, Error> {
+        let mut reader = Reader::new(bytes);
+        let version = reader.read_u32()?;
+        if version != 0 {
+            return Err(Error::InvalidCredentialsInfoVersion(version));
+        }
+        let encryption_type = reader.read_u32()?;
+        let encrypted_credential_data = reader.read_bytes(reader.remaining())?.to_vec();
+
+        Ok(Self {
+            version,
+            encryption_type,
+            encrypted_credential_data,
+        })
+    }
+
+    /// Decrypt and parse the nested PAC credential data.
+    pub fn decrypt_credential_data(&self, key: &EncryptionKey) -> Result<CredentialData, Error> {
+        let encryption_type =
+            i32::try_from(self.encryption_type).map_err(|_| Error::LengthOverflow)?;
+        if key.etype != encryption_type {
+            return Err(Error::CredentialKeyTypeMismatch {
+                expected: encryption_type,
+                actual: key.etype,
+            });
+        }
+        let etype = AesEtype::from_etype_id(encryption_type)
+            .ok_or(Error::UnsupportedEncryptionType(encryption_type))?;
+        let plaintext = etype.decrypt_message(
+            &key.value,
+            &self.encrypted_credential_data,
+            PAC_CREDENTIALS_KEY_USAGE,
+        )?;
+        CredentialData::parse(&plaintext)
+    }
+}
+
+/// Decrypted PAC credential data.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CredentialData {
+    /// Number of supplemental credentials.
+    pub credential_count: u32,
+    /// Supplemental credentials.
+    pub credentials: Vec<SecpkgSupplementalCredential>,
+}
+
+impl CredentialData {
+    /// Parse NDR-encoded PAC credential data.
+    pub fn parse(bytes: &[u8]) -> Result<Self, Error> {
+        let mut reader = Reader::new(bytes);
+        read_ndr_wrapper(&mut reader, "CredentialData")?;
+
+        let credential_count = read_ndr_u32(&mut reader)?;
+        let credentials = read_counted_supplemental_credentials(&mut reader, credential_count)?;
+        ensure_zero_trailing(&mut reader, "CredentialData")?;
+
+        Ok(Self {
+            credential_count,
+            credentials,
+        })
+    }
+}
+
+/// Supplemental credential package entry.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SecpkgSupplementalCredential {
+    /// Supplemental credential package name.
+    pub package_name: RpcUnicodeString,
+    /// Credential byte length.
+    pub credential_size: u32,
+    /// Package-specific credential bytes.
+    pub credentials: Vec<u8>,
+}
+
+/// NTLM supplemental credential data.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NtlmSupplementalCredential {
+    /// NTLM supplemental credential version. The Microsoft format requires zero.
+    pub version: u32,
+    /// NTLM supplemental credential flags.
+    pub flags: u32,
+    /// LM one-way function, if present and valid.
+    pub lm_password: Option<[u8; 16]>,
+    /// NT one-way function, if present and valid.
+    pub nt_password: Option<[u8; 16]>,
+}
+
+impl NtlmSupplementalCredential {
+    /// Parse package-specific NTLM supplemental credential bytes.
+    pub fn parse(bytes: &[u8]) -> Result<Self, Error> {
+        let mut reader = Reader::new(bytes);
+        let version = reader.read_u32()?;
+        if version != 0 {
+            return Err(Error::InvalidNtlmSupplementalCredentialVersion(version));
+        }
+        let flags = reader.read_u32()?;
+        let lm_password = if ntlm_supplemental_flag_set(flags, NTLM_SUPPLEMENTAL_CRED_LMOWF) {
+            Some(
+                reader
+                    .read_bytes(16)?
+                    .try_into()
+                    .expect("16-byte slice converts to array"),
+            )
+        } else {
+            None
+        };
+        let nt_password = if ntlm_supplemental_flag_set(flags, NTLM_SUPPLEMENTAL_CRED_NTOWF) {
+            Some(
+                reader
+                    .read_bytes(16)?
+                    .try_into()
+                    .expect("16-byte slice converts to array"),
+            )
+        } else {
+            None
+        };
+
+        Ok(Self {
+            version,
+            flags,
+            lm_password,
+            nt_password,
+        })
+    }
+
+    /// Whether the LM OWF flag is set.
+    pub fn has_lm_password(&self) -> bool {
+        ntlm_supplemental_flag_set(self.flags, NTLM_SUPPLEMENTAL_CRED_LMOWF)
+    }
+
+    /// Whether the NT OWF flag is set.
+    pub fn has_nt_password(&self) -> bool {
+        ntlm_supplemental_flag_set(self.flags, NTLM_SUPPLEMENTAL_CRED_NTOWF)
     }
 }
 
@@ -1256,6 +1423,46 @@ fn read_deferred_u8_array(
     Ok(bytes)
 }
 
+fn read_counted_supplemental_credentials(
+    reader: &mut Reader<'_>,
+    count: u32,
+) -> Result<Vec<SecpkgSupplementalCredential>, Error> {
+    if count == 0 {
+        return Ok(Vec::new());
+    }
+
+    let count = usize::try_from(count).map_err(|_| Error::LengthOverflow)?;
+    let mut descriptors = Vec::with_capacity(count);
+    for _ in 0..count {
+        descriptors.push((
+            RpcUnicodeStringDescriptor::read(reader)?,
+            read_ndr_u32(reader)?,
+            read_ndr_u32(reader)?,
+        ));
+    }
+
+    let mut supplemental_credentials = Vec::with_capacity(count);
+    for (package_name, credential_size, credentials_ref) in descriptors {
+        let package_name = read_deferred_unicode_string(
+            reader,
+            package_name,
+            "SECPKGSupplementalCred.PackageName",
+        )?;
+        let credential_bytes = read_deferred_u8_array(
+            reader,
+            credentials_ref,
+            credential_size,
+            "SECPKGSupplementalCred.Credentials",
+        )?;
+        supplemental_credentials.push(SecpkgSupplementalCredential {
+            package_name,
+            credential_size,
+            credentials: credential_bytes,
+        });
+    }
+    Ok(supplemental_credentials)
+}
+
 fn read_deferred_rpc_unicode_strings(
     reader: &mut Reader<'_>,
     referent_id: u32,
@@ -1846,6 +2053,12 @@ fn aes_etype_for_checksum_type(signature_type: u32) -> Option<AesEtype> {
     AesEtype::from_checksum_type_id(signature_type.try_into().ok()?)
 }
 
+fn ntlm_supplemental_flag_set(flags: u32, flag: u32) -> bool {
+    let byte = (flag / 8) as usize;
+    let bit = 7 - (flag - 8 * byte as u32);
+    flags.to_le_bytes()[byte] & (1 << bit) != 0
+}
+
 fn checked_slice<'a>(
     bytes: &'a [u8],
     offset: usize,
@@ -2029,6 +2242,10 @@ pub enum Error {
     #[error("unsupported PAC checksum type: {0}")]
     UnsupportedChecksumType(u32),
 
+    /// An encryption type is not supported for PAC credential decryption.
+    #[error("unsupported PAC encryption type: {0}")]
+    UnsupportedEncryptionType(i32),
+
     /// A claims compression format is not supported.
     #[error("unsupported PAC claims compression format: {0}")]
     UnsupportedClaimsCompressionFormat(u16),
@@ -2049,6 +2266,23 @@ pub enum Error {
     /// A required PAC buffer was absent.
     #[error("PAC Info Buffers do not contain required {0}")]
     MissingRequiredBuffer(&'static str),
+
+    /// PAC credentials info version was not zero.
+    #[error("invalid PAC credentials info version: {0}")]
+    InvalidCredentialsInfoVersion(u32),
+
+    /// PAC credentials were decrypted with the wrong key type.
+    #[error("PAC credentials key type mismatch: expected {expected}, got {actual}")]
+    CredentialKeyTypeMismatch {
+        /// Required Kerberos encryption type.
+        expected: i32,
+        /// Provided Kerberos encryption type.
+        actual: i32,
+    },
+
+    /// NTLM supplemental credential version was not zero.
+    #[error("invalid NTLM supplemental credential version: {0}")]
+    InvalidNtlmSupplementalCredentialVersion(u32),
 
     /// The PAC server checksum did not verify.
     #[error("PAC service checksum verification failed")]

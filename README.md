@@ -48,9 +48,10 @@ pure-Rust Kerberos library.
   challenges, validates, attaches accepted contexts, and emits AP-REP response
   headers, with a compileable Axum Negotiate example; PAC
   parsing covers the PAC container, KERB_VALIDATION_INFO NDR, client info,
-  UPN/DNS info, S4U delegation info, device info, uncompressed client/device
-  claims info, signature zeroing, authorization-data extraction, resource group
-  SID expansion, and AES service checksum verification.
+  UPN/DNS info, credentials info with AS-key decrypt helpers, S4U delegation
+  info, device info, uncompressed client/device claims info, signature zeroing,
+  authorization-data extraction, resource group SID expansion, and AES service
+  checksum verification.
 - `sspi-rs` is treated as a mature Negotiate/Kerberos collaboration or facade
   candidate.
 - `krb5-rs` is not used as a base implementation because the published crate is

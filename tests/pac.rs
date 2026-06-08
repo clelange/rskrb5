@@ -3,16 +3,18 @@
 use std::time::{Duration, UNIX_EPOCH};
 
 use pretty_assertions::assert_eq;
-use rskrb5::keytab::Keytab;
+use rskrb5::crypto::{AesEtype, AesSha1Etype};
+use rskrb5::keytab::{EncryptionKey, Keytab};
 use rskrb5::pac::{
     self, CHECKSUM_HMAC_MD5_UNSIGNED, CHECKSUM_HMAC_SHA1_96_AES256, CLAIM_TYPE_ID_INT64,
     CLAIM_TYPE_ID_STRING, CLAIM_TYPE_ID_UINT64, CLAIMS_COMPRESSION_FORMAT_NONE,
     CLAIMS_COMPRESSION_FORMAT_XPRESS_HUFF, CLAIMS_SOURCE_TYPE_AD, ClaimValues, ClaimsInfo,
-    ClaimsSetMetadata, ClientInfo, DeviceInfo, INFO_TYPE_PAC_CLIENT_CLAIMS_INFO,
-    INFO_TYPE_PAC_CLIENT_INFO, INFO_TYPE_PAC_DEVICE_CLAIMS_INFO, INFO_TYPE_PAC_DEVICE_INFO,
-    INFO_TYPE_PAC_KDC_SIGNATURE_DATA, INFO_TYPE_PAC_SERVER_SIGNATURE_DATA,
-    INFO_TYPE_S4U_DELEGATION_INFO, INFO_TYPE_UPN_DNS_INFO, KerbValidationInfo, Pac,
-    S4UDelegationInfo, SignatureData, UpnDnsInfo,
+    ClaimsSetMetadata, ClientInfo, CredentialData, CredentialsInfo, DeviceInfo,
+    INFO_TYPE_CREDENTIALS, INFO_TYPE_PAC_CLIENT_CLAIMS_INFO, INFO_TYPE_PAC_CLIENT_INFO,
+    INFO_TYPE_PAC_DEVICE_CLAIMS_INFO, INFO_TYPE_PAC_DEVICE_INFO, INFO_TYPE_PAC_KDC_SIGNATURE_DATA,
+    INFO_TYPE_PAC_SERVER_SIGNATURE_DATA, INFO_TYPE_S4U_DELEGATION_INFO, INFO_TYPE_UPN_DNS_INFO,
+    KerbValidationInfo, NtlmSupplementalCredential, Pac, S4UDelegationInfo, SignatureData,
+    UpnDnsInfo,
 };
 
 mod common;
@@ -302,6 +304,53 @@ fn processes_s4u_delegation_and_device_info_pac_buffers() {
 }
 
 #[test]
+fn parses_credentials_info_header_and_processes_pac_buffer() {
+    let encrypted = vec![0xde, 0xad, 0xbe, 0xef];
+    let bytes = credentials_info_bytes(18, encrypted.clone());
+    let info = CredentialsInfo::parse(&bytes).expect("credentials info parses");
+
+    assert_eq!(info.version, 0);
+    assert_eq!(info.encryption_type, 18);
+    assert_eq!(info.encrypted_credential_data, encrypted);
+
+    let pac =
+        Pac::parse_and_process(&single_buffer_pac(INFO_TYPE_CREDENTIALS, &bytes)).expect("PAC");
+    assert_eq!(
+        pac.credentials_info
+            .as_ref()
+            .expect("credentials info parsed"),
+        &info
+    );
+}
+
+#[test]
+fn decrypts_credentials_info_and_parses_ntlm_supplemental_credential() {
+    let etype = AesEtype::Sha1(AesSha1Etype::Aes256);
+    let key = EncryptionKey {
+        etype: etype.etype_id(),
+        value: (0u8..32).collect(),
+    };
+    let plaintext = credential_data_bytes();
+    let encrypted = etype
+        .encrypt_message_with_confounder(&key.value, &plaintext, 16, &[0xa5; 16])
+        .expect("credential data encrypts");
+    let info = CredentialsInfo::parse(&credentials_info_bytes(18, encrypted))
+        .expect("credentials info parses");
+    let credential_data = info
+        .decrypt_credential_data(&key)
+        .expect("credential data decrypts");
+
+    assert_credential_data(&credential_data);
+}
+
+#[test]
+fn parses_credential_data_directly() {
+    let credential_data = CredentialData::parse(&credential_data_bytes()).expect("data parses");
+
+    assert_credential_data(&credential_data);
+}
+
+#[test]
 fn verifies_pac_server_checksum_with_service_key() {
     let pac = Pac::parse_and_process(&decode_hex(common::PAC_AD_WIN2K)).expect("PAC parses");
     let keytab = Keytab::parse(&decode_hex(common::SYSHTTP_KEYTAB)).expect("keytab parses");
@@ -582,6 +631,57 @@ fn assert_device_info(info: &DeviceInfo) {
     );
 }
 
+fn assert_credential_data(data: &CredentialData) {
+    assert_eq!(data.credential_count, 1);
+    assert_eq!(data.credentials.len(), 1);
+
+    let credential = &data.credentials[0];
+    assert_eq!(credential.package_name.value, "NTLM");
+    assert_eq!(credential.credential_size, 40);
+    assert_eq!(credential.credentials.len(), 40);
+
+    let ntlm = NtlmSupplementalCredential::parse(&credential.credentials)
+        .expect("NTLM supplemental credential parses");
+    assert_eq!(ntlm.version, 0);
+    assert_eq!(ntlm.flags, 0x0300_0000);
+    assert!(ntlm.has_lm_password());
+    assert!(ntlm.has_nt_password());
+    assert_eq!(ntlm.lm_password, Some([0x11; 16]));
+    assert_eq!(ntlm.nt_password, Some([0x22; 16]));
+}
+
+fn credentials_info_bytes(encryption_type: u32, encrypted: Vec<u8>) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    push_u32(&mut bytes, 0);
+    push_u32(&mut bytes, encryption_type);
+    bytes.extend_from_slice(&encrypted);
+    bytes
+}
+
+fn credential_data_bytes() -> Vec<u8> {
+    let credential = ntlm_supplemental_credential_bytes();
+    let mut object = Vec::new();
+    push_u32(&mut object, 1);
+    push_rpc_unicode_string_descriptor(&mut object, "NTLM", 0x0002_0004);
+    push_u32(
+        &mut object,
+        u32::try_from(credential.len()).expect("credential size fits"),
+    );
+    push_u32(&mut object, 0x0002_0008);
+    push_deferred_rpc_unicode_string(&mut object, "NTLM");
+    push_deferred_u8_array(&mut object, &credential);
+    ndr_wrapped(object)
+}
+
+fn ntlm_supplemental_credential_bytes() -> Vec<u8> {
+    let mut bytes = Vec::new();
+    push_u32(&mut bytes, 0);
+    push_u32(&mut bytes, 0x0300_0000);
+    bytes.extend_from_slice(&[0x11; 16]);
+    bytes.extend_from_slice(&[0x22; 16]);
+    bytes
+}
+
 fn s4u_delegation_info_bytes() -> Vec<u8> {
     let mut object = Vec::new();
     push_rpc_unicode_string_descriptor(&mut object, "HTTP/backend", 0x0002_0004);
@@ -673,6 +773,15 @@ fn push_group_memberships(bytes: &mut Vec<u8>, groups: &[pac::GroupMembership]) 
         push_u32(bytes, group.relative_id);
         push_u32(bytes, group.attributes);
     }
+}
+
+fn push_deferred_u8_array(bytes: &mut Vec<u8>, data: &[u8]) {
+    push_u32(
+        bytes,
+        u32::try_from(data.len()).expect("byte array length fits"),
+    );
+    bytes.extend_from_slice(data);
+    align_vec(bytes, 4);
 }
 
 fn push_deferred_sid(bytes: &mut Vec<u8>, sub_authorities: &[u32]) {
