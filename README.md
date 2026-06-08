@@ -28,7 +28,7 @@ pure-Rust Kerberos library.
   KDF, checksums, and deterministic encrypted-message vectors; message wrappers
   preserve gokrb5 EncryptedData signed-kvno DER edge fixtures; kadmin covers
   ChangePasswdData DER decode, exact fixture round-trip, and kpasswd request
-  and reply frame parsing plus reply result handling; client AS/TGS exchange primitives
+  and reply frame parsing plus reply result handling and result-code checks; client AS/TGS exchange primitives
   cover deterministic TGT AS-REQ construction, KRB-ERROR preauthentication
   negotiation and surfacing, PA-ENC-TIMESTAMP encryption, assumed
   preauthentication, password/keytab TGT login helpers, PA-TGS-REQ

@@ -3,7 +3,8 @@
 use pretty_assertions::assert_eq;
 use rasn::types::Integer;
 use rskrb5::kadmin::{
-    ChangePasswdData, ChangePasswordResult, Error as KadminError, Reply, Request,
+    ChangePasswdData, ChangePasswordResult, Error as KadminError, KPASSWD_AUTHERROR,
+    KPASSWD_SUCCESS, Reply, Request,
 };
 use rskrb5::keytab::EncryptionKey;
 
@@ -136,6 +137,30 @@ fn kpasswd_reply_decrypt_result_returns_krb_error_result() {
             text: "b5data".to_owned(),
         }
     );
+}
+
+#[test]
+fn kpasswd_result_success_helper_accepts_zero_code() {
+    let result = ChangePasswordResult::parse(&[0, 0]).expect("success result parses");
+
+    assert_eq!(result.code, KPASSWD_SUCCESS);
+    assert!(result.is_success());
+    assert_eq!(result.ensure_success(), Ok(()));
+}
+
+#[test]
+fn kpasswd_result_success_helper_reports_failure_code() {
+    let result = ChangePasswordResult {
+        code: KPASSWD_AUTHERROR,
+        text: "authentication failed".to_owned(),
+    };
+
+    assert!(!result.is_success());
+    assert!(matches!(
+        result.ensure_success(),
+        Err(KadminError::PasswordChangeFailed { code, text })
+            if code == KPASSWD_AUTHERROR && text == "authentication failed"
+    ));
 }
 
 #[test]

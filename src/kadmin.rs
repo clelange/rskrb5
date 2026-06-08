@@ -10,6 +10,22 @@ pub const CHANGE_PASSWORD_REQUEST_VERSION: u16 = 0xff80;
 pub const CHANGE_PASSWORD_REPLY_VERSION: u16 = 1;
 /// Key usage for encrypted KRB-PRIV payloads.
 pub const KRB_PRIV_ENCPART_USAGE: u32 = 13;
+/// Password change succeeded.
+pub const KPASSWD_SUCCESS: u16 = 0;
+/// Request was malformed.
+pub const KPASSWD_MALFORMED: u16 = 1;
+/// Server hard error.
+pub const KPASSWD_HARDERROR: u16 = 2;
+/// Authentication error.
+pub const KPASSWD_AUTHERROR: u16 = 3;
+/// Server soft error.
+pub const KPASSWD_SOFTERROR: u16 = 4;
+/// Access denied.
+pub const KPASSWD_ACCESSDENIED: u16 = 5;
+/// Bad protocol version.
+pub const KPASSWD_BAD_VERSION: u16 = 6;
+/// Initial ticket flag is required.
+pub const KPASSWD_INITIAL_FLAG_NEEDED: u16 = 7;
 const HEADER_LEN: usize = 6;
 
 /// Payload encrypted inside a Kerberos password-change request.
@@ -211,6 +227,23 @@ impl ChangePasswordResult {
             text: String::from_utf8_lossy(&bytes[2..]).into_owned(),
         })
     }
+
+    /// Whether this result indicates a successful password change.
+    pub fn is_success(&self) -> bool {
+        self.code == KPASSWD_SUCCESS
+    }
+
+    /// Return success or an error carrying the kpasswd failure code and text.
+    pub fn ensure_success(&self) -> Result<(), Error> {
+        if self.is_success() {
+            Ok(())
+        } else {
+            Err(Error::PasswordChangeFailed {
+                code: self.code,
+                text: self.text.clone(),
+            })
+        }
+    }
 }
 
 /// kadmin message parsing errors.
@@ -285,6 +318,14 @@ pub enum Error {
     Crypto {
         /// Crypto error message.
         message: String,
+    },
+    /// kpasswd returned a non-success result code.
+    #[error("kpasswd failed with code {code}: {text}")]
+    PasswordChangeFailed {
+        /// kpasswd result code.
+        code: u16,
+        /// kpasswd result text.
+        text: String,
     },
     /// DER decoding failed for a framed Kerberos message.
     #[error("{target} decode failed: {message}")]
