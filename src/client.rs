@@ -41,6 +41,8 @@ const DEFAULT_KDC_TIMEOUT: Duration = Duration::from_secs(5);
 const DEFAULT_TCP_RESPONSE_LIMIT: usize = 16 * 1024 * 1024;
 #[cfg(feature = "tokio")]
 const MAX_UDP_DATAGRAM: usize = 65_507;
+#[cfg(feature = "tokio")]
+const DEFAULT_MAX_REFERRALS: usize = 5;
 
 /// PA-ENC-TIMESTAMP preauthentication type.
 pub const PA_ENC_TIMESTAMP: i32 = 2;
@@ -678,6 +680,99 @@ impl TokioKdcTransport {
         process_tgs_rep(request, &response, tgs_session_key)
     }
 
+    /// Acquire a service ticket, following cross-realm TGS referrals.
+    ///
+    /// The supplied `tgt` is used as the starting TGT. If the service belongs
+    /// to a different realm, this first obtains referral TGTs until it can ask
+    /// the target realm for the final service ticket.
+    pub async fn get_service_ticket_with_referrals(
+        &self,
+        config: &Config,
+        protocol: KdcProtocol,
+        tgt: &AsRepSession,
+        service: Principal,
+        options: TgsReqOptions,
+    ) -> Result<TgsRepSession, Error> {
+        self.get_service_ticket_with_referrals_limit(
+            config,
+            protocol,
+            tgt,
+            service,
+            options,
+            DEFAULT_MAX_REFERRALS,
+        )
+        .await
+    }
+
+    /// Acquire a service ticket with an explicit referral limit.
+    pub async fn get_service_ticket_with_referrals_limit(
+        &self,
+        config: &Config,
+        protocol: KdcProtocol,
+        tgt: &AsRepSession,
+        mut service: Principal,
+        options: TgsReqOptions,
+        max_referrals: usize,
+    ) -> Result<TgsRepSession, Error> {
+        let mut current_tgt = tgt.clone();
+        let mut current_realm =
+            tgt_realm(&current_tgt).ok_or_else(|| Error::InvalidReferralTicket {
+                service: current_tgt.service.name(),
+            })?;
+        if service.realm.is_empty() {
+            service.realm =
+                service_realm(config, &service).unwrap_or_else(|| current_realm.clone());
+        }
+        let target_realm = service.realm.clone();
+
+        for referrals in 0..=max_referrals {
+            let requested_service = if current_realm == target_realm {
+                service.clone()
+            } else {
+                Principal::new(
+                    current_realm.clone(),
+                    KRB_NT_SRV_INST,
+                    ["krbtgt".to_owned(), target_realm.clone()],
+                )
+            };
+            let request = build_tgs_req_for_realm(
+                &current_tgt,
+                current_realm.clone(),
+                requested_service,
+                options.clone(),
+            )?;
+            let response = self
+                .send_to_realm(config, protocol, &request.kdc_realm, &request.der)
+                .await?;
+            let ticket =
+                process_tgs_rep_with_referral(&request, &response, &current_tgt.session_key)?;
+
+            if principal_matches(&ticket.service, &service) {
+                return Ok(ticket);
+            }
+
+            let referred_realm =
+                tgt_realm(&ticket).ok_or_else(|| Error::ServicePrincipalMismatch {
+                    expected: service.name(),
+                    actual: ticket.service.name(),
+                })?;
+            if referred_realm == current_realm {
+                return Err(Error::InvalidReferralTicket {
+                    service: ticket.service.name(),
+                });
+            }
+
+            current_realm = referred_realm;
+            current_tgt = ticket;
+
+            if referrals == max_referrals {
+                return Err(Error::MaxReferralDepth { max: max_referrals });
+            }
+        }
+
+        Err(Error::MaxReferralDepth { max: max_referrals })
+    }
+
     /// Perform a TGT AS login using password credentials and KDC preauth hints.
     pub async fn login_tgt_with_password<A>(
         &self,
@@ -1031,12 +1126,30 @@ pub fn build_tgs_req(
     service: Principal,
     options: TgsReqOptions,
 ) -> Result<BuiltTgsReq, Error> {
+    build_tgs_req_for_realm(tgt, service.realm.clone(), service, options)
+}
+
+/// Build a TGS-REQ for a service ticket while contacting an explicit KDC realm.
+pub fn build_tgs_req_for_realm(
+    tgt: &AsRepSession,
+    kdc_realm: impl Into<String>,
+    service: Principal,
+    options: TgsReqOptions,
+) -> Result<BuiltTgsReq, Error> {
     let (timestamp, cusec) = current_preauth_time()?;
     let etype = AesSha1Etype::from_etype_id(tgt.session_key.etype)
         .ok_or(Error::UnsupportedEtype(tgt.session_key.etype))?;
     let mut confounder = vec![0; etype.confounder_len()];
     getrandom::fill(&mut confounder)?;
-    build_tgs_req_with_confounder(tgt, service, options, timestamp, cusec, &confounder)
+    build_tgs_req_for_realm_with_confounder(
+        tgt,
+        kdc_realm,
+        service,
+        options,
+        timestamp,
+        cusec,
+        &confounder,
+    )
 }
 
 /// Build a TGS-REQ with an explicit authenticator timestamp and confounder.
@@ -1048,10 +1161,32 @@ pub fn build_tgs_req_with_confounder(
     cusec: u32,
     confounder: &[u8],
 ) -> Result<BuiltTgsReq, Error> {
+    build_tgs_req_for_realm_with_confounder(
+        tgt,
+        service.realm.clone(),
+        service,
+        options,
+        timestamp,
+        cusec,
+        confounder,
+    )
+}
+
+/// Build a TGS-REQ for an explicit KDC realm, timestamp, and confounder.
+pub fn build_tgs_req_for_realm_with_confounder(
+    tgt: &AsRepSession,
+    kdc_realm: impl Into<String>,
+    service: Principal,
+    options: TgsReqOptions,
+    timestamp: SystemTime,
+    cusec: u32,
+    confounder: &[u8],
+) -> Result<BuiltTgsReq, Error> {
     if options.etypes.is_empty() {
         return Err(Error::EmptyEtypes);
     }
 
+    let kdc_realm = kdc_realm.into();
     let ticket = decode::<rasn_kerberos::Ticket>("Ticket", &tgt.ticket)?;
     let till = options
         .now
@@ -1065,7 +1200,7 @@ pub fn build_tgs_req_with_confounder(
     let req_body = rasn_kerberos::KdcReqBody {
         kdc_options: kdc_options_from_bits(options.kdc_option_bits),
         cname: Some(cname.clone()),
-        realm: kerberos_string(&service.realm)?,
+        realm: kerberos_string(&kdc_realm)?,
         sname: Some(principal_to_rasn(&service)?),
         from: None,
         till: kerberos_time_from_system_time(till)?,
@@ -1133,7 +1268,7 @@ pub fn build_tgs_req_with_confounder(
         message,
         der,
         client: tgt.client.clone(),
-        kdc_realm: service.realm.clone(),
+        kdc_realm,
         service,
         nonce: options.nonce,
     })
@@ -1299,6 +1434,24 @@ pub fn process_tgs_rep(
     bytes: &[u8],
     tgs_session_key: &EncryptionKey,
 ) -> Result<TgsRepSession, Error> {
+    process_tgs_rep_inner(request, bytes, tgs_session_key, false)
+}
+
+/// Decrypt and validate a TGS-REP, permitting intermediate referral TGTs.
+pub fn process_tgs_rep_with_referral(
+    request: &BuiltTgsReq,
+    bytes: &[u8],
+    tgs_session_key: &EncryptionKey,
+) -> Result<TgsRepSession, Error> {
+    process_tgs_rep_inner(request, bytes, tgs_session_key, true)
+}
+
+fn process_tgs_rep_inner(
+    request: &BuiltTgsReq,
+    bytes: &[u8],
+    tgs_session_key: &EncryptionKey,
+    allow_referral: bool,
+) -> Result<TgsRepSession, Error> {
     let tgs_rep = decode::<rasn_kerberos::TgsRep>("TGS-REP", bytes)?;
     let kdc_rep = &tgs_rep.0;
     validate_integer("pvno", &kdc_rep.pvno, KRB5_PVNO)?;
@@ -1335,7 +1488,10 @@ pub fn process_tgs_rep(
     }
 
     let enc_part_service = principal_from_parts(&enc_part.srealm, &enc_part.sname)?;
-    if !principal_matches(&enc_part_service, &request.service) {
+    let referral = allow_referral
+        && is_tgt_principal(&enc_part_service)
+        && !principal_matches(&enc_part_service, &request.service);
+    if !principal_matches(&enc_part_service, &request.service) && !referral {
         return Err(Error::ServicePrincipalMismatch {
             expected: request.service.name(),
             actual: enc_part_service.name(),
@@ -1576,6 +1732,20 @@ pub enum Error {
         expected: u32,
         /// Actual reply nonce.
         actual: u32,
+    },
+
+    /// A TGS referral chain exceeded the configured limit.
+    #[error("TGS referral depth exceeded maximum {max}")]
+    MaxReferralDepth {
+        /// Maximum number of referrals followed.
+        max: usize,
+    },
+
+    /// A TGS referral reply did not contain a usable `krbtgt/<realm>` service.
+    #[error("invalid TGS referral ticket service: {service}")]
+    InvalidReferralTicket {
+        /// Referral ticket service name.
+        service: String,
     },
 
     /// Crypto operation failed.
@@ -2006,6 +2176,32 @@ fn principal_from_parts(
 
 fn principal_matches(left: &Principal, right: &Principal) -> bool {
     left.realm == right.realm && left.components == right.components
+}
+
+fn is_tgt_principal(principal: &Principal) -> bool {
+    principal
+        .components
+        .first()
+        .is_some_and(|component| component.eq_ignore_ascii_case("krbtgt"))
+        && principal.components.len() >= 2
+}
+
+#[cfg(feature = "tokio")]
+fn tgt_realm(session: &AsRepSession) -> Option<String> {
+    if is_tgt_principal(&session.service) {
+        session.service.components.last().cloned()
+    } else {
+        None
+    }
+}
+
+#[cfg(feature = "tokio")]
+fn service_realm(config: &Config, service: &Principal) -> Option<String> {
+    service
+        .components
+        .last()
+        .and_then(|host| config.resolve_realm(host))
+        .map(str::to_owned)
 }
 
 fn kerberos_string(value: &str) -> Result<rasn_kerberos::KerberosString, Error> {

@@ -8,10 +8,11 @@ use rskrb5::client::{
     Error, KDC_ERR_PREAUTH_REQUIRED, KdcTransport, PA_ENC_TIMESTAMP, PA_ETYPE_INFO2,
     PA_REQ_ENC_PA_REP, PA_TGS_REQ, PreauthKeyInfo, Principal, TGS_REP_ENCPART_SESSION_KEY_USAGE,
     TGS_REQ_AUTHENTICATOR_CHECKSUM_USAGE, TGS_REQ_AUTHENTICATOR_USAGE, TgsReqOptions,
-    build_tgs_req_with_confounder, build_tgt_as_req, default_password_salt,
-    derive_password_reply_key, exchange_as_req, exchange_tgs_req, login_tgt_with_keytab,
-    login_tgt_with_password, pa_enc_timestamp_with_confounder, process_as_rep, process_kdc_error,
-    process_tgs_rep, select_preauth_key_info,
+    build_tgs_req_for_realm_with_confounder, build_tgs_req_with_confounder, build_tgt_as_req,
+    default_password_salt, derive_password_reply_key, exchange_as_req, exchange_tgs_req,
+    login_tgt_with_keytab, login_tgt_with_password, pa_enc_timestamp_with_confounder,
+    process_as_rep, process_kdc_error, process_tgs_rep, process_tgs_rep_with_referral,
+    select_preauth_key_info,
 };
 use rskrb5::crypto::AesSha1Etype;
 use rskrb5::keytab::{EncryptionKey, Entry as KeytabEntry, Keytab, Principal as KeytabPrincipal};
@@ -289,6 +290,37 @@ fn builds_tgs_req_with_pa_tgs_req_and_checksum() {
 }
 
 #[test]
+fn builds_tgs_req_for_explicit_kdc_realm() {
+    let tgt = sample_tgt_session();
+    let service = Principal::new("RESDOM.GOKRB5", 2, ["HTTP", "host.resdom.gokrb5"]);
+    let request = build_tgs_req_for_realm_with_confounder(
+        &tgt,
+        "TEST.GOKRB5",
+        service.clone(),
+        TgsReqOptions::new(timestamp(1_893_553_450), 0x4455_6677).with_etypes(vec![18]),
+        timestamp(1_893_553_451),
+        654_321,
+        &decode_hex(TGS_REQ_CONFOUNDER),
+    )
+    .expect("TGS-REQ builds");
+    let decoded: rasn_kerberos::TgsReq = rasn::der::decode(&request.der).expect("TGS-REQ decodes");
+
+    assert_eq!(request.kdc_realm, "TEST.GOKRB5");
+    assert_eq!(request.service, service);
+    assert_eq!(
+        kerberos_string_to_string(&decoded.0.req_body.realm),
+        "TEST.GOKRB5"
+    );
+    assert_eq!(
+        principal_from_parts(
+            &realm("RESDOM.GOKRB5"),
+            decoded.0.req_body.sname.as_ref().expect("sname")
+        ),
+        service
+    );
+}
+
+#[test]
 fn processes_tgs_rep_and_exports_ccache_credential() {
     let tgt = sample_tgt_session();
     let request = sample_tgs_request(&tgt);
@@ -320,6 +352,26 @@ fn processes_tgs_rep_and_exports_ccache_credential() {
     assert_eq!(credential.times.start_time, 1_893_553_446);
     assert_eq!(credential.times.end_time, 1_893_560_646);
     assert!(!credential.ticket.is_empty());
+}
+
+#[test]
+fn process_tgs_rep_with_referral_accepts_intermediate_tgt() {
+    let tgt = sample_tgt_session();
+    let request = sample_tgs_request(&tgt);
+    let referral = Principal::new("TEST.GOKRB5", 2, ["krbtgt", "RESDOM.GOKRB5"]);
+    let response =
+        synthetic_tgs_rep_with_service(&request, request.nonce, &tgt.session_key, referral.clone());
+
+    let strict = process_tgs_rep(&request, &response, &tgt.session_key)
+        .expect_err("strict TGS-REP validation rejects referrals");
+    assert!(matches!(strict, Error::ServicePrincipalMismatch { .. }));
+
+    let session = process_tgs_rep_with_referral(&request, &response, &tgt.session_key)
+        .expect("referral TGS-REP validates");
+    assert_eq!(session.client, Principal::user("TEST.GOKRB5", "testuser1"));
+    assert_eq!(session.service, referral);
+    assert_eq!(session.session_key.etype, 18);
+    assert!(!session.ticket.is_empty());
 }
 
 #[test]
@@ -570,6 +622,15 @@ fn synthetic_tgs_rep(
     nonce: u32,
     tgs_session_key: &EncryptionKey,
 ) -> Vec<u8> {
+    synthetic_tgs_rep_with_service(request, nonce, tgs_session_key, request.service.clone())
+}
+
+fn synthetic_tgs_rep_with_service(
+    request: &BuiltTgsReq,
+    nonce: u32,
+    tgs_session_key: &EncryptionKey,
+    reply_service: Principal,
+) -> Vec<u8> {
     let session_key = EncryptionKey {
         etype: 18,
         value: decode_hex(SERVICE_SESSION_KEY),
@@ -587,8 +648,8 @@ fn synthetic_tgs_rep(
         start_time: Some(kerberos_time(1_893_553_446)),
         end_time: kerberos_time(1_893_560_646),
         renew_till: Some(kerberos_time(1_894_071_846)),
-        srealm: realm(&request.service.realm),
-        sname: rasn_principal(&request.service),
+        srealm: realm(&reply_service.realm),
+        sname: rasn_principal(&reply_service),
         caddr: None,
         encrypted_pa_data: None,
     });
@@ -606,8 +667,8 @@ fn synthetic_tgs_rep(
         cname: rasn_principal(&request.client),
         ticket: rasn_kerberos::Ticket {
             tkt_vno: rasn::types::Integer::from(5),
-            realm: realm(&request.service.realm),
-            sname: rasn_principal(&request.service),
+            realm: realm(&reply_service.realm),
+            sname: rasn_principal(&reply_service),
             enc_part: rasn_kerberos::EncryptedData {
                 etype: 18,
                 kvno: Some(4),

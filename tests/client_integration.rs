@@ -19,6 +19,8 @@ const TESTUSER1_SALT: &[u8] = b"TEST.GOKRB5testuser1";
 const AES256_ETYPE: i32 = 18;
 const TESTUSER1_KVNO: u32 = 2;
 const SERVICE_HOST: &str = "host.test.gokrb5";
+const RESDOM_REALM: &str = "RESDOM.GOKRB5";
+const RESDOM_SERVICE_HOST: &str = "host.resdom.gokrb5";
 static INTEGRATION_LOCK: Mutex<()> = Mutex::new(());
 #[cfg(feature = "spnego")]
 const HTTP_KEYTAB: &str = concat!(
@@ -240,6 +242,56 @@ fn docker_mit_kdc_tgs_service_ticket_through_tcp_and_udp() -> Result<(), Box<dyn
     })
 }
 
+#[test]
+fn docker_mit_kdc_tgs_referral_to_resource_domain() -> Result<(), Box<dyn Error>> {
+    if std::env::var("INTEGRATION").as_deref() != Ok("1") {
+        eprintln!("skipping Docker KDC integration test; set INTEGRATION=1 to enable");
+        return Ok(());
+    }
+    let _guard = INTEGRATION_LOCK.lock().expect("integration test lock");
+
+    runtime().block_on(async {
+        let config = configured_kdc_config()?;
+        let transport = TokioKdcTransport::new().with_timeout(Duration::from_secs(10));
+
+        for protocol in [KdcProtocol::Udp, KdcProtocol::Tcp] {
+            eprintln!(
+                "running Docker KDC TGS referral exchange over {protocol:?} from {REALM} to {RESDOM_REALM}"
+            );
+            let tgt = transport
+                .login_tgt_with_password_config(
+                    &config,
+                    protocol,
+                    Principal::user(REALM, USER),
+                    PASSWORD,
+                    login_options(protocol, 10)?,
+                )
+                .await?;
+            assert_login_session(tgt.clone());
+
+            let service = resdom_service_principal();
+            let ticket = transport
+                .get_service_ticket_with_referrals(
+                    &config,
+                    protocol,
+                    &tgt,
+                    service.clone(),
+                    tgs_options(protocol, 11)?,
+                )
+                .await?;
+
+            assert_eq!(ticket.client, Principal::user(REALM, USER));
+            assert_eq!(ticket.service, service);
+            assert_eq!(ticket.session_key.etype, AES256_ETYPE);
+            assert!(!ticket.session_key.value.is_empty());
+            assert!(!ticket.ticket.is_empty());
+            assert!(ticket.end_time > ticket.start_time);
+        }
+
+        Ok::<_, Box<dyn Error>>(())
+    })
+}
+
 #[cfg(feature = "spnego")]
 #[test]
 fn docker_mit_kdc_spnego_header_round_trip_through_service_validator() -> Result<(), Box<dyn Error>>
@@ -369,6 +421,10 @@ fn service_principal() -> Principal {
     Principal::new(REALM, 2, ["HTTP", SERVICE_HOST])
 }
 
+fn resdom_service_principal() -> Principal {
+    Principal::new(RESDOM_REALM, 2, ["HTTP", RESDOM_SERVICE_HOST])
+}
+
 fn testuser_reply_key() -> Result<EncryptionKey, Box<dyn Error>> {
     let etype = AesSha1Etype::Aes256;
     Ok(EncryptionKey {
@@ -444,9 +500,34 @@ fn configured_kdc_config() -> Result<Config, Box<dyn Error>> {
  {REALM} = {{
   kdc = {}
  }}
+ {RESDOM_REALM} = {{
+  kdc = {}
+ }}
+
+[domain_realm]
+ .test.gokrb5 = {REALM}
+ test.gokrb5 = {REALM}
+ .resdom.gokrb5 = {RESDOM_REALM}
+ resdom.gokrb5 = {RESDOM_REALM}
 "#,
-        kdc_addr()
+        kdc_addr(),
+        resdom_kdc_addr()
     ))?)
+}
+
+fn resdom_kdc_addr() -> String {
+    let host = std::env::var("TEST_RESDOM_KDC_ADDR")
+        .or_else(|_| std::env::var("TEST_KDC_ADDR"))
+        .unwrap_or_else(|_| "127.0.0.1".to_owned());
+    if host
+        .rsplit_once(':')
+        .is_some_and(|(_, port)| port.parse::<u16>().is_ok())
+    {
+        return host;
+    }
+
+    let port = std::env::var("TEST_RESDOM_KDC_PORT").unwrap_or_else(|_| "188".to_owned());
+    format!("{host}:{port}")
 }
 
 fn dns_kdc_config() -> Result<Config, Box<dyn Error>> {
