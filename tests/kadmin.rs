@@ -15,22 +15,31 @@ const KRB_ERROR_WITH_EDATA: &str = "7E81BA3081B7A003020105A10302011EA211180F3139
 
 #[test]
 fn change_passwd_data_matches_gokrb5_fixture() {
-    let value = ChangePasswdData {
-        new_passwd: b"newpassword".to_vec().into(),
-        targ_name: Some(principal_name(1, &["testuser1"])),
-        targ_realm: Some(kerberos_string("TEST.GOKRB5")),
-    };
+    let value = ChangePasswdData::for_target(b"newpassword", 1, ["testuser1"], "TEST.GOKRB5")
+        .expect("targeted ChangePasswdData builds");
     let expected = decode_hex(MARSHALLED_CHANGE_PASSWD_DATA);
 
-    let encoded = rasn::der::encode(&value).expect("ChangePasswdData encodes");
+    let encoded = value.encode_der().expect("ChangePasswdData encodes");
     assert_eq!(encoded, expected);
 
-    let decoded: ChangePasswdData = rasn::der::decode(&expected).expect("ChangePasswdData decodes");
+    let decoded = ChangePasswdData::decode_der(&expected).expect("ChangePasswdData decodes");
     assert_eq!(decoded, value);
     assert_eq!(
-        rasn::der::encode(&decoded).expect("ChangePasswdData re-encodes"),
+        decoded.encode_der().expect("ChangePasswdData re-encodes"),
         expected
     );
+}
+
+#[test]
+fn change_passwd_data_builds_password_only_payload() {
+    let value = ChangePasswdData::new(b"newpassword");
+    let encoded = value.encode_der().expect("ChangePasswdData encodes");
+    let decoded = ChangePasswdData::decode_der(&encoded).expect("ChangePasswdData decodes");
+
+    assert_eq!(decoded, value);
+    assert_eq!(decoded.new_passwd.as_ref(), b"newpassword");
+    assert!(decoded.targ_name.is_none());
+    assert!(decoded.targ_realm.is_none());
 }
 
 #[test]
@@ -207,20 +216,6 @@ fn kpasswd_reply_rejects_malformed_frames() {
             body_length: 1
         })
     ));
-}
-
-fn principal_name(name_type: i32, components: &[&str]) -> rasn_kerberos::PrincipalName {
-    rasn_kerberos::PrincipalName {
-        r#type: name_type,
-        string: components
-            .iter()
-            .map(|component| kerberos_string(component))
-            .collect(),
-    }
-}
-
-fn kerberos_string(value: &str) -> rasn_kerberos::KerberosString {
-    rasn_kerberos::KerberosString::try_from(value).expect("valid KerberosString")
 }
 
 fn decode_hex(input: &str) -> Vec<u8> {

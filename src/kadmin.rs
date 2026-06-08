@@ -42,6 +42,45 @@ pub struct ChangePasswdData {
     pub targ_realm: Option<rasn_kerberos::Realm>,
 }
 
+impl ChangePasswdData {
+    /// Create password-change data for the authenticated principal.
+    pub fn new(new_passwd: impl AsRef<[u8]>) -> Self {
+        Self {
+            new_passwd: new_passwd.as_ref().to_vec().into(),
+            targ_name: None,
+            targ_realm: None,
+        }
+    }
+
+    /// Create password-change data for an explicit target principal.
+    pub fn for_target<I, S>(
+        new_passwd: impl AsRef<[u8]>,
+        name_type: i32,
+        components: I,
+        realm: &str,
+    ) -> Result<Self, Error>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        Ok(Self {
+            new_passwd: new_passwd.as_ref().to_vec().into(),
+            targ_name: Some(principal_name(name_type, components)?),
+            targ_realm: Some(kerberos_string(realm)?),
+        })
+    }
+
+    /// Decode DER-encoded password-change data.
+    pub fn decode_der(bytes: &[u8]) -> Result<Self, Error> {
+        decode("ChangePasswdData", bytes)
+    }
+
+    /// Encode password-change data using DER.
+    pub fn encode_der(&self) -> Result<Vec<u8>, Error> {
+        encode("ChangePasswdData", self)
+    }
+}
+
 /// Password-change request frame containing AP-REQ and KRB-PRIV messages.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Request {
@@ -343,6 +382,9 @@ pub enum Error {
         /// Encoder error.
         message: String,
     },
+    /// A Kerberos string value could not be constructed.
+    #[error("invalid Kerberos string value: {0}")]
+    InvalidKerberosString(String),
     /// Encoded AP-REQ is too large for the two-byte kpasswd length field.
     #[error("encoded AP-REQ is too large: {actual} bytes")]
     ApReqTooLarge {
@@ -382,6 +424,28 @@ where
         target,
         message: source.to_string(),
     })
+}
+
+fn principal_name<I, S>(
+    name_type: i32,
+    components: I,
+) -> Result<rasn_kerberos::PrincipalName, Error>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    Ok(rasn_kerberos::PrincipalName {
+        r#type: name_type,
+        string: components
+            .into_iter()
+            .map(|component| kerberos_string(component.as_ref()))
+            .collect::<Result<Vec<_>, _>>()?,
+    })
+}
+
+fn kerberos_string(value: &str) -> Result<rasn_kerberos::KerberosString, Error> {
+    rasn_kerberos::KerberosString::from_bytes(value.as_bytes())
+        .map_err(|source| Error::InvalidKerberosString(source.to_string()))
 }
 
 fn parse_header(bytes: &[u8]) -> Result<Frame<'_>, Error> {

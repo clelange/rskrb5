@@ -27,7 +27,7 @@ pure-Rust Kerberos library.
   AES128/AES256-CTS-HMAC-SHA2, DES3-CBC-SHA1-KD, and RC4-HMAC string-to-key,
   KDF, checksums, and deterministic encrypted-message vectors; message wrappers
   preserve gokrb5 EncryptedData signed-kvno DER edge fixtures; kadmin covers
-  ChangePasswdData DER decode, exact fixture round-trip, and kpasswd request
+  ChangePasswdData builders, DER decode, exact fixture round-trip, and kpasswd request
   and reply frame parsing plus reply result handling and result-code checks; client AS/TGS exchange primitives
   cover deterministic TGT AS-REQ construction, KRB-ERROR preauthentication
   negotiation and surfacing, PA-ENC-TIMESTAMP encryption, assumed
