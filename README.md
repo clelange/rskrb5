@@ -26,16 +26,18 @@ pure-Rust Kerberos library.
   AES128/AES256-CTS-HMAC-SHA2, DES3-CBC-SHA1-KD, and RC4-HMAC string-to-key,
   KDF, checksums, and deterministic encrypted-message vectors; client AS/TGS exchange primitives
   cover deterministic TGT AS-REQ construction, KRB-ERROR preauthentication
-  negotiation, PA-ENC-TIMESTAMP encryption, password/keytab TGT login helpers,
-  PA-TGS-REQ service-ticket acquisition, a KDC transport boundary, Tokio
-  TCP/UDP KDC transport, `krb5.conf` configured KDC discovery, DNS SRV KDC
-  discovery, AS-REP and TGS-REP encrypted-part decryption and validation,
+  negotiation and surfacing, PA-ENC-TIMESTAMP encryption, assumed
+  preauthentication, password/keytab TGT login helpers, PA-TGS-REQ
+  service-ticket acquisition, a KDC transport boundary, Tokio TCP/UDP/auto
+  KDC transport with response-too-big fallback, `krb5.conf` configured KDC
+  discovery, DNS SRV KDC discovery, AS-REP and TGS-REP encrypted-part decryption and validation,
   cross-realm TGS referral following, renewable AS/TGS request flags, explicit
   TGT/service-ticket renewal helpers, Docker MIT KDC AS/TGS login and TGT
   renewal coverage across AES-SHA1, AES-SHA2, DES3, and RC4-HMAC, per-enctype
   keytab AS/TGS integration coverage, ccache credential export/write-back, and a high-level
   Tokio client with password/keytab/ccache credential sources,
-  TGT/session renewal, and service-ticket caching; service validation covers
+  TGT/session renewal, service-ticket caching, and gokrb5-shaped JSON
+  session/cache snapshots; service validation covers
   gokrb5-generated AP-REQ fixtures, service-ticket decryption, authenticator
   decryption, client matching, ticket time checks, clock skew, replay, and
   address-required behavior, plus AP-REP mutual-auth reply generation and
