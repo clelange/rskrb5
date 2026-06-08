@@ -23,7 +23,7 @@ evaluation = [
 ]
 messages = ["dep:chrono", "dep:rasn", "dep:rasn-kerberos"]
 spnego = ["messages", "dep:base64"]
-tokio = ["messages", "dep:tokio"]
+tokio = ["messages", "dep:hickory-resolver", "dep:tokio"]
 serde = ["dep:serde"]
 
 [dependencies]
@@ -32,6 +32,7 @@ base64 = { version = "0.22", optional = true }
 chrono = { version = "0.4", default-features = false, features = ["std"], optional = true }
 hex = { version = "0.4", optional = true }
 getrandom = { version = "0.3", features = ["std"] }
+hickory-resolver = { version = "0.26.1", default-features = false, features = ["system-config", "tokio"], optional = true }
 hmac = "0.13.0"
 pbkdf2 = "=0.13.0-rc.10"
 picky-asn1 = { version = "0.10.1", optional = true }

@@ -8,6 +8,7 @@ use rskrb5::client::{
     AsReqOptions, KdcProtocol, PreauthKeyInfo, Principal, TgsReqOptions, TokioKdcTransport,
     build_tgs_req, build_tgt_as_req, derive_password_reply_key, pa_enc_timestamp_with_confounder,
 };
+use rskrb5::config::Config;
 use rskrb5::crypto::AesSha1Etype;
 use rskrb5::keytab::{EncryptionKey, Entry as KeytabEntry, Keytab, Principal as KeytabPrincipal};
 
@@ -102,6 +103,94 @@ fn docker_mit_kdc_negotiated_as_login_with_password_and_keytab() -> Result<(), B
                 )
                 .await?;
             assert_login_session(keytab_session);
+        }
+
+        Ok::<_, Box<dyn Error>>(())
+    })
+}
+
+#[test]
+fn docker_mit_kdc_configured_kdc_as_login() -> Result<(), Box<dyn Error>> {
+    if std::env::var("INTEGRATION").as_deref() != Ok("1") {
+        eprintln!("skipping Docker KDC integration test; set INTEGRATION=1 to enable");
+        return Ok(());
+    }
+    let _guard = INTEGRATION_LOCK.lock().expect("integration test lock");
+
+    runtime().block_on(async {
+        let config = configured_kdc_config()?;
+        let transport = TokioKdcTransport::new().with_timeout(Duration::from_secs(10));
+        let keytab = testuser_keytab()?;
+
+        for protocol in [KdcProtocol::Udp, KdcProtocol::Tcp] {
+            let endpoints = transport.discover_kdcs(&config, REALM, protocol).await?;
+            eprintln!(
+                "running config-discovered Docker KDC AS login over {protocol:?}: {endpoints:?}"
+            );
+            assert_eq!(endpoints.len(), 1);
+
+            let password_session = transport
+                .login_tgt_with_password_config(
+                    &config,
+                    protocol,
+                    Principal::user(REALM, USER),
+                    PASSWORD,
+                    login_options(protocol, 7)?,
+                )
+                .await?;
+            assert_login_session(password_session);
+
+            let keytab_session = transport
+                .login_tgt_with_keytab_config(
+                    &config,
+                    protocol,
+                    Principal::user(REALM, USER),
+                    &keytab,
+                    login_options(protocol, 8)?,
+                )
+                .await?;
+            assert_login_session(keytab_session);
+        }
+
+        Ok::<_, Box<dyn Error>>(())
+    })
+}
+
+#[test]
+fn docker_mit_kdc_dns_srv_as_login() -> Result<(), Box<dyn Error>> {
+    if std::env::var("INTEGRATION").as_deref() != Ok("1") {
+        eprintln!("skipping Docker KDC integration test; set INTEGRATION=1 to enable");
+        return Ok(());
+    }
+    if std::env::var("TEST_DNS_KDC").as_deref() != Ok("1") {
+        eprintln!("skipping Docker KDC DNS integration test; set TEST_DNS_KDC=1 to enable");
+        return Ok(());
+    }
+    let _guard = INTEGRATION_LOCK.lock().expect("integration test lock");
+
+    runtime().block_on(async {
+        let config = dns_kdc_config()?;
+        let transport = TokioKdcTransport::new().with_timeout(Duration::from_secs(10));
+
+        for protocol in [KdcProtocol::Udp, KdcProtocol::Tcp] {
+            let endpoints = transport.discover_kdcs(&config, REALM, protocol).await?;
+            eprintln!("running DNS SRV Docker KDC AS login over {protocol:?}: {endpoints:?}");
+            assert!(
+                endpoints
+                    .iter()
+                    .all(|endpoint| endpoint.source == rskrb5::client::KdcEndpointSource::DnsSrv)
+            );
+
+            let session = transport
+                .login_tgt_with_password_config(
+                    &config,
+                    protocol,
+                    Principal::user(REALM, USER),
+                    PASSWORD,
+                    login_options(protocol, 9)?,
+                )
+                .await?;
+            assert_login_session(session);
         }
 
         Ok::<_, Box<dyn Error>>(())
@@ -343,6 +432,31 @@ fn kdc_addr() -> String {
 
     let port = std::env::var("TEST_KDC_PORT").unwrap_or_else(|_| "88".to_owned());
     format!("{host}:{port}")
+}
+
+fn configured_kdc_config() -> Result<Config, Box<dyn Error>> {
+    Ok(Config::parse(&format!(
+        r#"
+[libdefaults]
+ dns_lookup_kdc = false
+
+[realms]
+ {REALM} = {{
+  kdc = {}
+ }}
+"#,
+        kdc_addr()
+    ))?)
+}
+
+fn dns_kdc_config() -> Result<Config, Box<dyn Error>> {
+    Ok(Config::parse(&format!(
+        r#"
+[libdefaults]
+ dns_lookup_kdc = true
+ default_realm = {REALM}
+"#
+    ))?)
 }
 
 fn runtime() -> tokio::runtime::Runtime {

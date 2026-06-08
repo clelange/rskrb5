@@ -27,9 +27,10 @@ pure-Rust Kerberos library.
   cover deterministic TGT AS-REQ construction, KRB-ERROR preauthentication
   negotiation, PA-ENC-TIMESTAMP encryption, password/keytab TGT login helpers,
   PA-TGS-REQ service-ticket acquisition, a KDC transport boundary, Tokio
-  TCP/UDP KDC transport, AS-REP and TGS-REP encrypted-part decryption and
-  validation, Docker MIT KDC AS/TGS login coverage, and ccache credential
-  export; service validation covers
+  TCP/UDP KDC transport, `krb5.conf` configured KDC discovery, DNS SRV KDC
+  discovery, AS-REP and TGS-REP encrypted-part decryption and validation,
+  Docker MIT KDC AS/TGS login coverage, and ccache credential export; service
+  validation covers
   gokrb5-generated AP-REQ fixtures, service-ticket decryption, authenticator
   decryption, client matching, ticket time checks, clock skew, replay, and
   address-required behavior, plus AP-REP mutual-auth reply generation and

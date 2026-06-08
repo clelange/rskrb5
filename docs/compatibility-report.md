@@ -197,4 +197,4 @@ This report is generated from `rskrb5::evaluation` and captures the dependency d
 
 ## Decision
 
-Proceed with `rskrb5` as the high-level pure-Rust implementation while reusing permissively licensed ASN.1/data-type crates where they pass gokrb5 vectors. Candidate crates remain useful dependencies or references, but none currently supplies a clean gokrb5-equivalent client/service/SPNEGO API. The immediate implementation work after SPNEGO client AP-REQ/header generation is referrals, renewal, DNS KDC lookup, and higher-level HTTP/Tower adapters.
+Proceed with `rskrb5` as the high-level pure-Rust implementation while reusing permissively licensed ASN.1/data-type crates where they pass gokrb5 vectors. Candidate crates remain useful dependencies or references, but none currently supplies a clean gokrb5-equivalent client/service/SPNEGO API. With SPNEGO client AP-REQ/header generation and config/DNS-backed Tokio KDC discovery in place, the immediate implementation work is referrals, renewal, and higher-level HTTP/Tower adapters.

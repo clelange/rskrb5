@@ -3,17 +3,21 @@
 //! This module covers the first client slices needed for gokrb5-compatible
 //! login flows: deterministic AS-REQ and TGS-REQ construction,
 //! PA-ENC-TIMESTAMP and PA-TGS-REQ preauthentication, a KDC transport
-//! boundary, and encrypted-part validation. Live KDC discovery and Tokio
-//! transport adapters sit above this runtime-neutral core.
+//! boundary, encrypted-part validation, Tokio TCP/UDP transport, and
+//! `krb5.conf`-driven KDC discovery.
 
 #[cfg(feature = "tokio")]
 use std::future::Future;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::ccache;
+#[cfg(feature = "tokio")]
+use crate::config::Config;
 use crate::config::LibDefaults;
 use crate::crypto::AesSha1Etype;
 use crate::keytab::{EncryptionKey, Keytab};
+#[cfg(feature = "tokio")]
+use hickory_resolver::{TokioResolver, proto::rr::RData};
 #[cfg(feature = "tokio")]
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 #[cfg(feature = "tokio")]
@@ -399,6 +403,53 @@ pub enum KdcProtocol {
     Tcp,
 }
 
+/// Source used to discover a KDC endpoint.
+#[cfg(feature = "tokio")]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum KdcEndpointSource {
+    /// Endpoint came from a `[realms]` `kdc = ...` entry.
+    Config,
+    /// Endpoint came from `_kerberos._udp` or `_kerberos._tcp` DNS SRV lookup.
+    DnsSrv,
+}
+
+/// One KDC endpoint discovered for a realm.
+#[cfg(feature = "tokio")]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct KdcEndpoint {
+    /// Wire protocol to use for this endpoint.
+    pub protocol: KdcProtocol,
+    /// Host name or IP literal.
+    pub host: String,
+    /// KDC port.
+    pub port: u16,
+    /// How this endpoint was discovered.
+    pub source: KdcEndpointSource,
+}
+
+#[cfg(feature = "tokio")]
+impl KdcEndpoint {
+    /// Create a configured endpoint from a `host[:port]` value.
+    pub fn configured(protocol: KdcProtocol, value: &str) -> Result<Self, Error> {
+        let (host, port) = parse_kdc_endpoint(value, 88)?;
+        Ok(Self {
+            protocol,
+            host,
+            port,
+            source: KdcEndpointSource::Config,
+        })
+    }
+
+    /// Return a display-friendly `host:port` authority.
+    pub fn authority(&self) -> String {
+        if self.host.contains(':') && !self.host.starts_with('[') {
+            format!("[{}]:{}", self.host, self.port)
+        } else {
+            format!("{}:{}", self.host, self.port)
+        }
+    }
+}
+
 /// Tokio-backed KDC transport for explicit TCP or UDP exchanges.
 #[cfg(feature = "tokio")]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -522,6 +573,53 @@ impl TokioKdcTransport {
         }
     }
 
+    /// Discover KDC endpoints for a realm using `krb5.conf` semantics.
+    ///
+    /// Configured `[realms]` KDCs are preferred. DNS SRV lookup is attempted
+    /// only when no KDCs are configured and `dns_lookup_kdc = true`.
+    pub async fn discover_kdcs(
+        &self,
+        config: &Config,
+        realm: &str,
+        protocol: KdcProtocol,
+    ) -> Result<Vec<KdcEndpoint>, Error> {
+        if let Some(realm_entry) = config.realm(realm)
+            && !realm_entry.kdc.is_empty()
+        {
+            return realm_entry
+                .kdc
+                .iter()
+                .map(|value| KdcEndpoint::configured(protocol, value))
+                .collect();
+        }
+
+        if config.libdefaults.dns_lookup_kdc {
+            return self.discover_kdcs_with_dns(realm, protocol).await;
+        }
+
+        if config.realm(realm).is_some() {
+            Err(Error::NoKdcEndpoints {
+                realm: realm.to_owned(),
+                protocol,
+            })
+        } else {
+            Err(crate::config::Error::NoRealm(realm.to_owned()).into())
+        }
+    }
+
+    /// Send an encoded request to the first reachable KDC discovered from config.
+    pub async fn send_to_realm(
+        &self,
+        config: &Config,
+        protocol: KdcProtocol,
+        realm: &str,
+        request: &[u8],
+    ) -> Result<Vec<u8>, Error> {
+        let endpoints = self.discover_kdcs(config, realm, protocol).await?;
+        self.send_to_endpoints(realm, protocol, endpoints, request)
+            .await
+    }
+
     /// Send an AS-REQ through Tokio transport and process the returned AS-REP.
     pub async fn exchange_as_req<A>(
         &self,
@@ -537,6 +635,20 @@ impl TokioKdcTransport {
         process_as_rep(request, &response, reply_key)
     }
 
+    /// Send an AS-REQ through a config-discovered KDC and process the AS-REP.
+    pub async fn exchange_as_req_with_config(
+        &self,
+        config: &Config,
+        protocol: KdcProtocol,
+        request: &BuiltAsReq,
+        reply_key: &EncryptionKey,
+    ) -> Result<AsRepSession, Error> {
+        let response = self
+            .send_to_realm(config, protocol, &request.client.realm, &request.der)
+            .await?;
+        process_as_rep(request, &response, reply_key)
+    }
+
     /// Send a TGS-REQ through Tokio transport and process the returned TGS-REP.
     pub async fn exchange_tgs_req<A>(
         &self,
@@ -549,6 +661,20 @@ impl TokioKdcTransport {
         A: ToSocketAddrs,
     {
         let response = self.send(protocol, addr, &request.der).await?;
+        process_tgs_rep(request, &response, tgs_session_key)
+    }
+
+    /// Send a TGS-REQ through a config-discovered KDC and process the TGS-REP.
+    pub async fn exchange_tgs_req_with_config(
+        &self,
+        config: &Config,
+        protocol: KdcProtocol,
+        request: &BuiltTgsReq,
+        tgs_session_key: &EncryptionKey,
+    ) -> Result<TgsRepSession, Error> {
+        let response = self
+            .send_to_realm(config, protocol, &request.kdc_realm, &request.der)
+            .await?;
         process_tgs_rep(request, &response, tgs_session_key)
     }
 
@@ -582,6 +708,35 @@ impl TokioKdcTransport {
         process_as_rep(&request, &response, &reply_key)
     }
 
+    /// Perform a password TGT AS login using KDCs discovered from `krb5.conf`.
+    pub async fn login_tgt_with_password_config(
+        &self,
+        config: &Config,
+        protocol: KdcProtocol,
+        client: Principal,
+        password: &[u8],
+        options: AsReqOptions,
+    ) -> Result<AsRepSession, Error> {
+        let initial_request = build_tgt_as_req(
+            client.clone(),
+            initial_preauth_probe_options(options.clone()),
+        )?;
+        let initial_response = self
+            .send_to_realm(config, protocol, &client.realm, &initial_request.der)
+            .await?;
+        if let Some(session) =
+            password_initial_as_rep_session(&initial_request, &initial_response, &client, password)?
+        {
+            return Ok(session);
+        }
+        let (request, reply_key) =
+            password_preauth_request(client, password, options, &initial_response)?;
+        let response = self
+            .send_to_realm(config, protocol, &request.client.realm, &request.der)
+            .await?;
+        process_as_rep(&request, &response, &reply_key)
+    }
+
     /// Perform a TGT AS login using keytab credentials and KDC preauth hints.
     pub async fn login_tgt_with_keytab<A>(
         &self,
@@ -610,6 +765,138 @@ impl TokioKdcTransport {
             keytab_preauth_request(client, keytab, options, &initial_response)?;
         let response = self.send(protocol, addr, &request.der).await?;
         process_as_rep(&request, &response, &reply_key)
+    }
+
+    /// Perform a keytab TGT AS login using KDCs discovered from `krb5.conf`.
+    pub async fn login_tgt_with_keytab_config(
+        &self,
+        config: &Config,
+        protocol: KdcProtocol,
+        client: Principal,
+        keytab: &Keytab,
+        options: AsReqOptions,
+    ) -> Result<AsRepSession, Error> {
+        let initial_request = build_tgt_as_req(
+            client.clone(),
+            initial_preauth_probe_options(options.clone()),
+        )?;
+        let initial_response = self
+            .send_to_realm(config, protocol, &client.realm, &initial_request.der)
+            .await?;
+        if let Some(session) =
+            keytab_initial_as_rep_session(&initial_request, &initial_response, &client, keytab)?
+        {
+            return Ok(session);
+        }
+        let (request, reply_key) =
+            keytab_preauth_request(client, keytab, options, &initial_response)?;
+        let response = self
+            .send_to_realm(config, protocol, &request.client.realm, &request.der)
+            .await?;
+        process_as_rep(&request, &response, &reply_key)
+    }
+
+    async fn discover_kdcs_with_dns(
+        &self,
+        realm: &str,
+        protocol: KdcProtocol,
+    ) -> Result<Vec<KdcEndpoint>, Error> {
+        let service = match protocol {
+            KdcProtocol::Udp => "_kerberos._udp",
+            KdcProtocol::Tcp => "_kerberos._tcp",
+        };
+        let query = format!("{service}.{realm}.");
+        let resolver = TokioResolver::builder_tokio()
+            .map_err(|source| Error::DnsResolverConfig(source.to_string()))?
+            .build()
+            .map_err(|source| Error::DnsResolverConfig(source.to_string()))?;
+        let lookup = resolver
+            .srv_lookup(query.as_str())
+            .await
+            .map_err(|source| Error::DnsSrvLookup {
+                realm: realm.to_owned(),
+                protocol,
+                message: source.to_string(),
+            })?;
+
+        let mut records = lookup
+            .answers()
+            .iter()
+            .filter_map(|record| match &record.data {
+                RData::SRV(srv) => Some(srv),
+                _ => None,
+            })
+            .map(|srv| {
+                (
+                    srv.priority,
+                    srv.weight,
+                    srv.target.to_utf8().trim_end_matches('.').to_owned(),
+                    srv.port,
+                )
+            })
+            .filter(|(_, _, target, _)| !target.is_empty() && target != ".")
+            .collect::<Vec<_>>();
+        records.sort_by(|left, right| {
+            left.0
+                .cmp(&right.0)
+                .then_with(|| right.1.cmp(&left.1))
+                .then_with(|| left.2.cmp(&right.2))
+                .then_with(|| left.3.cmp(&right.3))
+        });
+
+        let endpoints = records
+            .into_iter()
+            .map(|(_, _, host, port)| KdcEndpoint {
+                protocol,
+                host,
+                port,
+                source: KdcEndpointSource::DnsSrv,
+            })
+            .collect::<Vec<_>>();
+        if endpoints.is_empty() {
+            Err(Error::NoKdcEndpoints {
+                realm: realm.to_owned(),
+                protocol,
+            })
+        } else {
+            Ok(endpoints)
+        }
+    }
+
+    async fn send_to_endpoints(
+        &self,
+        realm: &str,
+        protocol: KdcProtocol,
+        endpoints: Vec<KdcEndpoint>,
+        request: &[u8],
+    ) -> Result<Vec<u8>, Error> {
+        if endpoints.is_empty() {
+            return Err(Error::NoKdcEndpoints {
+                realm: realm.to_owned(),
+                protocol,
+            });
+        }
+
+        let mut failures = Vec::new();
+        for endpoint in endpoints {
+            match self
+                .send(
+                    endpoint.protocol,
+                    (endpoint.host.as_str(), endpoint.port),
+                    request,
+                )
+                .await
+            {
+                Ok(response) => return Ok(response),
+                Err(error) => failures.push(format!("{}: {error}", endpoint.authority())),
+            }
+        }
+
+        Err(Error::KdcEndpointFailures {
+            realm: realm.to_owned(),
+            protocol,
+            failures,
+        })
     }
 
     async fn with_transport_timeout<F, T>(&self, operation: F) -> Result<T, Error>
@@ -1299,6 +1586,10 @@ pub enum Error {
     #[error("keytab error: {0}")]
     Keytab(#[from] crate::keytab::Error),
 
+    /// Configuration parsing or lookup failed.
+    #[error("config error: {0}")]
+    Config(#[from] crate::config::Error),
+
     /// Random byte generation failed.
     #[error("random byte generation failed: {0}")]
     Random(#[from] getrandom::Error),
@@ -1322,6 +1613,50 @@ pub enum Error {
     #[cfg(feature = "tokio")]
     #[error("KDC transport I/O failed: {0}")]
     Io(#[from] std::io::Error),
+
+    /// A configured KDC endpoint could not be parsed.
+    #[cfg(feature = "tokio")]
+    #[error("invalid KDC endpoint: {0}")]
+    InvalidKdcEndpoint(String),
+
+    /// DNS resolver construction failed.
+    #[cfg(feature = "tokio")]
+    #[error("DNS resolver configuration failed: {0}")]
+    DnsResolverConfig(String),
+
+    /// DNS SRV KDC lookup failed.
+    #[cfg(feature = "tokio")]
+    #[error("DNS SRV lookup failed for {realm} over {protocol:?}: {message}")]
+    DnsSrvLookup {
+        /// Realm being discovered.
+        realm: String,
+        /// Requested wire protocol.
+        protocol: KdcProtocol,
+        /// Resolver error message.
+        message: String,
+    },
+
+    /// No KDC endpoints were discovered for a realm.
+    #[cfg(feature = "tokio")]
+    #[error("no KDC endpoints discovered for {realm} over {protocol:?}")]
+    NoKdcEndpoints {
+        /// Realm being discovered.
+        realm: String,
+        /// Requested wire protocol.
+        protocol: KdcProtocol,
+    },
+
+    /// All discovered KDC endpoint attempts failed.
+    #[cfg(feature = "tokio")]
+    #[error("all KDC endpoints for {realm} over {protocol:?} failed: {failures:?}")]
+    KdcEndpointFailures {
+        /// Realm being contacted.
+        realm: String,
+        /// Requested wire protocol.
+        protocol: KdcProtocol,
+        /// Per-endpoint failure messages.
+        failures: Vec<String>,
+    },
 
     /// Tokio transport exchange timed out.
     #[cfg(feature = "tokio")]
@@ -1518,6 +1853,52 @@ fn non_empty_kdc_response(response: Vec<u8>) -> Result<Vec<u8>, Error> {
         return Err(Error::EmptyKdcResponse);
     }
     Ok(response)
+}
+
+#[cfg(feature = "tokio")]
+fn parse_kdc_endpoint(value: &str, default_port: u16) -> Result<(String, u16), Error> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err(Error::InvalidKdcEndpoint(value.to_owned()));
+    }
+
+    if let Some(rest) = value.strip_prefix('[') {
+        let Some((host, suffix)) = rest.split_once(']') else {
+            return Err(Error::InvalidKdcEndpoint(value.to_owned()));
+        };
+        if host.is_empty() {
+            return Err(Error::InvalidKdcEndpoint(value.to_owned()));
+        }
+        let port = if let Some(port) = suffix.strip_prefix(':') {
+            parse_kdc_port(value, port)?
+        } else if suffix.is_empty() {
+            default_port
+        } else {
+            return Err(Error::InvalidKdcEndpoint(value.to_owned()));
+        };
+        return Ok((host.to_owned(), port));
+    }
+
+    if let Some((host, port)) = value.rsplit_once(':')
+        && !host.is_empty()
+        && !port.is_empty()
+        && port.chars().all(|ch| ch.is_ascii_digit())
+        && !host.ends_with(':')
+    {
+        return Ok((host.to_owned(), parse_kdc_port(value, port)?));
+    }
+
+    if value.matches(':').count() == 1 {
+        return Err(Error::InvalidKdcEndpoint(value.to_owned()));
+    }
+
+    Ok((value.to_owned(), default_port))
+}
+
+#[cfg(feature = "tokio")]
+fn parse_kdc_port(endpoint: &str, port: &str) -> Result<u16, Error> {
+    port.parse::<u16>()
+        .map_err(|_| Error::InvalidKdcEndpoint(endpoint.to_owned()))
 }
 
 fn preauth_key_info_from_method_data(
