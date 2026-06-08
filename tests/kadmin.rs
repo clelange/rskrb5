@@ -1,9 +1,12 @@
 #![cfg(feature = "messages")]
 
 use pretty_assertions::assert_eq;
-use rskrb5::kadmin::ChangePasswdData;
+use rasn::types::Integer;
+use rskrb5::kadmin::{ChangePasswdData, ChangePasswordResult, Error as KadminError, Reply};
 
 const MARSHALLED_CHANGE_PASSWD_DATA: &str = "3036a00d040b6e657770617373776f7264a1163014a003020101a10d300b1b09746573747573657231a20d1b0b544553542e474f4b524235";
+const MARSHALLED_KPASSWD_REP: &str = "00ec0001008c6f8189308186a003020105a10302010fa27a3078a003020112a271046f57cb442fd321312aff0b2dcda70fe436812f9805611adf3403ab6cd7708604e86e77f765a8486864f0dbf8d5d065a63790370bc110ed1e3c7eae9890e02407e8a8b349703fed1e7f165e1261a822c5b3e6823c282884f59afeb9f84f2a9845994135dd307eb2f544874393c1c455d475583056a003020105a103020115a34a3048a003020112a241043fdd3edaf0b6cbcab5b663189bafc0a19e6cc03b3c59d989c403735748ebc36088bad852add0f62581eed515fc1f297324df4fa12cb94b7ad5db257165369db5";
+const KRB_ERROR_WITH_EDATA: &str = "7E81BA3081B7A003020105A10302011EA211180F31393934303631303036303331375AA305020301E240A411180F31393934303631303036303331375AA505020301E240A60302013CA7101B0E415448454E412E4D49542E454455A81A3018A003020101A111300F1B066866747361691B056578747261A9101B0E415448454E412E4D49542E454455AA1A3018A003020101A111300F1B066866747361691B056578747261AB0A1B086B72623564617461AC0A04086B72623564617461";
 
 #[test]
 fn change_passwd_data_matches_gokrb5_fixture() {
@@ -23,6 +26,80 @@ fn change_passwd_data_matches_gokrb5_fixture() {
         rasn::der::encode(&decoded).expect("ChangePasswdData re-encodes"),
         expected
     );
+}
+
+#[test]
+fn kpasswd_reply_matches_gokrb5_fixture() {
+    let bytes = decode_hex(MARSHALLED_KPASSWD_REP);
+    let reply = Reply::parse(&bytes).expect("kpasswd reply parses");
+
+    assert_eq!(reply.message_length, 236);
+    assert_eq!(reply.version, 1);
+    assert_eq!(reply.ap_rep_length, 140);
+    assert!(!reply.is_krb_error());
+    assert!(reply.krb_error.is_none());
+    assert!(reply.result.is_none());
+
+    let ap_rep = reply.ap_rep.expect("AP-REP parsed");
+    assert_eq!(ap_rep.pvno, Integer::from(5));
+    assert_eq!(ap_rep.msg_type, Integer::from(15));
+    assert_eq!(ap_rep.enc_part.etype, 18);
+
+    let krb_priv = reply.krb_priv.expect("KRB-PRIV parsed");
+    assert_eq!(krb_priv.pvno, Integer::from(5));
+    assert_eq!(krb_priv.msg_type, Integer::from(21));
+    assert_eq!(krb_priv.enc_part.etype, 18);
+}
+
+#[test]
+fn kpasswd_reply_parses_krb_error_response_data() {
+    let error = decode_hex(KRB_ERROR_WITH_EDATA);
+    let frame = kpasswd_reply_frame(0, &error);
+    let reply = Reply::parse(&frame).expect("KRB-ERROR reply parses");
+
+    assert_eq!(reply.message_length as usize, frame.len());
+    assert_eq!(reply.version, 1);
+    assert_eq!(reply.ap_rep_length, 0);
+    assert!(reply.is_krb_error());
+    assert!(reply.ap_rep.is_none());
+    assert!(reply.krb_priv.is_none());
+    assert!(reply.krb_error.is_some());
+    assert_eq!(
+        reply.result,
+        Some(ChangePasswordResult {
+            code: u16::from_be_bytes([b'k', b'r']),
+            text: "b5data".to_owned(),
+        })
+    );
+}
+
+#[test]
+fn kpasswd_reply_rejects_malformed_frames() {
+    assert!(matches!(
+        Reply::parse(&[0, 1]),
+        Err(KadminError::FrameTooShort { actual: 2 })
+    ));
+
+    assert!(matches!(
+        Reply::parse(&[0, 7, 0, 1, 0, 0]),
+        Err(KadminError::TruncatedFrame {
+            expected: 7,
+            actual: 6
+        })
+    ));
+
+    assert!(matches!(
+        Reply::parse(&[0, 6, 0, 2, 0, 0]),
+        Err(KadminError::InvalidReplyVersion(2))
+    ));
+
+    assert!(matches!(
+        Reply::parse(&[0, 7, 0, 1, 0, 1, 0]),
+        Err(KadminError::InvalidApRepLength {
+            ap_rep_length: 1,
+            body_length: 1
+        })
+    ));
 }
 
 fn principal_name(name_type: i32, components: &[&str]) -> rasn_kerberos::PrincipalName {
@@ -51,6 +128,20 @@ fn decode_hex(input: &str) -> Vec<u8> {
         })
         .collect()
 }
+
+fn kpasswd_reply_frame(ap_rep_length: u16, body: &[u8]) -> Vec<u8> {
+    let message_length = HEADER_LEN + body.len();
+    assert!(u16::try_from(message_length).is_ok());
+
+    let mut frame = Vec::with_capacity(message_length);
+    frame.extend_from_slice(&(message_length as u16).to_be_bytes());
+    frame.extend_from_slice(&1u16.to_be_bytes());
+    frame.extend_from_slice(&ap_rep_length.to_be_bytes());
+    frame.extend_from_slice(body);
+    frame
+}
+
+const HEADER_LEN: usize = 6;
 
 fn hex_nibble(value: u8) -> u8 {
     match value {

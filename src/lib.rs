@@ -68,6 +68,11 @@ pub enum Error {
     #[error("client error: {0}")]
     Client(#[from] client::Error),
 
+    /// kadmin message processing failed.
+    #[cfg(feature = "messages")]
+    #[error("kadmin error: {0}")]
+    Kadmin(#[from] kadmin::Error),
+
     /// AP-REQ service validation failed.
     #[cfg(feature = "messages")]
     #[error("service validation error: {0}")]
