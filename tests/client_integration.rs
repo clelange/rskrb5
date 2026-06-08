@@ -18,6 +18,7 @@ const USER: &str = "testuser1";
 const PASSWORD: &[u8] = b"passwordvalue";
 const TESTUSER1_SALT: &[u8] = b"TEST.GOKRB5testuser1";
 const AES256_ETYPE: i32 = 18;
+const RC4_HMAC_ETYPE: i32 = 23;
 const TESTUSER1_KVNO: u32 = 2;
 const SERVICE_HOST: &str = "host.test.gokrb5";
 const RESDOM_REALM: &str = "RESDOM.GOKRB5";
@@ -106,6 +107,42 @@ fn docker_mit_kdc_negotiated_as_login_with_password_and_keytab() -> Result<(), B
                 )
                 .await?;
             assert_login_session(keytab_session);
+        }
+
+        Ok::<_, Box<dyn Error>>(())
+    })
+}
+
+#[test]
+fn docker_mit_kdc_rc4_hmac_as_login_through_tcp_and_udp() -> Result<(), Box<dyn Error>> {
+    if std::env::var("INTEGRATION").as_deref() != Ok("1") {
+        eprintln!("skipping Docker KDC integration test; set INTEGRATION=1 to enable");
+        return Ok(());
+    }
+    let _guard = INTEGRATION_LOCK.lock().expect("integration test lock");
+
+    runtime().block_on(async {
+        let addr = kdc_addr();
+        let transport = TokioKdcTransport::new().with_timeout(Duration::from_secs(10));
+
+        for protocol in [KdcProtocol::Udp, KdcProtocol::Tcp] {
+            eprintln!("running Docker KDC RC4-HMAC AS login over {protocol:?} to {addr}");
+            let session = transport
+                .login_tgt_with_password(
+                    protocol,
+                    addr.as_str(),
+                    Principal::user(REALM, USER),
+                    PASSWORD,
+                    login_options_with_etypes(protocol, 14, vec![RC4_HMAC_ETYPE])?,
+                )
+                .await?;
+
+            assert_eq!(session.client, Principal::user(REALM, USER));
+            assert_eq!(session.service, Principal::tgt_service(REALM));
+            assert_eq!(session.session_key.etype, RC4_HMAC_ETYPE);
+            assert!(!session.session_key.value.is_empty());
+            assert!(!session.ticket.is_empty());
+            assert!(session.end_time > session.start_time);
         }
 
         Ok::<_, Box<dyn Error>>(())
@@ -508,6 +545,14 @@ fn build_login_request(
 }
 
 fn login_options(protocol: KdcProtocol, sequence: u32) -> Result<AsReqOptions, Box<dyn Error>> {
+    login_options_with_etypes(protocol, sequence, vec![AES256_ETYPE])
+}
+
+fn login_options_with_etypes(
+    protocol: KdcProtocol,
+    sequence: u32,
+    etypes: Vec<i32>,
+) -> Result<AsReqOptions, Box<dyn Error>> {
     let now = SystemTime::now();
     let elapsed = now.duration_since(UNIX_EPOCH)?;
     let nonce = (((elapsed.as_nanos() as u32) & 0x00ff_ffff) | (sequence << 24))
@@ -517,7 +562,7 @@ fn login_options(protocol: KdcProtocol, sequence: u32) -> Result<AsReqOptions, B
         };
     Ok(AsReqOptions::new(now, nonce)
         .with_ticket_lifetime(Duration::from_secs(24 * 60 * 60))
-        .with_etypes(vec![AES256_ETYPE]))
+        .with_etypes(etypes))
 }
 
 fn tgs_options(protocol: KdcProtocol, sequence: u32) -> Result<TgsReqOptions, Box<dyn Error>> {
