@@ -12,7 +12,7 @@ This report is generated from `rskrb5::evaluation` and captures the decision gat
 | ccache | credentials/ccache_test.go, credentials/ccache_integration_test.go | unit, INTEGRATION=1 | Implement MIT file ccache parsing/writing plus KDC-issued credential capture. |
 | krb5.conf and host config | config/*_test.go | unit | Preserve gokrb5 parsing semantics, libdefaults, realm lookup, DNS flags, and host mappings. |
 | AS/TGS client flows | client/*_test.go | unit, INTEGRATION=1, TESTAD=1 | Cover password/keytab login, referrals, DNS KDC lookup, renewal, and service tickets. |
-| AP-REQ service validation | service/*_test.go, messages/Ticket_test.go | unit, INTEGRATION=1 | Decrypt tickets, validate authenticators, enforce clock skew, and provide replay cache hooks. |
+| AP-REQ/AP-REP service validation | service/*_test.go, messages/Ticket_test.go | unit, INTEGRATION=1 | Decrypt tickets, validate authenticators, enforce clock skew, provide replay cache hooks, and build/verify AP-REP mutual-auth replies. |
 | GSSAPI/SPNEGO HTTP | gssapi/*_test.go, spnego/*_test.go | unit, INTEGRATION=1 | Implement tokens, wrap/MIC behavior, HTTP Negotiate helpers, and Tower/Axum adapters. |
 | PAC / NDR | pac/*_test.go, messages/Ticket_test.go | unit, TESTAD=1 | Parse PAC buffers, NDR validation info, claims, UPN/DNS info, and checksum verification. |
 | Docker KDC integration | client/*_integration_test.go, credentials/*_integration_test.go, spnego/http_test.go | INTEGRATION=1, TESTPRIVILEGED=1, TESTAD=1 | Reuse gokrb5 MIT KDC, DNS, short-ticket, referral-domain, HTTP, and AD gates where possible. |

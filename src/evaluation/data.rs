@@ -309,10 +309,10 @@ pub const V8_CONTRACT: &[ContractArea] = &[
     },
     ContractArea {
         id: "service",
-        area: "AP-REQ service validation",
+        area: "AP-REQ/AP-REP service validation",
         gokrb5_tests: "service/*_test.go, messages/Ticket_test.go",
         gate: "unit, INTEGRATION=1",
-        porting_note: "Decrypt tickets, validate authenticators, enforce clock skew, and provide replay cache hooks.",
+        porting_note: "Decrypt tickets, validate authenticators, enforce clock skew, provide replay cache hooks, and build/verify AP-REP mutual-auth replies.",
     },
     ContractArea {
         id: "spnego",

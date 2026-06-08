@@ -25,7 +25,8 @@ pure-Rust Kerberos library.
   deterministic encrypted-message vectors; service validation covers
   gokrb5-generated AP-REQ fixtures, service-ticket decryption, authenticator
   decryption, client matching, ticket time checks, clock skew, replay, and
-  address-required behavior.
+  address-required behavior, plus AP-REP mutual-auth reply generation and
+  verification.
 - `sspi-rs` is treated as a mature Negotiate/Kerberos collaboration or facade
   candidate.
 - `krb5-rs` is not used as a base implementation because the published crate is

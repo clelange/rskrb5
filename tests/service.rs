@@ -3,8 +3,8 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use pretty_assertions::assert_eq;
-use rskrb5::keytab::Keytab;
-use rskrb5::service::{Error, Principal, ServiceValidator};
+use rskrb5::keytab::{EncryptionKey, Keytab};
+use rskrb5::service::{ApRepOptions, Error, Principal, ServiceValidator, ValidatedApReq};
 
 const HTTP_KEYTAB: &str = concat!(
     "0502000000440002000b544553542e474f4b5242350004485454500010686f73742e746573742e676f6b",
@@ -35,6 +35,15 @@ const VALID_AP_REQ: &str = concat!(
 );
 
 const VALID_SESSION_KEY: &str = "8845cbaccbf11cb9f467fd577ba51c70d73de6554980a05395bf319e18bdda07";
+const AP_REP_CONFOUNDER: &str = "000102030405060708090a0b0c0d0e0f";
+const AP_REP_SERVER_SUBKEY: &str =
+    "00112233445566778899aabbccddeeff102132435465768798a9babbdcddfeff";
+const AP_REP_WITH_SUBKEY: &str = concat!(
+    "6f818b308188a003020105a10302010fa27c307aa003020112a103020105a26e046c6943c730",
+    "93314cc1980e95e3c8717dc2fe29c97f4305e55ac11912728f3b6c53f813e33f29188cc4b",
+    "125596d747ac20c2d898c0a445ec50b12ec1c2870ac32b6fe2c0163de4b0c7c229cc63",
+    "c80aa23a76914e6278f293a364dfaff666f374836bbd1209ceb97f9a17bd0fa2e",
+);
 
 const INVALID_TICKET_AP_REQ: &str = concat!(
     "6e8201f8308201f4a003020105a10302010ea20703050000000000a382012f6182012b30820127a0",
@@ -104,10 +113,65 @@ fn validates_gokrb5_ap_req_fixture() {
     assert_eq!(validated.sequence_number, Some(42));
     assert_eq!(validated.ticket_start, timestamp(1_893_553_445));
     assert_eq!(validated.ticket_end, timestamp(1_893_639_845));
+    assert_eq!(validated.authenticator_ctime, timestamp(1_893_553_447));
+    assert_eq!(validated.authenticator_cusec, 123_456);
     assert_eq!(
         validated.authenticator_time,
         timestamp(1_893_553_447) + Duration::from_micros(123_456)
     );
+}
+
+#[test]
+fn builds_and_verifies_ap_rep_mutual_auth_reply() {
+    let validated = valid_ap_req();
+    let options = ap_rep_options();
+
+    let ap_rep = validated
+        .build_ap_rep_with_confounder(&decode_hex(AP_REP_CONFOUNDER), options.clone())
+        .expect("AP-REP builds");
+    assert_eq!(hex_encode(&ap_rep), AP_REP_WITH_SUBKEY);
+    let verified = validated.verify_ap_rep(&ap_rep).expect("AP-REP verifies");
+
+    assert_eq!(verified.ctime, validated.authenticator_ctime);
+    assert_eq!(verified.cusec, validated.authenticator_cusec);
+    assert_eq!(verified.authenticator_time, validated.authenticator_time);
+    assert_eq!(verified.subkey, options.subkey);
+    assert_eq!(verified.sequence_number, options.sequence_number);
+}
+
+#[test]
+fn rejects_ap_rep_timestamp_mismatch() {
+    let validated = valid_ap_req();
+    let ap_rep = validated
+        .build_ap_rep_with_confounder(&decode_hex(AP_REP_CONFOUNDER), ApRepOptions::default())
+        .expect("AP-REP builds");
+    let mut wrong_request = validated.clone();
+    wrong_request.authenticator_cusec += 1;
+    wrong_request.authenticator_time += Duration::from_micros(1);
+
+    assert!(matches!(
+        wrong_request
+            .verify_ap_rep(&ap_rep)
+            .expect_err("mismatched AP-REP timestamp rejected"),
+        Error::ApRepTimestampMismatch { .. }
+    ));
+}
+
+#[test]
+fn rejects_tampered_ap_rep() {
+    let validated = valid_ap_req();
+    let mut ap_rep = validated
+        .build_ap_rep_with_confounder(&decode_hex(AP_REP_CONFOUNDER), ApRepOptions::default())
+        .expect("AP-REP builds");
+    let last = ap_rep.last_mut().expect("AP-REP is non-empty");
+    *last ^= 0x01;
+
+    assert!(matches!(
+        validated
+            .verify_ap_rep(&ap_rep)
+            .expect_err("tampered AP-REP rejected"),
+        Error::Crypto(rskrb5::crypto::Error::IntegrityCheckFailed)
+    ));
 }
 
 #[test]
@@ -219,6 +283,25 @@ fn rejects_addressless_ticket_when_client_address_is_required() {
 
 fn http_keytab() -> Keytab {
     Keytab::parse(&decode_hex(HTTP_KEYTAB)).expect("HTTP keytab parses")
+}
+
+fn valid_ap_req() -> ValidatedApReq {
+    let keytab = http_keytab();
+    ServiceValidator::new(&keytab)
+        .with_now(timestamp(1_893_553_447))
+        .validate_ap_req(&decode_hex(VALID_AP_REQ))
+        .expect("AP-REQ validates")
+}
+
+fn ap_rep_options() -> ApRepOptions {
+    ApRepOptions {
+        subkey: Some(EncryptionKey {
+            etype: 18,
+            value: decode_hex(AP_REP_SERVER_SUBKEY),
+        }),
+        sequence_number: Some(17),
+        kvno: Some(5),
+    }
 }
 
 fn timestamp(seconds: u64) -> SystemTime {
