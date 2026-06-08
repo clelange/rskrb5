@@ -29,8 +29,9 @@ pure-Rust Kerberos library.
   PA-TGS-REQ service-ticket acquisition, a KDC transport boundary, Tokio
   TCP/UDP KDC transport, `krb5.conf` configured KDC discovery, DNS SRV KDC
   discovery, AS-REP and TGS-REP encrypted-part decryption and validation,
-  cross-realm TGS referral following, Docker MIT KDC AS/TGS login coverage,
-  and ccache credential export; service validation covers
+  cross-realm TGS referral following, renewable AS/TGS request flags, explicit
+  TGT/service-ticket renewal helpers, Docker MIT KDC AS/TGS login and TGT
+  renewal coverage, and ccache credential export; service validation covers
   gokrb5-generated AP-REQ fixtures, service-ticket decryption, authenticator
   decryption, client matching, ticket time checks, clock skew, replay, and
   address-required behavior, plus AP-REP mutual-auth reply generation and

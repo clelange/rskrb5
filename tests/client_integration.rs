@@ -243,6 +243,47 @@ fn docker_mit_kdc_tgs_service_ticket_through_tcp_and_udp() -> Result<(), Box<dyn
 }
 
 #[test]
+fn docker_mit_kdc_tgt_renewal_through_tcp_and_udp() -> Result<(), Box<dyn Error>> {
+    if std::env::var("INTEGRATION").as_deref() != Ok("1") {
+        eprintln!("skipping Docker KDC integration test; set INTEGRATION=1 to enable");
+        return Ok(());
+    }
+    let _guard = INTEGRATION_LOCK.lock().expect("integration test lock");
+
+    runtime().block_on(async {
+        let addr = short_kdc_addr();
+        let transport = TokioKdcTransport::new().with_timeout(Duration::from_secs(10));
+
+        for protocol in [KdcProtocol::Udp, KdcProtocol::Tcp] {
+            eprintln!("running Docker KDC TGT renewal over {protocol:?} to {addr}");
+            let tgt = transport
+                .login_tgt_with_password(
+                    protocol,
+                    addr.as_str(),
+                    Principal::user(REALM, USER),
+                    PASSWORD,
+                    login_options(protocol, 12)?
+                        .with_renew_lifetime(Some(Duration::from_secs(10 * 60))),
+                )
+                .await?;
+            assert_login_session(tgt.clone());
+            let original_renew_till = tgt.renew_till.expect("renewable TGT has renew-till");
+
+            let renewed = transport
+                .renew_tgt(protocol, addr.as_str(), &tgt, tgs_options(protocol, 13)?)
+                .await?;
+
+            assert_login_session(renewed.clone());
+            assert_eq!(renewed.service, Principal::tgt_service(REALM));
+            assert_eq!(renewed.renew_till, Some(original_renew_till));
+            assert!(renewed.end_time <= original_renew_till);
+        }
+
+        Ok::<_, Box<dyn Error>>(())
+    })
+}
+
+#[test]
 fn docker_mit_kdc_tgs_referral_to_resource_domain() -> Result<(), Box<dyn Error>> {
     if std::env::var("INTEGRATION").as_deref() != Ok("1") {
         eprintln!("skipping Docker KDC integration test; set INTEGRATION=1 to enable");
@@ -487,6 +528,21 @@ fn kdc_addr() -> String {
     }
 
     let port = std::env::var("TEST_KDC_PORT").unwrap_or_else(|_| "88".to_owned());
+    format!("{host}:{port}")
+}
+
+fn short_kdc_addr() -> String {
+    let host = std::env::var("TEST_SHORT_KDC_ADDR")
+        .or_else(|_| std::env::var("TEST_KDC_ADDR"))
+        .unwrap_or_else(|_| "127.0.0.1".to_owned());
+    if host
+        .rsplit_once(':')
+        .is_some_and(|(_, port)| port.parse::<u16>().is_ok())
+    {
+        return host;
+    }
+
+    let port = std::env::var("TEST_SHORT_KDC_PORT").unwrap_or_else(|_| "58".to_owned());
     format!("{host}:{port}")
 }
 

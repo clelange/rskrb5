@@ -35,6 +35,8 @@ const KRB_NT_SRV_INST: i32 = 2;
 const DEFAULT_TICKET_LIFETIME: Duration = Duration::from_secs(24 * 60 * 60);
 const DEFAULT_TKT_ENCTYPES: &[i32] = &[18, 17];
 const DEFAULT_TGS_ENCTYPES: &[i32] = DEFAULT_TKT_ENCTYPES;
+const KDC_OPTION_RENEWABLE_BIT: u8 = 8;
+const KDC_OPTION_RENEW_BIT: u8 = 30;
 #[cfg(feature = "tokio")]
 const DEFAULT_KDC_TIMEOUT: Duration = Duration::from_secs(5);
 #[cfg(feature = "tokio")]
@@ -76,6 +78,12 @@ pub const TGS_REQ_AUTHENTICATOR_USAGE: u32 = 7;
 
 /// Key usage for TGS-REP encrypted parts when encrypted with the TGT session key.
 pub const TGS_REP_ENCPART_SESSION_KEY_USAGE: u32 = 8;
+
+/// Raw KDC option mask for `renewable` in RFC 4120 bit-string order.
+pub const KDC_OPTION_RENEWABLE: u32 = 0x0080_0000;
+
+/// Raw KDC option mask for `renew` in RFC 4120 bit-string order.
+pub const KDC_OPTION_RENEW: u32 = 0x0000_0002;
 
 /// Kerberos principal identity used by client exchanges.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -264,6 +272,12 @@ impl TgsReqOptions {
     /// Override KDC options using the raw krb5.conf bit representation.
     pub fn with_kdc_option_bits(mut self, kdc_option_bits: u32) -> Self {
         self.kdc_option_bits = kdc_option_bits;
+        self
+    }
+
+    /// Add the TGS renewal flags used for renewing an existing ticket.
+    pub fn with_renewal(mut self) -> Self {
+        self.kdc_option_bits = renewal_kdc_option_bits(self.kdc_option_bits);
         self
     }
 }
@@ -680,6 +694,64 @@ impl TokioKdcTransport {
         process_tgs_rep(request, &response, tgs_session_key)
     }
 
+    /// Renew an existing TGT through an explicit KDC endpoint.
+    pub async fn renew_tgt<A>(
+        &self,
+        protocol: KdcProtocol,
+        addr: A,
+        tgt: &AsRepSession,
+        options: TgsReqOptions,
+    ) -> Result<TgsRepSession, Error>
+    where
+        A: ToSocketAddrs,
+    {
+        let request = build_tgt_renewal_req(tgt, options)?;
+        self.exchange_tgs_req(protocol, addr, &request, &tgt.session_key)
+            .await
+    }
+
+    /// Renew an existing TGT through a config-discovered KDC.
+    pub async fn renew_tgt_with_config(
+        &self,
+        config: &Config,
+        protocol: KdcProtocol,
+        tgt: &AsRepSession,
+        options: TgsReqOptions,
+    ) -> Result<TgsRepSession, Error> {
+        let request = build_tgt_renewal_req(tgt, options)?;
+        self.exchange_tgs_req_with_config(config, protocol, &request, &tgt.session_key)
+            .await
+    }
+
+    /// Renew an existing service ticket through an explicit KDC endpoint.
+    pub async fn renew_ticket<A>(
+        &self,
+        protocol: KdcProtocol,
+        addr: A,
+        ticket: &AsRepSession,
+        options: TgsReqOptions,
+    ) -> Result<TgsRepSession, Error>
+    where
+        A: ToSocketAddrs,
+    {
+        let request = build_ticket_renewal_req(ticket, options)?;
+        self.exchange_tgs_req(protocol, addr, &request, &ticket.session_key)
+            .await
+    }
+
+    /// Renew an existing service ticket through a config-discovered KDC.
+    pub async fn renew_ticket_with_config(
+        &self,
+        config: &Config,
+        protocol: KdcProtocol,
+        ticket: &AsRepSession,
+        options: TgsReqOptions,
+    ) -> Result<TgsRepSession, Error> {
+        let request = build_ticket_renewal_req(ticket, options)?;
+        self.exchange_tgs_req_with_config(config, protocol, &request, &ticket.session_key)
+            .await
+    }
+
     /// Acquire a service ticket, following cross-realm TGS referrals.
     ///
     /// The supplied `tgt` is used as the starting TGT. If the service belongs
@@ -1029,12 +1101,13 @@ pub fn build_as_req(
         .map(|duration| options.now.checked_add(duration).ok_or(Error::TimeOverflow))
         .transpose()?;
     let padata = (!options.padata.is_empty()).then_some(options.padata);
+    let kdc_option_bits = request_kdc_option_bits(options.kdc_option_bits, options.renew_lifetime);
     let message = rasn_kerberos::AsReq(rasn_kerberos::KdcReq {
         pvno: rasn::types::Integer::from(KRB5_PVNO),
         msg_type: rasn::types::Integer::from(KRB_AS_REQ_MSG_TYPE),
         padata,
         req_body: rasn_kerberos::KdcReqBody {
-            kdc_options: kdc_options_from_bits(options.kdc_option_bits),
+            kdc_options: kdc_options_from_bits(kdc_option_bits),
             cname: Some(principal_to_rasn(&client)?),
             realm: kerberos_string(&client.realm)?,
             sname: Some(principal_to_rasn(&service)?),
@@ -1197,8 +1270,9 @@ pub fn build_tgs_req_for_realm_with_confounder(
         .map(|duration| options.now.checked_add(duration).ok_or(Error::TimeOverflow))
         .transpose()?;
     let cname = principal_to_rasn(&tgt.client)?;
+    let kdc_option_bits = request_kdc_option_bits(options.kdc_option_bits, options.renew_lifetime);
     let req_body = rasn_kerberos::KdcReqBody {
-        kdc_options: kdc_options_from_bits(options.kdc_option_bits),
+        kdc_options: kdc_options_from_bits(kdc_option_bits),
         cname: Some(cname.clone()),
         realm: kerberos_string(&kdc_realm)?,
         sname: Some(principal_to_rasn(&service)?),
@@ -1274,6 +1348,76 @@ pub fn build_tgs_req_for_realm_with_confounder(
     })
 }
 
+/// Build a TGS-REQ that renews an existing TGT session.
+pub fn build_tgt_renewal_req(
+    tgt: &AsRepSession,
+    options: TgsReqOptions,
+) -> Result<BuiltTgsReq, Error> {
+    let realm = tgt_realm(tgt).ok_or_else(|| Error::InvalidTgtSession {
+        service: tgt.service.name(),
+    })?;
+    build_tgs_req_for_realm(
+        tgt,
+        realm.clone(),
+        Principal::tgt_service(realm),
+        options.with_renewal(),
+    )
+}
+
+/// Build a deterministic TGT renewal request with an explicit authenticator timestamp and confounder.
+pub fn build_tgt_renewal_req_with_confounder(
+    tgt: &AsRepSession,
+    options: TgsReqOptions,
+    timestamp: SystemTime,
+    cusec: u32,
+    confounder: &[u8],
+) -> Result<BuiltTgsReq, Error> {
+    let realm = tgt_realm(tgt).ok_or_else(|| Error::InvalidTgtSession {
+        service: tgt.service.name(),
+    })?;
+    build_tgs_req_for_realm_with_confounder(
+        tgt,
+        realm.clone(),
+        Principal::tgt_service(realm),
+        options.with_renewal(),
+        timestamp,
+        cusec,
+        confounder,
+    )
+}
+
+/// Build a TGS-REQ that renews an existing service ticket.
+pub fn build_ticket_renewal_req(
+    ticket: &AsRepSession,
+    options: TgsReqOptions,
+) -> Result<BuiltTgsReq, Error> {
+    build_tgs_req_for_realm(
+        ticket,
+        ticket.service.realm.clone(),
+        ticket.service.clone(),
+        options.with_renewal(),
+    )
+}
+
+/// Build a deterministic service-ticket renewal request with an explicit authenticator timestamp and confounder.
+pub fn build_ticket_renewal_req_with_confounder(
+    ticket: &AsRepSession,
+    options: TgsReqOptions,
+    timestamp: SystemTime,
+    cusec: u32,
+    confounder: &[u8],
+) -> Result<BuiltTgsReq, Error> {
+    build_tgs_req_for_realm_with_confounder(
+        ticket,
+        ticket.service.realm.clone(),
+        ticket.service.clone(),
+        options.with_renewal(),
+        timestamp,
+        cusec,
+        confounder,
+    )
+}
+
 /// Send an AS-REQ through a transport and process the returned AS-REP.
 pub fn exchange_as_req<T>(
     transport: &mut T,
@@ -1298,6 +1442,32 @@ where
 {
     let response = transport.send(&request.kdc_realm, &request.der)?;
     process_tgs_rep(request, &response, tgs_session_key)
+}
+
+/// Renew an existing TGT through a runtime-neutral transport.
+pub fn renew_tgt<T>(
+    transport: &mut T,
+    tgt: &AsRepSession,
+    options: TgsReqOptions,
+) -> Result<TgsRepSession, Error>
+where
+    T: KdcTransport + ?Sized,
+{
+    let request = build_tgt_renewal_req(tgt, options)?;
+    exchange_tgs_req(transport, &request, &tgt.session_key)
+}
+
+/// Renew an existing service ticket through a runtime-neutral transport.
+pub fn renew_ticket<T>(
+    transport: &mut T,
+    ticket: &AsRepSession,
+    options: TgsReqOptions,
+) -> Result<TgsRepSession, Error>
+where
+    T: KdcTransport + ?Sized,
+{
+    let request = build_ticket_renewal_req(ticket, options)?;
+    exchange_tgs_req(transport, &request, &ticket.session_key)
 }
 
 /// Perform a TGT AS login using password credentials and KDC preauth hints.
@@ -1748,6 +1918,13 @@ pub enum Error {
         service: String,
     },
 
+    /// A renewal helper expected a `krbtgt/<realm>` TGT session.
+    #[error("expected a TGT session, got service {service}")]
+    InvalidTgtSession {
+        /// Actual session service name.
+        service: String,
+    },
+
     /// Crypto operation failed.
     #[error("crypto error: {0}")]
     Crypto(#[from] crate::crypto::Error),
@@ -2186,7 +2363,6 @@ fn is_tgt_principal(principal: &Principal) -> bool {
         && principal.components.len() >= 2
 }
 
-#[cfg(feature = "tokio")]
 fn tgt_realm(session: &AsRepSession) -> Option<String> {
     if is_tgt_principal(&session.service) {
         session.service.components.last().cloned()
@@ -2225,6 +2401,23 @@ fn kdc_options_from_bits(bits: u32) -> rasn_kerberos::KdcOptions {
         &bits.to_be_bytes(),
     ))
 }
+
+fn request_kdc_option_bits(bits: u32, renew_lifetime: Option<Duration>) -> u32 {
+    if renew_lifetime.is_some() {
+        bits | KDC_OPTION_RENEWABLE
+    } else {
+        bits
+    }
+}
+
+fn renewal_kdc_option_bits(bits: u32) -> u32 {
+    bits | KDC_OPTION_RENEWABLE | KDC_OPTION_RENEW
+}
+
+const _: () = {
+    assert!(KDC_OPTION_RENEWABLE == (1u32 << (31 - KDC_OPTION_RENEWABLE_BIT)));
+    assert!(KDC_OPTION_RENEW == (1u32 << (31 - KDC_OPTION_RENEW_BIT)));
+};
 
 fn zero_kerberos_flags() -> rasn_kerberos::KerberosFlags {
     rasn_kerberos::KerberosFlags::repeat(false, 32)

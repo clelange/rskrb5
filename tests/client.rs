@@ -5,13 +5,14 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use pretty_assertions::assert_eq;
 use rskrb5::client::{
     AS_REP_ENCPART_USAGE, AS_REQ_PA_ENC_TIMESTAMP_USAGE, AsReqOptions, BuiltAsReq, BuiltTgsReq,
-    Error, KDC_ERR_PREAUTH_REQUIRED, KdcTransport, PA_ENC_TIMESTAMP, PA_ETYPE_INFO2,
-    PA_REQ_ENC_PA_REP, PA_TGS_REQ, PreauthKeyInfo, Principal, TGS_REP_ENCPART_SESSION_KEY_USAGE,
-    TGS_REQ_AUTHENTICATOR_CHECKSUM_USAGE, TGS_REQ_AUTHENTICATOR_USAGE, TgsReqOptions,
-    build_tgs_req_for_realm_with_confounder, build_tgs_req_with_confounder, build_tgt_as_req,
+    Error, KDC_ERR_PREAUTH_REQUIRED, KDC_OPTION_RENEW, KDC_OPTION_RENEWABLE, KdcTransport,
+    PA_ENC_TIMESTAMP, PA_ETYPE_INFO2, PA_REQ_ENC_PA_REP, PA_TGS_REQ, PreauthKeyInfo, Principal,
+    TGS_REP_ENCPART_SESSION_KEY_USAGE, TGS_REQ_AUTHENTICATOR_CHECKSUM_USAGE,
+    TGS_REQ_AUTHENTICATOR_USAGE, TgsReqOptions, build_tgs_req_for_realm_with_confounder,
+    build_tgs_req_with_confounder, build_tgt_as_req, build_tgt_renewal_req_with_confounder,
     default_password_salt, derive_password_reply_key, exchange_as_req, exchange_tgs_req,
     login_tgt_with_keytab, login_tgt_with_password, pa_enc_timestamp_with_confounder,
-    process_as_rep, process_kdc_error, process_tgs_rep, process_tgs_rep_with_referral,
+    process_as_rep, process_kdc_error, process_tgs_rep, process_tgs_rep_with_referral, renew_tgt,
     select_preauth_key_info,
 };
 use rskrb5::crypto::AesSha1Etype;
@@ -63,6 +64,27 @@ fn builds_tgt_as_req_with_expected_fields() {
     assert!(body.addresses.is_none());
     assert!(body.enc_authorization_data.is_none());
     assert!(body.additional_tickets.is_none());
+}
+
+#[test]
+fn builds_tgt_as_req_with_renew_lifetime_sets_renewable_flag() {
+    let client = Principal::user("TEST.GOKRB5", "testuser1");
+    let options = AsReqOptions::new(timestamp(1_893_553_447), 0x1122_3344)
+        .with_ticket_lifetime(Duration::from_secs(8 * 60 * 60))
+        .with_renew_lifetime(Some(Duration::from_secs(10 * 60 * 60)));
+
+    let request = build_tgt_as_req(client, options).expect("AS-REQ builds");
+    let decoded: rasn_kerberos::AsReq = rasn::der::decode(&request.der).expect("AS-REQ decodes");
+    let body = &decoded.0.req_body;
+
+    assert_eq!(
+        body.kdc_options.0.as_raw_slice(),
+        KDC_OPTION_RENEWABLE.to_be_bytes().as_slice()
+    );
+    assert_eq!(
+        system_time_from_kerberos_time(body.rtime.as_ref().expect("renew time")),
+        timestamp(1_893_589_447)
+    );
 }
 
 #[test]
@@ -321,6 +343,40 @@ fn builds_tgs_req_for_explicit_kdc_realm() {
 }
 
 #[test]
+fn builds_tgt_renewal_req_sets_renew_options() {
+    let tgt = sample_tgt_session();
+    let request = build_tgt_renewal_req_with_confounder(
+        &tgt,
+        TgsReqOptions::new(timestamp(1_893_553_450), 0x7788_99aa)
+            .with_kdc_option_bits(0x0000_0010)
+            .with_renew_lifetime(Some(Duration::from_secs(10 * 60 * 60)))
+            .with_etypes(vec![18]),
+        timestamp(1_893_553_451),
+        654_321,
+        &decode_hex(TGS_REQ_CONFOUNDER),
+    )
+    .expect("TGT renewal TGS-REQ builds");
+    let decoded: rasn_kerberos::TgsReq = rasn::der::decode(&request.der).expect("TGS-REQ decodes");
+    let expected_options = 0x0000_0010 | KDC_OPTION_RENEWABLE | KDC_OPTION_RENEW;
+
+    assert_eq!(request.kdc_realm, "TEST.GOKRB5");
+    assert_eq!(request.service, Principal::tgt_service("TEST.GOKRB5"));
+    let body = &decoded.0.req_body;
+    assert_eq!(
+        body.kdc_options.0.as_raw_slice(),
+        expected_options.to_be_bytes().as_slice()
+    );
+    assert_eq!(
+        principal_from_parts(&body.realm, body.sname.as_ref().expect("sname")),
+        Principal::tgt_service("TEST.GOKRB5")
+    );
+    assert_eq!(
+        system_time_from_kerberos_time(body.rtime.as_ref().expect("renew time")),
+        timestamp(1_893_589_450)
+    );
+}
+
+#[test]
 fn processes_tgs_rep_and_exports_ccache_credential() {
     let tgt = sample_tgt_session();
     let request = sample_tgs_request(&tgt);
@@ -391,6 +447,27 @@ fn exchange_tgs_req_uses_transport_boundary() {
 
     assert!(transport.called);
     assert_eq!(session.service, sample_service_principal());
+}
+
+#[test]
+fn renew_tgt_uses_transport_boundary() {
+    let tgt = sample_tgt_session();
+    let mut transport = RenewalTransport {
+        session_key: tgt.session_key.clone(),
+        calls: 0,
+    };
+
+    let session = renew_tgt(
+        &mut transport,
+        &tgt,
+        TgsReqOptions::new(timestamp(1_893_553_450), 0x6677_8899).with_etypes(vec![18]),
+    )
+    .expect("TGT renewal succeeds");
+
+    assert_eq!(transport.calls, 1);
+    assert_eq!(session.client, Principal::user("TEST.GOKRB5", "testuser1"));
+    assert_eq!(session.service, Principal::tgt_service("TEST.GOKRB5"));
+    assert!(!session.ticket.is_empty());
 }
 
 #[test]
@@ -469,6 +546,33 @@ impl KdcTransport for MockTransport {
         assert_eq!(request, self.expected_request.as_slice());
         self.called = true;
         Ok(self.response.clone())
+    }
+}
+
+struct RenewalTransport {
+    session_key: EncryptionKey,
+    calls: usize,
+}
+
+impl KdcTransport for RenewalTransport {
+    fn send(&mut self, realm: &str, request: &[u8]) -> Result<Vec<u8>, Error> {
+        assert_eq!(realm, "TEST.GOKRB5");
+        let decoded: rasn_kerberos::TgsReq = rasn::der::decode(request).expect("TGS-REQ decodes");
+        let body = &decoded.0.req_body;
+        assert_eq!(
+            body.kdc_options.0.as_raw_slice(),
+            (KDC_OPTION_RENEWABLE | KDC_OPTION_RENEW)
+                .to_be_bytes()
+                .as_slice()
+        );
+
+        self.calls += 1;
+        let built = built_tgs_request_from_der(decoded, request);
+        Ok(synthetic_tgs_rep(
+            &built,
+            built.nonce,
+            &self.session_key.clone(),
+        ))
     }
 }
 
@@ -765,6 +869,22 @@ fn built_request_from_der(message: rasn_kerberos::AsReq, der: &[u8]) -> BuiltAsR
         der: der.to_vec(),
         client,
         service,
+    }
+}
+
+fn built_tgs_request_from_der(message: rasn_kerberos::TgsReq, der: &[u8]) -> BuiltTgsReq {
+    let body = &message.0.req_body;
+    let client = principal_from_parts(&body.realm, body.cname.as_ref().expect("cname"));
+    let service = principal_from_parts(&body.realm, body.sname.as_ref().expect("sname"));
+    let kdc_realm = kerberos_string_to_string(&body.realm);
+    let nonce = body.nonce;
+    BuiltTgsReq {
+        message,
+        der: der.to_vec(),
+        client,
+        service,
+        kdc_realm,
+        nonce,
     }
 }
 
