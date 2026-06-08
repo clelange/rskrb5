@@ -5,8 +5,9 @@ use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rskrb5::client::{
-    AsReqOptions, KdcProtocol, PreauthKeyInfo, Principal, TgsReqOptions, TokioKdcTransport,
-    build_tgs_req, build_tgt_as_req, derive_password_reply_key, pa_enc_timestamp_with_confounder,
+    AsReqOptions, KdcProtocol, PreauthKeyInfo, Principal, TgsReqOptions, TokioClient,
+    TokioKdcTransport, build_tgs_req, build_tgt_as_req, derive_password_reply_key,
+    pa_enc_timestamp_with_confounder,
 };
 use rskrb5::config::Config;
 use rskrb5::crypto::AesSha1Etype;
@@ -159,6 +160,45 @@ fn docker_mit_kdc_configured_kdc_as_login() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
+fn docker_mit_kdc_tokio_client_password_cache() -> Result<(), Box<dyn Error>> {
+    if std::env::var("INTEGRATION").as_deref() != Ok("1") {
+        eprintln!("skipping Docker KDC integration test; set INTEGRATION=1 to enable");
+        return Ok(());
+    }
+    let _guard = INTEGRATION_LOCK.lock().expect("integration test lock");
+
+    runtime().block_on(async {
+        let config = configured_kdc_config()?;
+
+        for protocol in [KdcProtocol::Udp, KdcProtocol::Tcp] {
+            eprintln!("running high-level Tokio client cached TGS flow over {protocol:?}");
+            let mut client = TokioClient::with_password(
+                config.clone(),
+                protocol,
+                Principal::user(REALM, USER),
+                PASSWORD,
+            )
+            .with_transport(TokioKdcTransport::new().with_timeout(Duration::from_secs(10)));
+
+            let service = service_principal();
+            let first = client.get_service_ticket(service.clone()).await?;
+            let second = client.get_service_ticket(service.clone()).await?;
+
+            assert_eq!(client.client_principal(), &Principal::user(REALM, USER));
+            assert!(client.tgt_session().is_some());
+            assert_eq!(client.cached_service_ticket_count(), 1);
+            assert_eq!(first, second);
+            assert_eq!(first.client, Principal::user(REALM, USER));
+            assert_eq!(first.service, service);
+            assert_eq!(first.session_key.etype, AES256_ETYPE);
+            assert!(!first.ticket.is_empty());
+        }
+
+        Ok::<_, Box<dyn Error>>(())
+    })
+}
+
+#[test]
 fn docker_mit_kdc_dns_srv_as_login() -> Result<(), Box<dyn Error>> {
     if std::env::var("INTEGRATION").as_deref() != Ok("1") {
         eprintln!("skipping Docker KDC integration test; set INTEGRATION=1 to enable");
@@ -272,6 +312,41 @@ fn docker_mit_kdc_tgt_renewal_through_tcp_and_udp() -> Result<(), Box<dyn Error>
             let renewed = transport
                 .renew_tgt(protocol, addr.as_str(), &tgt, tgs_options(protocol, 13)?)
                 .await?;
+
+            assert_login_session(renewed.clone());
+            assert_eq!(renewed.service, Principal::tgt_service(REALM));
+            assert_eq!(renewed.renew_till, Some(original_renew_till));
+            assert!(renewed.end_time <= original_renew_till);
+        }
+
+        Ok::<_, Box<dyn Error>>(())
+    })
+}
+
+#[test]
+fn docker_mit_kdc_tokio_client_tgt_renewal() -> Result<(), Box<dyn Error>> {
+    if std::env::var("INTEGRATION").as_deref() != Ok("1") {
+        eprintln!("skipping Docker KDC integration test; set INTEGRATION=1 to enable");
+        return Ok(());
+    }
+    let _guard = INTEGRATION_LOCK.lock().expect("integration test lock");
+
+    runtime().block_on(async {
+        let config = short_kdc_config()?;
+
+        for protocol in [KdcProtocol::Udp, KdcProtocol::Tcp] {
+            eprintln!("running high-level Tokio client TGT renewal over {protocol:?}");
+            let mut client = TokioClient::with_password(
+                config.clone(),
+                protocol,
+                Principal::user(REALM, USER),
+                PASSWORD,
+            )
+            .with_transport(TokioKdcTransport::new().with_timeout(Duration::from_secs(10)));
+
+            let original = client.login().await?.clone();
+            let original_renew_till = original.renew_till.expect("renewable TGT has renew-till");
+            let renewed = client.renew_tgt().await?.clone();
 
             assert_login_session(renewed.clone());
             assert_eq!(renewed.service, Principal::tgt_service(REALM));
@@ -568,6 +643,22 @@ fn configured_kdc_config() -> Result<Config, Box<dyn Error>> {
 "#,
         kdc_addr(),
         resdom_kdc_addr()
+    ))?)
+}
+
+fn short_kdc_config() -> Result<Config, Box<dyn Error>> {
+    Ok(Config::parse(&format!(
+        r#"
+[libdefaults]
+ dns_lookup_kdc = false
+ renew_lifetime = 600
+
+[realms]
+ {REALM} = {{
+  kdc = {}
+ }}
+"#,
+        short_kdc_addr()
     ))?)
 }
 

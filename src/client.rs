@@ -7,6 +7,10 @@
 //! `krb5.conf`-driven KDC discovery.
 
 #[cfg(feature = "tokio")]
+use std::collections::BTreeMap;
+#[cfg(feature = "tokio")]
+use std::fmt;
+#[cfg(feature = "tokio")]
 use std::future::Future;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -22,6 +26,8 @@ use hickory_resolver::{TokioResolver, proto::rr::RData};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 #[cfg(feature = "tokio")]
 use tokio::net::{TcpStream, ToSocketAddrs, UdpSocket};
+#[cfg(feature = "tokio")]
+use zeroize::Zeroizing;
 
 const KRB5_PVNO: i32 = 5;
 const KRB_AS_REQ_MSG_TYPE: i32 = 10;
@@ -439,6 +445,327 @@ pub struct KdcEndpoint {
     pub port: u16,
     /// How this endpoint was discovered.
     pub source: KdcEndpointSource,
+}
+
+/// Long-term credential source used by [`TokioClient`].
+#[cfg(feature = "tokio")]
+#[derive(Clone, Eq, PartialEq)]
+pub enum TokioClientCredentials {
+    /// Password credential for AS login.
+    Password(Zeroizing<Vec<u8>>),
+    /// Keytab credential for AS login.
+    Keytab(Keytab),
+}
+
+#[cfg(feature = "tokio")]
+impl fmt::Debug for TokioClientCredentials {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Password(_) => f.write_str("Password(<redacted>)"),
+            Self::Keytab(keytab) => f
+                .debug_struct("Keytab")
+                .field("entries", &keytab.entries().len())
+                .finish(),
+        }
+    }
+}
+
+/// High-level Tokio Kerberos client with TGT and service-ticket caching.
+#[cfg(feature = "tokio")]
+#[derive(Clone, Eq, PartialEq)]
+pub struct TokioClient {
+    config: Config,
+    protocol: KdcProtocol,
+    transport: TokioKdcTransport,
+    client: Principal,
+    credentials: Option<TokioClientCredentials>,
+    tgt: Option<AsRepSession>,
+    service_tickets: BTreeMap<String, TgsRepSession>,
+}
+
+#[cfg(feature = "tokio")]
+impl fmt::Debug for TokioClient {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TokioClient")
+            .field("config", &self.config)
+            .field("protocol", &self.protocol)
+            .field("transport", &self.transport)
+            .field("client", &self.client)
+            .field("credentials", &self.credentials)
+            .field("has_tgt", &self.tgt.is_some())
+            .field("cached_service_tickets", &self.service_tickets.len())
+            .finish()
+    }
+}
+
+#[cfg(feature = "tokio")]
+impl TokioClient {
+    /// Create a password-backed client using KDCs discovered from config.
+    pub fn with_password(
+        config: Config,
+        protocol: KdcProtocol,
+        client: Principal,
+        password: impl Into<Vec<u8>>,
+    ) -> Self {
+        Self::new(
+            config,
+            protocol,
+            client,
+            Some(TokioClientCredentials::Password(Zeroizing::new(
+                password.into(),
+            ))),
+        )
+    }
+
+    /// Create a keytab-backed client using KDCs discovered from config.
+    pub fn with_keytab(
+        config: Config,
+        protocol: KdcProtocol,
+        client: Principal,
+        keytab: Keytab,
+    ) -> Self {
+        Self::new(
+            config,
+            protocol,
+            client,
+            Some(TokioClientCredentials::Keytab(keytab)),
+        )
+    }
+
+    /// Create a cache-only client from a ccache.
+    ///
+    /// Cached TGTs and service tickets are reused and renewed when possible.
+    /// If no live password or keytab credential is configured, expired
+    /// non-renewable entries cannot be re-acquired from the KDC.
+    pub fn from_ccache(config: Config, protocol: KdcProtocol, cache: &ccache::CCache) -> Self {
+        let client = client_principal_from_ccache(cache.default_principal());
+        let mut kerberos = Self::new(config, protocol, client, None);
+        for credential in cache.entries() {
+            let session = ccache_credential_session(credential);
+            if is_tgt_principal(&session.service) {
+                kerberos.tgt = freshest_session(kerberos.tgt.take(), session);
+            } else {
+                kerberos.cache_service_ticket(session);
+            }
+        }
+        kerberos
+    }
+
+    /// Create a cache-only client from a known TGT session.
+    pub fn from_tgt_session(config: Config, protocol: KdcProtocol, tgt: AsRepSession) -> Self {
+        let mut kerberos = Self::new(config, protocol, tgt.client.clone(), None);
+        kerberos.tgt = Some(tgt);
+        kerberos
+    }
+
+    fn new(
+        config: Config,
+        protocol: KdcProtocol,
+        client: Principal,
+        credentials: Option<TokioClientCredentials>,
+    ) -> Self {
+        Self {
+            config,
+            protocol,
+            transport: TokioKdcTransport::new(),
+            client,
+            credentials,
+            tgt: None,
+            service_tickets: BTreeMap::new(),
+        }
+    }
+
+    /// Override the transport used for KDC exchanges.
+    pub fn with_transport(mut self, transport: TokioKdcTransport) -> Self {
+        self.transport = transport;
+        self
+    }
+
+    /// Parsed Kerberos configuration.
+    pub fn config(&self) -> &Config {
+        &self.config
+    }
+
+    /// Selected KDC wire protocol.
+    pub fn protocol(&self) -> KdcProtocol {
+        self.protocol
+    }
+
+    /// Client principal.
+    pub fn client_principal(&self) -> &Principal {
+        &self.client
+    }
+
+    /// Current TGT session, when logged in or loaded from cache.
+    pub fn tgt_session(&self) -> Option<&AsRepSession> {
+        self.tgt.as_ref()
+    }
+
+    /// Number of cached service tickets.
+    pub fn cached_service_ticket_count(&self) -> usize {
+        self.service_tickets.len()
+    }
+
+    /// Clear cached service tickets without dropping the TGT.
+    pub fn clear_service_ticket_cache(&mut self) {
+        self.service_tickets.clear();
+    }
+
+    /// Insert or replace a service ticket in the cache.
+    pub fn cache_service_ticket(&mut self, ticket: TgsRepSession) {
+        self.service_tickets
+            .insert(service_cache_key(&ticket.service), ticket);
+    }
+
+    /// Perform AS login with the configured long-term credential.
+    pub async fn login(&mut self) -> Result<&AsRepSession, Error> {
+        let Some(credentials) = self.credentials.clone() else {
+            if let Some(tgt) = &self.tgt {
+                return Ok(tgt);
+            }
+            return Err(Error::NoClientCredentials);
+        };
+        let options = self.as_req_options()?;
+        let session = match credentials {
+            TokioClientCredentials::Password(password) => {
+                self.transport
+                    .login_tgt_with_password_config(
+                        &self.config,
+                        self.protocol,
+                        self.client.clone(),
+                        &password,
+                        options,
+                    )
+                    .await?
+            }
+            TokioClientCredentials::Keytab(keytab) => {
+                self.transport
+                    .login_tgt_with_keytab_config(
+                        &self.config,
+                        self.protocol,
+                        self.client.clone(),
+                        &keytab,
+                        options,
+                    )
+                    .await?
+            }
+        };
+
+        self.tgt = Some(session);
+        self.service_tickets.clear();
+        Ok(self.tgt.as_ref().expect("TGT was just inserted"))
+    }
+
+    /// Renew the current TGT explicitly.
+    pub async fn renew_tgt(&mut self) -> Result<&AsRepSession, Error> {
+        let tgt = self.tgt.clone().ok_or(Error::NoTgtSession)?;
+        let renewed = self
+            .transport
+            .renew_tgt_with_config(&self.config, self.protocol, &tgt, self.tgs_req_options()?)
+            .await?;
+        self.tgt = Some(renewed);
+        self.service_tickets.clear();
+        Ok(self.tgt.as_ref().expect("TGT was just inserted"))
+    }
+
+    /// Return a service ticket from cache or acquire one from a KDC.
+    pub async fn get_service_ticket(&mut self, service: Principal) -> Result<TgsRepSession, Error> {
+        let service = self.resolve_service_principal(service);
+        let key = service_cache_key(&service);
+        if let Some(ticket) = self.service_tickets.get(&key).cloned() {
+            let now = SystemTime::now();
+            if session_valid_at(&ticket, now) {
+                return Ok(ticket);
+            }
+            if session_renewable_at(&ticket, now)
+                && let Ok(renewed) = self
+                    .transport
+                    .renew_ticket_with_config(
+                        &self.config,
+                        self.protocol,
+                        &ticket,
+                        self.tgs_req_options()?,
+                    )
+                    .await
+            {
+                self.cache_service_ticket(renewed.clone());
+                return Ok(renewed);
+            }
+        }
+
+        let tgt = self.ensure_tgt().await?;
+        let ticket = self
+            .transport
+            .get_service_ticket_with_referrals(
+                &self.config,
+                self.protocol,
+                &tgt,
+                service,
+                self.tgs_req_options()?,
+            )
+            .await?;
+        self.cache_service_ticket(ticket.clone());
+        Ok(ticket)
+    }
+
+    /// Build a SPNEGO HTTP `Authorization` header for a service.
+    #[cfg(feature = "spnego")]
+    pub async fn spnego_header(&mut self, service: Principal) -> Result<String, Error> {
+        self.spnego_header_with_options(service, crate::spnego::InitiatorContextOptions::new())
+            .await
+    }
+
+    /// Build a SPNEGO HTTP `Authorization` header with explicit initiator options.
+    #[cfg(feature = "spnego")]
+    pub async fn spnego_header_with_options(
+        &mut self,
+        service: Principal,
+        options: crate::spnego::InitiatorContextOptions,
+    ) -> Result<String, Error> {
+        let ticket = self.get_service_ticket(service).await?;
+        Ok(crate::spnego::authorization_header(&ticket, options)?)
+    }
+
+    async fn ensure_tgt(&mut self) -> Result<AsRepSession, Error> {
+        if let Some(tgt) = self.tgt.clone() {
+            let now = SystemTime::now();
+            if session_valid_at(&tgt, now) {
+                return Ok(tgt);
+            }
+            if session_renewable_at(&tgt, now) {
+                return Ok(self.renew_tgt().await?.clone());
+            }
+        }
+
+        if self.credentials.is_none() {
+            return Err(Error::NoClientCredentials);
+        }
+        Ok(self.login().await?.clone())
+    }
+
+    fn as_req_options(&self) -> Result<AsReqOptions, Error> {
+        Ok(AsReqOptions::from_libdefaults(
+            SystemTime::now(),
+            random_nonce()?,
+            &self.config.libdefaults,
+        ))
+    }
+
+    fn tgs_req_options(&self) -> Result<TgsReqOptions, Error> {
+        Ok(TgsReqOptions::from_libdefaults(
+            SystemTime::now(),
+            random_nonce()?,
+            &self.config.libdefaults,
+        ))
+    }
+
+    fn resolve_service_principal(&self, mut service: Principal) -> Principal {
+        if service.realm.is_empty() {
+            service.realm =
+                service_realm(&self.config, &service).unwrap_or_else(|| self.client.realm.clone());
+        }
+        service
+    }
 }
 
 #[cfg(feature = "tokio")]
@@ -1923,6 +2250,21 @@ pub enum Error {
         service: String,
     },
 
+    /// A high-level client operation needs password/keytab credentials.
+    #[cfg(feature = "tokio")]
+    #[error("no password or keytab credentials are configured")]
+    NoClientCredentials,
+
+    /// A high-level client operation needs a current TGT.
+    #[cfg(feature = "tokio")]
+    #[error("no TGT session is available")]
+    NoTgtSession,
+
+    /// SPNEGO/GSSAPI token processing failed.
+    #[cfg(feature = "spnego")]
+    #[error("SPNEGO error: {0}")]
+    Spnego(#[from] crate::spnego::Error),
+
     /// Crypto operation failed.
     #[error("crypto error: {0}")]
     Crypto(#[from] crate::crypto::Error),
@@ -2298,6 +2640,13 @@ fn current_preauth_time() -> Result<(SystemTime, u32), Error> {
     ))
 }
 
+#[cfg(feature = "tokio")]
+fn random_nonce() -> Result<u32, Error> {
+    let mut bytes = [0; 4];
+    getrandom::fill(&mut bytes)?;
+    Ok(u32::from_be_bytes(bytes) & 0x7fff_ffff)
+}
+
 fn encode_hex_lower(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut out = String::with_capacity(bytes.len() * 2);
@@ -2432,6 +2781,78 @@ fn ccache_principal(value: &Principal) -> ccache::Principal {
         value.name_type,
         value.components.clone(),
     )
+}
+
+#[cfg(feature = "tokio")]
+fn client_principal_from_ccache(value: &ccache::Principal) -> Principal {
+    Principal::new(
+        value.realm.clone(),
+        value.name_type,
+        value.components.clone(),
+    )
+}
+
+#[cfg(feature = "tokio")]
+fn ccache_credential_session(credential: &ccache::Credential) -> AsRepSession {
+    let auth_time = system_time_from_u32_seconds(credential.times.auth_time);
+    let start_time = if credential.times.start_time == 0 {
+        auth_time
+    } else {
+        system_time_from_u32_seconds(credential.times.start_time)
+    };
+    AsRepSession {
+        client: client_principal_from_ccache(&credential.client),
+        service: client_principal_from_ccache(&credential.server),
+        session_key: EncryptionKey {
+            etype: credential.key.etype,
+            value: credential.key.value.clone(),
+        },
+        ticket: credential.ticket.clone(),
+        ticket_flags: credential.ticket_flags,
+        auth_time,
+        start_time,
+        end_time: system_time_from_u32_seconds(credential.times.end_time),
+        renew_till: (credential.times.renew_till != 0)
+            .then(|| system_time_from_u32_seconds(credential.times.renew_till)),
+    }
+}
+
+#[cfg(feature = "tokio")]
+fn system_time_from_u32_seconds(seconds: u32) -> SystemTime {
+    UNIX_EPOCH + Duration::from_secs(seconds.into())
+}
+
+#[cfg(feature = "tokio")]
+fn freshest_session(
+    current: Option<AsRepSession>,
+    candidate: AsRepSession,
+) -> Option<AsRepSession> {
+    match current {
+        Some(current) if current.end_time >= candidate.end_time => Some(current),
+        _ => Some(candidate),
+    }
+}
+
+#[cfg(feature = "tokio")]
+fn service_cache_key(service: &Principal) -> String {
+    let mut key = service.realm.clone();
+    for component in &service.components {
+        key.push('\0');
+        key.push_str(component);
+    }
+    key
+}
+
+#[cfg(feature = "tokio")]
+fn session_valid_at(session: &AsRepSession, now: SystemTime) -> bool {
+    session.start_time <= now && now < session.end_time
+}
+
+#[cfg(feature = "tokio")]
+fn session_renewable_at(session: &AsRepSession, now: SystemTime) -> bool {
+    session
+        .renew_till
+        .is_some_and(|renew_till| now < renew_till)
 }
 
 fn system_time_from_kerberos_time(time: &rasn_kerberos::KerberosTime) -> Result<SystemTime, Error> {

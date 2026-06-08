@@ -23,7 +23,7 @@ evaluation = [
 ]
 messages = ["dep:chrono", "dep:rasn", "dep:rasn-kerberos"]
 spnego = ["messages", "dep:base64"]
-tokio = ["messages", "dep:hickory-resolver", "dep:tokio"]
+tokio = ["messages", "dep:hickory-resolver", "dep:tokio", "dep:zeroize"]
 serde = ["dep:serde"]
 
 [dependencies]
@@ -44,6 +44,7 @@ serde = { version = "1", features = ["derive"], optional = true }
 sha1 = "0.11.0"
 thiserror = "2"
 tokio = { version = "1.47", features = ["net", "io-util", "time", "rt"], optional = true }
+zeroize = { version = "1", optional = true }
 
 [[bin]]
 name = "rskrb5-compat-report"

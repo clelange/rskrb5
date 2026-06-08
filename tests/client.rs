@@ -3,6 +3,8 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use pretty_assertions::assert_eq;
+#[cfg(feature = "tokio")]
+use rskrb5::ccache;
 use rskrb5::client::{
     AS_REP_ENCPART_USAGE, AS_REQ_PA_ENC_TIMESTAMP_USAGE, AsReqOptions, BuiltAsReq, BuiltTgsReq,
     Error, KDC_ERR_PREAUTH_REQUIRED, KDC_OPTION_RENEW, KDC_OPTION_RENEWABLE, KdcTransport,
@@ -15,6 +17,10 @@ use rskrb5::client::{
     process_as_rep, process_kdc_error, process_tgs_rep, process_tgs_rep_with_referral, renew_tgt,
     select_preauth_key_info,
 };
+#[cfg(feature = "tokio")]
+use rskrb5::client::{KdcProtocol, TokioClient};
+#[cfg(feature = "tokio")]
+use rskrb5::config::Config;
 use rskrb5::crypto::AesSha1Etype;
 use rskrb5::keytab::{EncryptionKey, Entry as KeytabEntry, Keytab, Principal as KeytabPrincipal};
 
@@ -468,6 +474,48 @@ fn renew_tgt_uses_transport_boundary() {
     assert_eq!(session.client, Principal::user("TEST.GOKRB5", "testuser1"));
     assert_eq!(session.service, Principal::tgt_service("TEST.GOKRB5"));
     assert!(!session.ticket.is_empty());
+}
+
+#[cfg(feature = "tokio")]
+#[test]
+fn tokio_client_returns_cached_service_ticket_from_ccache() {
+    let tgt = sample_tgt_session();
+    let request = sample_tgs_request(&tgt);
+    let response = synthetic_tgs_rep(&request, request.nonce, &tgt.session_key);
+    let service_ticket =
+        process_tgs_rep(&request, &response, &tgt.session_key).expect("TGS-REP validates");
+    let mut cache = ccache::CCache::new(ccache::Principal::new(
+        "TEST.GOKRB5",
+        1,
+        vec!["testuser1".to_owned()],
+    ));
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("current time is after unix epoch")
+        .as_secs() as u32;
+    let mut tgt_credential = tgt.to_ccache_credential().expect("TGT converts");
+    make_credential_current(&mut tgt_credential, now);
+    let mut service_credential = service_ticket
+        .to_ccache_credential()
+        .expect("service ticket converts");
+    make_credential_current(&mut service_credential, now);
+    cache.credentials_mut().push(tgt_credential);
+    cache.credentials_mut().push(service_credential);
+
+    let mut client = TokioClient::from_ccache(Config::new(), KdcProtocol::Tcp, &cache);
+    let returned = runtime()
+        .block_on(client.get_service_ticket(sample_service_principal()))
+        .expect("cached service ticket is returned");
+
+    assert_eq!(
+        client.tgt_session().expect("TGT loaded").service,
+        tgt.service
+    );
+    assert_eq!(client.cached_service_ticket_count(), 1);
+    assert_eq!(returned.client, service_ticket.client);
+    assert_eq!(returned.service, service_ticket.service);
+    assert_eq!(returned.session_key, service_ticket.session_key);
+    assert_eq!(returned.ticket, service_ticket.ticket);
 }
 
 #[test]
@@ -964,6 +1012,23 @@ fn system_time_from_kerberos_time(time: &rasn_kerberos::KerberosTime) -> SystemT
 
 fn timestamp(seconds: u64) -> SystemTime {
     UNIX_EPOCH + Duration::from_secs(seconds)
+}
+
+#[cfg(feature = "tokio")]
+fn make_credential_current(credential: &mut ccache::Credential, now: u32) {
+    credential.times.auth_time = now - 60;
+    credential.times.start_time = now - 60;
+    credential.times.end_time = now + 60 * 60;
+    credential.times.renew_till = now + 2 * 60 * 60;
+}
+
+#[cfg(feature = "tokio")]
+fn runtime() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .enable_time()
+        .build()
+        .expect("runtime")
 }
 
 fn decode_hex(input: &str) -> Vec<u8> {

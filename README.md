@@ -31,7 +31,9 @@ pure-Rust Kerberos library.
   discovery, AS-REP and TGS-REP encrypted-part decryption and validation,
   cross-realm TGS referral following, renewable AS/TGS request flags, explicit
   TGT/service-ticket renewal helpers, Docker MIT KDC AS/TGS login and TGT
-  renewal coverage, and ccache credential export; service validation covers
+  renewal coverage, ccache credential export, and a high-level Tokio client
+  with password/keytab/ccache credential sources, TGT/session renewal, and
+  service-ticket caching; service validation covers
   gokrb5-generated AP-REQ fixtures, service-ticket decryption, authenticator
   decryption, client matching, ticket time checks, clock skew, replay, and
   address-required behavior, plus AP-REP mutual-auth reply generation and
