@@ -13,7 +13,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use crate::ccache;
 use crate::config::LibDefaults;
 use crate::crypto::AesSha1Etype;
-use crate::keytab::EncryptionKey;
+use crate::keytab::{EncryptionKey, Keytab};
 #[cfg(feature = "tokio")]
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 #[cfg(feature = "tokio")]
@@ -22,6 +22,7 @@ use tokio::net::{TcpStream, ToSocketAddrs, UdpSocket};
 const KRB5_PVNO: i32 = 5;
 const KRB_AS_REQ_MSG_TYPE: i32 = 10;
 const KRB_AS_REP_MSG_TYPE: i32 = 11;
+const KRB_ERROR_MSG_TYPE: i32 = 30;
 const KRB_NT_PRINCIPAL: i32 = 1;
 const KRB_NT_SRV_INST: i32 = 2;
 const DEFAULT_TICKET_LIFETIME: Duration = Duration::from_secs(24 * 60 * 60);
@@ -35,6 +36,18 @@ const MAX_UDP_DATAGRAM: usize = 65_507;
 
 /// PA-ENC-TIMESTAMP preauthentication type.
 pub const PA_ENC_TIMESTAMP: i32 = 2;
+
+/// PA-ETYPE-INFO preauthentication hint type.
+pub const PA_ETYPE_INFO: i32 = 11;
+
+/// PA-ETYPE-INFO2 preauthentication hint type.
+pub const PA_ETYPE_INFO2: i32 = 19;
+
+/// PA-REQ-ENC-PA-REP marker used by modern gokrb5-compatible AS exchanges.
+pub const PA_REQ_ENC_PA_REP: i32 = 149;
+
+/// KDC error code for additional preauthentication required.
+pub const KDC_ERR_PREAUTH_REQUIRED: i32 = 25;
 
 /// Key usage for AS-REQ encrypted timestamp preauthentication.
 pub const AS_REQ_PA_ENC_TIMESTAMP_USAGE: u32 = 1;
@@ -237,6 +250,36 @@ pub trait KdcTransport {
     fn send(&mut self, realm: &str, request: &[u8]) -> Result<Vec<u8>, Error>;
 }
 
+/// Parsed KRB-ERROR returned by a KDC.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct KdcError {
+    /// Kerberos error code.
+    pub error_code: i32,
+    /// Optional human-readable error text.
+    pub text: Option<String>,
+    /// Client principal carried by the error, when present.
+    pub client: Option<Principal>,
+    /// Service principal that issued the error.
+    pub service: Principal,
+    /// Raw e-data bytes, when present.
+    pub e_data: Option<Vec<u8>>,
+    /// Parsed METHOD-DATA PA-DATA values for preauthentication errors.
+    pub method_data: Vec<rasn_kerberos::PaData>,
+    /// Parsed PA-ETYPE-INFO2/PA-ETYPE-INFO key derivation hints.
+    pub preauth_key_info: Vec<PreauthKeyInfo>,
+}
+
+/// KDC hint for deriving or selecting a preauthentication key.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PreauthKeyInfo {
+    /// Encryption type requested by the KDC.
+    pub etype: i32,
+    /// Optional password salt.
+    pub salt: Option<String>,
+    /// Optional string-to-key parameters as raw bytes.
+    pub s2kparams: Option<Vec<u8>>,
+}
+
 /// KDC wire protocol for Tokio transport operations.
 #[cfg(feature = "tokio")]
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -385,6 +428,66 @@ impl TokioKdcTransport {
         process_as_rep(request, &response, reply_key)
     }
 
+    /// Perform a TGT AS login using password credentials and KDC preauth hints.
+    pub async fn login_tgt_with_password<A>(
+        &self,
+        protocol: KdcProtocol,
+        addr: A,
+        client: Principal,
+        password: &[u8],
+        options: AsReqOptions,
+    ) -> Result<AsRepSession, Error>
+    where
+        A: ToSocketAddrs + Clone,
+    {
+        let initial_request = build_tgt_as_req(
+            client.clone(),
+            initial_preauth_probe_options(options.clone()),
+        )?;
+        let initial_response = self
+            .send(protocol, addr.clone(), &initial_request.der)
+            .await?;
+        if let Some(session) =
+            password_initial_as_rep_session(&initial_request, &initial_response, &client, password)?
+        {
+            return Ok(session);
+        }
+        let (request, reply_key) =
+            password_preauth_request(client, password, options, &initial_response)?;
+        let response = self.send(protocol, addr, &request.der).await?;
+        process_as_rep(&request, &response, &reply_key)
+    }
+
+    /// Perform a TGT AS login using keytab credentials and KDC preauth hints.
+    pub async fn login_tgt_with_keytab<A>(
+        &self,
+        protocol: KdcProtocol,
+        addr: A,
+        client: Principal,
+        keytab: &Keytab,
+        options: AsReqOptions,
+    ) -> Result<AsRepSession, Error>
+    where
+        A: ToSocketAddrs + Clone,
+    {
+        let initial_request = build_tgt_as_req(
+            client.clone(),
+            initial_preauth_probe_options(options.clone()),
+        )?;
+        let initial_response = self
+            .send(protocol, addr.clone(), &initial_request.der)
+            .await?;
+        if let Some(session) =
+            keytab_initial_as_rep_session(&initial_request, &initial_response, &client, keytab)?
+        {
+            return Ok(session);
+        }
+        let (request, reply_key) =
+            keytab_preauth_request(client, keytab, options, &initial_response)?;
+        let response = self.send(protocol, addr, &request.der).await?;
+        process_as_rep(&request, &response, &reply_key)
+    }
+
     async fn with_transport_timeout<F, T>(&self, operation: F) -> Result<T, Error>
     where
         F: Future<Output = Result<T, Error>>,
@@ -481,6 +584,36 @@ pub fn pa_enc_timestamp_with_confounder(
     })
 }
 
+/// Build encrypted timestamp preauthentication data with random confounder bytes.
+pub fn pa_enc_timestamp(
+    key: &EncryptionKey,
+    timestamp: SystemTime,
+    cusec: u32,
+    kvno: Option<u32>,
+) -> Result<rasn_kerberos::PaData, Error> {
+    let etype = AesSha1Etype::from_etype_id(key.etype).ok_or(Error::UnsupportedEtype(key.etype))?;
+    let mut confounder = vec![0; etype.confounder_len()];
+    getrandom::fill(&mut confounder)?;
+    pa_enc_timestamp_with_confounder(key, timestamp, cusec, &confounder, kvno)
+}
+
+/// Build a TGT AS-REQ with PA-ENC-TIMESTAMP preauthentication.
+pub fn build_preauthenticated_tgt_as_req(
+    client: Principal,
+    mut options: AsReqOptions,
+    key: &EncryptionKey,
+    kvno: Option<u32>,
+) -> Result<BuiltAsReq, Error> {
+    let (timestamp, cusec) = current_preauth_time()?;
+    options
+        .padata
+        .retain(|padata| padata.r#type != PA_ENC_TIMESTAMP);
+    options
+        .padata
+        .push(pa_enc_timestamp(key, timestamp, cusec, kvno)?);
+    build_tgt_as_req(client, options)
+}
+
 /// Send an AS-REQ through a transport and process the returned AS-REP.
 pub fn exchange_as_req<T>(
     transport: &mut T,
@@ -492,6 +625,57 @@ where
 {
     let response = transport.send(&request.client.realm, &request.der)?;
     process_as_rep(request, &response, reply_key)
+}
+
+/// Perform a TGT AS login using password credentials and KDC preauth hints.
+pub fn login_tgt_with_password<T>(
+    transport: &mut T,
+    client: Principal,
+    password: &[u8],
+    options: AsReqOptions,
+) -> Result<AsRepSession, Error>
+where
+    T: KdcTransport + ?Sized,
+{
+    let initial_request = build_tgt_as_req(
+        client.clone(),
+        initial_preauth_probe_options(options.clone()),
+    )?;
+    let initial_response = transport.send(&client.realm, &initial_request.der)?;
+    if let Some(session) =
+        password_initial_as_rep_session(&initial_request, &initial_response, &client, password)?
+    {
+        return Ok(session);
+    }
+    let (request, reply_key) =
+        password_preauth_request(client, password, options, &initial_response)?;
+    let response = transport.send(&request.client.realm, &request.der)?;
+    process_as_rep(&request, &response, &reply_key)
+}
+
+/// Perform a TGT AS login using keytab credentials and KDC preauth hints.
+pub fn login_tgt_with_keytab<T>(
+    transport: &mut T,
+    client: Principal,
+    keytab: &Keytab,
+    options: AsReqOptions,
+) -> Result<AsRepSession, Error>
+where
+    T: KdcTransport + ?Sized,
+{
+    let initial_request = build_tgt_as_req(
+        client.clone(),
+        initial_preauth_probe_options(options.clone()),
+    )?;
+    let initial_response = transport.send(&client.realm, &initial_request.der)?;
+    if let Some(session) =
+        keytab_initial_as_rep_session(&initial_request, &initial_response, &client, keytab)?
+    {
+        return Ok(session);
+    }
+    let (request, reply_key) = keytab_preauth_request(client, keytab, options, &initial_response)?;
+    let response = transport.send(&request.client.realm, &request.der)?;
+    process_as_rep(&request, &response, &reply_key)
 }
 
 /// Decrypt and validate an AS-REP against the original AS-REQ.
@@ -569,6 +753,128 @@ pub fn process_as_rep(
             .map(system_time_from_kerberos_time)
             .transpose()?,
     })
+}
+
+/// Decode a KRB-ERROR and any METHOD-DATA preauthentication hints.
+pub fn process_kdc_error(bytes: &[u8]) -> Result<KdcError, Error> {
+    let krb_error = decode::<rasn_kerberos::KrbError>("KRB-ERROR", bytes)?;
+    validate_integer("pvno", &krb_error.pvno, KRB5_PVNO)?;
+    validate_integer("msg-type", &krb_error.msg_type, KRB_ERROR_MSG_TYPE)?;
+
+    let text = krb_error
+        .e_text
+        .as_ref()
+        .map(kerberos_string_to_string)
+        .transpose()?;
+    let client = match (&krb_error.crealm, &krb_error.cname) {
+        (Some(realm), Some(name)) => Some(principal_from_parts(realm, name)?),
+        _ => None,
+    };
+    let service = principal_from_parts(&krb_error.realm, &krb_error.sname)?;
+    let e_data = krb_error.e_data.as_ref().map(|data| data.as_ref().to_vec());
+    let method_data = if krb_error.error_code == KDC_ERR_PREAUTH_REQUIRED {
+        e_data
+            .as_ref()
+            .map(|data| decode::<rasn_kerberos::MethodData>("METHOD-DATA", data))
+            .transpose()?
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    let preauth_key_info = preauth_key_info_from_method_data(&method_data)?;
+
+    Ok(KdcError {
+        error_code: krb_error.error_code,
+        text,
+        client,
+        service,
+        e_data,
+        method_data,
+        preauth_key_info,
+    })
+}
+
+/// Select a supported preauthentication key hint for the requested enctypes.
+pub fn select_preauth_key_info(
+    error: &KdcError,
+    requested_etypes: &[i32],
+) -> Result<PreauthKeyInfo, Error> {
+    for etype in requested_etypes {
+        if AesSha1Etype::from_etype_id(*etype).is_none() {
+            continue;
+        }
+        if let Some(info) = error
+            .preauth_key_info
+            .iter()
+            .find(|info| info.etype == *etype)
+        {
+            return Ok(info.clone());
+        }
+    }
+
+    if error.preauth_key_info.is_empty()
+        && let Some(etype) = requested_etypes
+            .iter()
+            .copied()
+            .find(|etype| AesSha1Etype::from_etype_id(*etype).is_some())
+    {
+        return Ok(PreauthKeyInfo {
+            etype,
+            salt: None,
+            s2kparams: None,
+        });
+    }
+
+    Err(Error::NoSupportedPreauthEtype {
+        requested: requested_etypes.to_vec(),
+    })
+}
+
+/// Return the default Kerberos password salt for a principal.
+pub fn default_password_salt(client: &Principal) -> String {
+    let mut salt = client.realm.clone();
+    for component in &client.components {
+        salt.push_str(component);
+    }
+    salt
+}
+
+/// Derive a reply key from password credentials and a preauthentication hint.
+pub fn derive_password_reply_key(
+    client: &Principal,
+    password: &[u8],
+    key_info: &PreauthKeyInfo,
+) -> Result<EncryptionKey, Error> {
+    let etype = AesSha1Etype::from_etype_id(key_info.etype)
+        .ok_or(Error::UnsupportedEtype(key_info.etype))?;
+    let salt = key_info
+        .salt
+        .clone()
+        .unwrap_or_else(|| default_password_salt(client));
+    let s2kparams = key_info
+        .s2kparams
+        .as_ref()
+        .map(|bytes| encode_hex_lower(bytes))
+        .unwrap_or_else(|| etype.default_s2kparams().to_owned());
+    Ok(EncryptionKey {
+        etype: key_info.etype,
+        value: etype.string_to_key(password, salt.as_bytes(), &s2kparams)?,
+    })
+}
+
+/// Select a reply key from a keytab using a preauthentication hint.
+pub fn select_keytab_reply_key(
+    keytab: &Keytab,
+    client: &Principal,
+    key_info: &PreauthKeyInfo,
+) -> Result<(EncryptionKey, u32), Error> {
+    let components = client
+        .components
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    let (key, kvno) = keytab.find_key(&components, &client.realm, 0, key_info.etype)?;
+    Ok((key.clone(), kvno))
 }
 
 /// AS exchange client error.
@@ -661,9 +967,28 @@ pub enum Error {
     #[error("crypto error: {0}")]
     Crypto(#[from] crate::crypto::Error),
 
+    /// Keytab operation failed.
+    #[error("keytab error: {0}")]
+    Keytab(#[from] crate::keytab::Error),
+
+    /// Random byte generation failed.
+    #[error("random byte generation failed: {0}")]
+    Random(#[from] getrandom::Error),
+
     /// A Kerberos time could not be represented as a `SystemTime`.
     #[error("Kerberos time overflows SystemTime")]
     TimeOverflow,
+
+    /// The KDC returned an application-level error.
+    #[error("KDC returned error code {}", .0.error_code)]
+    Kdc(Box<KdcError>),
+
+    /// No supported preauthentication encryption type was available.
+    #[error("no supported preauthentication encryption type for requested list {requested:?}")]
+    NoSupportedPreauthEtype {
+        /// Requested encryption type ids.
+        requested: Vec<i32>,
+    },
 
     /// Tokio transport I/O failed.
     #[cfg(feature = "tokio")]
@@ -743,6 +1068,105 @@ fn decrypt_encrypted_data(
     Ok(etype.decrypt_message(key, ciphertext, usage)?)
 }
 
+fn password_preauth_request(
+    client: Principal,
+    password: &[u8],
+    options: AsReqOptions,
+    kdc_error_bytes: &[u8],
+) -> Result<(BuiltAsReq, EncryptionKey), Error> {
+    let error = process_kdc_error(kdc_error_bytes)?;
+    if error.error_code != KDC_ERR_PREAUTH_REQUIRED {
+        return Err(Error::Kdc(Box::new(error)));
+    }
+    let key_info = select_preauth_key_info(&error, &options.etypes)?;
+    let reply_key = derive_password_reply_key(&client, password, &key_info)?;
+    let request = build_preauthenticated_tgt_as_req(client, options, &reply_key, None)?;
+    Ok((request, reply_key))
+}
+
+fn password_initial_as_rep_session(
+    request: &BuiltAsReq,
+    response: &[u8],
+    client: &Principal,
+    password: &[u8],
+) -> Result<Option<AsRepSession>, Error> {
+    let Some((etype, _)) = as_rep_reply_key_info(response) else {
+        return Ok(None);
+    };
+    let key_info = PreauthKeyInfo {
+        etype,
+        salt: None,
+        s2kparams: None,
+    };
+    let reply_key = derive_password_reply_key(client, password, &key_info)?;
+    process_as_rep(request, response, &reply_key).map(Some)
+}
+
+fn keytab_preauth_request(
+    client: Principal,
+    keytab: &Keytab,
+    options: AsReqOptions,
+    kdc_error_bytes: &[u8],
+) -> Result<(BuiltAsReq, EncryptionKey), Error> {
+    let error = process_kdc_error(kdc_error_bytes)?;
+    if error.error_code != KDC_ERR_PREAUTH_REQUIRED {
+        return Err(Error::Kdc(Box::new(error)));
+    }
+    let key_info = select_preauth_key_info(&error, &options.etypes)?;
+    let (reply_key, kvno) = select_keytab_reply_key(keytab, &client, &key_info)?;
+    let request = build_preauthenticated_tgt_as_req(client, options, &reply_key, Some(kvno))?;
+    Ok((request, reply_key))
+}
+
+fn keytab_initial_as_rep_session(
+    request: &BuiltAsReq,
+    response: &[u8],
+    client: &Principal,
+    keytab: &Keytab,
+) -> Result<Option<AsRepSession>, Error> {
+    let Some((etype, kvno)) = as_rep_reply_key_info(response) else {
+        return Ok(None);
+    };
+    let (reply_key, _) =
+        select_keytab_reply_key_for_etype(keytab, client, kvno.unwrap_or_default(), etype)?;
+    process_as_rep(request, response, &reply_key).map(Some)
+}
+
+fn select_keytab_reply_key_for_etype(
+    keytab: &Keytab,
+    client: &Principal,
+    kvno: u32,
+    etype: i32,
+) -> Result<(EncryptionKey, u32), Error> {
+    let components = client
+        .components
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    let (key, kvno) = keytab.find_key(&components, &client.realm, kvno, etype)?;
+    Ok((key.clone(), kvno))
+}
+
+fn initial_preauth_probe_options(mut options: AsReqOptions) -> AsReqOptions {
+    if !options
+        .padata
+        .iter()
+        .any(|padata| padata.r#type == PA_REQ_ENC_PA_REP)
+    {
+        options.padata.push(rasn_kerberos::PaData {
+            r#type: PA_REQ_ENC_PA_REP,
+            value: Vec::new().into(),
+        });
+    }
+    options
+}
+
+fn as_rep_reply_key_info(response: &[u8]) -> Option<(i32, Option<u32>)> {
+    rasn::der::decode::<rasn_kerberos::AsRep>(response)
+        .ok()
+        .map(|as_rep| (as_rep.0.enc_part.etype, as_rep.0.enc_part.kvno))
+}
+
 fn decode_as_rep_enc_part(bytes: &[u8]) -> Result<rasn_kerberos::EncKdcRepPart, Error> {
     match decode::<rasn_kerberos::EncAsRepPart>("EncAsRepPart", bytes) {
         Ok(enc_part) => Ok(enc_part.0),
@@ -762,6 +1186,68 @@ fn non_empty_kdc_response(response: Vec<u8>) -> Result<Vec<u8>, Error> {
         return Err(Error::EmptyKdcResponse);
     }
     Ok(response)
+}
+
+fn preauth_key_info_from_method_data(
+    method_data: &[rasn_kerberos::PaData],
+) -> Result<Vec<PreauthKeyInfo>, Error> {
+    let mut infos = Vec::new();
+    for padata in method_data
+        .iter()
+        .filter(|padata| padata.r#type == PA_ETYPE_INFO2)
+    {
+        let entries = decode::<rasn_kerberos::EtypeInfo2>("ETYPE-INFO2", padata.value.as_ref())?;
+        for entry in entries {
+            infos.push(PreauthKeyInfo {
+                etype: entry.etype,
+                salt: entry
+                    .salt
+                    .as_ref()
+                    .map(kerberos_string_to_string)
+                    .transpose()?,
+                s2kparams: entry.s2kparams.map(|bytes| bytes.as_ref().to_vec()),
+            });
+        }
+    }
+    for padata in method_data
+        .iter()
+        .filter(|padata| padata.r#type == PA_ETYPE_INFO)
+    {
+        let entries = decode::<rasn_kerberos::EtypeInfo>("ETYPE-INFO", padata.value.as_ref())?;
+        for entry in entries {
+            infos.push(PreauthKeyInfo {
+                etype: entry.etype,
+                salt: entry
+                    .salt
+                    .as_ref()
+                    .map(|salt| std::str::from_utf8(salt.as_ref()).map(str::to_owned))
+                    .transpose()?,
+                s2kparams: None,
+            });
+        }
+    }
+    Ok(infos)
+}
+
+fn current_preauth_time() -> Result<(SystemTime, u32), Error> {
+    let now = SystemTime::now();
+    let elapsed = now
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| Error::TimeOverflow)?;
+    Ok((
+        UNIX_EPOCH + Duration::from_secs(elapsed.as_secs()),
+        elapsed.subsec_micros(),
+    ))
+}
+
+fn encode_hex_lower(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    out
 }
 
 fn validate_integer(
@@ -864,9 +1350,9 @@ fn system_time_from_kerberos_time(time: &rasn_kerberos::KerberosTime) -> Result<
 }
 
 fn kerberos_time_from_system_time(time: SystemTime) -> Result<rasn_kerberos::KerberosTime, Error> {
-    let (seconds, nanos) = unix_timestamp_parts(time)?;
-    let utc = chrono::DateTime::<chrono::Utc>::from_timestamp(seconds, nanos)
-        .ok_or(Error::TimeOverflow)?;
+    let (seconds, _) = unix_timestamp_parts(time)?;
+    let utc =
+        chrono::DateTime::<chrono::Utc>::from_timestamp(seconds, 0).ok_or(Error::TimeOverflow)?;
     let offset = chrono::FixedOffset::east_opt(0).ok_or(Error::TimeOverflow)?;
     Ok(rasn_kerberos::KerberosTime(utc.with_timezone(&offset)))
 }

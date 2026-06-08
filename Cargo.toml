@@ -31,6 +31,7 @@ aes = "0.9.1"
 base64 = { version = "0.22", optional = true }
 chrono = { version = "0.4", default-features = false, features = ["std"], optional = true }
 hex = { version = "0.4", optional = true }
+getrandom = { version = "0.3", features = ["std"] }
 hmac = "0.13.0"
 pbkdf2 = "=0.13.0-rc.10"
 picky-asn1 = { version = "0.10.1", optional = true }

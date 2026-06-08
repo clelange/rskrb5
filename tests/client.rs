@@ -5,17 +5,21 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use pretty_assertions::assert_eq;
 use rskrb5::client::{
     AS_REP_ENCPART_USAGE, AS_REQ_PA_ENC_TIMESTAMP_USAGE, AsReqOptions, BuiltAsReq, Error,
-    KdcTransport, PA_ENC_TIMESTAMP, Principal, build_tgt_as_req, exchange_as_req,
-    pa_enc_timestamp_with_confounder, process_as_rep,
+    KDC_ERR_PREAUTH_REQUIRED, KdcTransport, PA_ENC_TIMESTAMP, PA_ETYPE_INFO2, PA_REQ_ENC_PA_REP,
+    PreauthKeyInfo, Principal, build_tgt_as_req, default_password_salt, derive_password_reply_key,
+    exchange_as_req, login_tgt_with_keytab, login_tgt_with_password,
+    pa_enc_timestamp_with_confounder, process_as_rep, process_kdc_error, select_preauth_key_info,
 };
 use rskrb5::crypto::AesSha1Etype;
-use rskrb5::keytab::EncryptionKey;
+use rskrb5::keytab::{EncryptionKey, Entry as KeytabEntry, Keytab, Principal as KeytabPrincipal};
 
 const REPLY_KEY: &str = "9cad00bbc72d703258e911dc18e6d5487cf737bf67fd111f0c2463ad6033bf51";
 const SESSION_KEY: &str = "8845cbaccbf11cb9f467fd577ba51c70d73de6554980a05395bf319e18bdda07";
 const PREAUTH_CONFOUNDER: &str = "000102030405060708090a0b0c0d0e0f";
 const AS_REP_CONFOUNDER: &str = "101112131415161718191a1b1c1d1e1f";
 const TICKET_FLAGS: &[u8; 4] = &[0x40, 0x81, 0x00, 0x10];
+const TESTUSER_PASSWORD: &[u8] = b"passwordvalue";
+const TESTUSER_SALT: &str = "TEST.GOKRB5testuser1";
 
 #[test]
 fn builds_tgt_as_req_with_expected_fields() {
@@ -187,6 +191,69 @@ fn exchange_as_req_uses_transport_boundary() {
     assert_eq!(session.service, Principal::tgt_service("TEST.GOKRB5"));
 }
 
+#[test]
+fn parses_kdc_preauth_required_error_and_selects_etype_info2() {
+    let error_bytes = synthetic_preauth_required_error();
+
+    let error = process_kdc_error(&error_bytes).expect("KRB-ERROR decodes");
+
+    assert_eq!(error.error_code, KDC_ERR_PREAUTH_REQUIRED);
+    assert_eq!(
+        error.client,
+        Some(Principal::user("TEST.GOKRB5", "testuser1"))
+    );
+    assert_eq!(error.service, Principal::tgt_service("TEST.GOKRB5"));
+    assert_eq!(error.method_data.len(), 1);
+    assert_eq!(
+        error.preauth_key_info,
+        vec![PreauthKeyInfo {
+            etype: 18,
+            salt: Some(TESTUSER_SALT.to_owned()),
+            s2kparams: Some(vec![0, 0, 16, 0]),
+        }]
+    );
+
+    let selected = select_preauth_key_info(&error, &[17, 18]).expect("supported hint is selected");
+    assert_eq!(selected.etype, 18);
+    assert_eq!(
+        default_password_salt(&Principal::user("TEST.GOKRB5", "testuser1")),
+        TESTUSER_SALT
+    );
+}
+
+#[test]
+fn login_tgt_with_password_retries_after_preauth_required() {
+    let client = Principal::user("TEST.GOKRB5", "testuser1");
+    let options = AsReqOptions::new(timestamp(1_893_553_447), 0x1122_3344).with_etypes(vec![18]);
+    let key_info = password_key_info();
+    let reply_key = derive_password_reply_key(&client, TESTUSER_PASSWORD, &key_info)
+        .expect("password key derives");
+    let mut transport = PreauthTransport::new(reply_key, None);
+
+    let session =
+        login_tgt_with_password(&mut transport, client.clone(), TESTUSER_PASSWORD, options)
+            .expect("password login succeeds");
+
+    assert_eq!(transport.calls, 2);
+    assert_eq!(session.client, client);
+    assert_eq!(session.service, Principal::tgt_service("TEST.GOKRB5"));
+}
+
+#[test]
+fn login_tgt_with_keytab_retries_with_selected_keytab_kvno() {
+    let client = Principal::user("TEST.GOKRB5", "testuser1");
+    let options = AsReqOptions::new(timestamp(1_893_553_447), 0x1122_3344).with_etypes(vec![18]);
+    let keytab = keytab_with_reply_key(7);
+    let mut transport = PreauthTransport::new(reply_key(), Some(7));
+
+    let session = login_tgt_with_keytab(&mut transport, client.clone(), &keytab, options)
+        .expect("keytab login succeeds");
+
+    assert_eq!(transport.calls, 2);
+    assert_eq!(session.client, client);
+    assert_eq!(session.service, Principal::tgt_service("TEST.GOKRB5"));
+}
+
 struct MockTransport {
     expected_realm: String,
     expected_request: Vec<u8>,
@@ -200,6 +267,50 @@ impl KdcTransport for MockTransport {
         assert_eq!(request, self.expected_request.as_slice());
         self.called = true;
         Ok(self.response.clone())
+    }
+}
+
+struct PreauthTransport {
+    reply_key: EncryptionKey,
+    expected_pa_kvno: Option<u32>,
+    calls: usize,
+}
+
+impl PreauthTransport {
+    fn new(reply_key: EncryptionKey, expected_pa_kvno: Option<u32>) -> Self {
+        Self {
+            reply_key,
+            expected_pa_kvno,
+            calls: 0,
+        }
+    }
+}
+
+impl KdcTransport for PreauthTransport {
+    fn send(&mut self, realm: &str, request: &[u8]) -> Result<Vec<u8>, Error> {
+        assert_eq!(realm, "TEST.GOKRB5");
+        let decoded: rasn_kerberos::AsReq = rasn::der::decode(request).expect("AS-REQ decodes");
+        self.calls += 1;
+        match self.calls {
+            1 => {
+                let padata = decoded.0.padata.as_ref().expect("initial probe has padata");
+                assert_eq!(padata.len(), 1);
+                assert_eq!(padata[0].r#type, PA_REQ_ENC_PA_REP);
+                assert!(padata[0].value.as_ref().is_empty());
+                Ok(synthetic_preauth_required_error())
+            }
+            2 => {
+                assert_pa_enc_timestamp(&decoded, self.expected_pa_kvno);
+                let built = built_request_from_der(decoded, request);
+                Ok(synthetic_as_rep_with_reply_key(
+                    &built,
+                    built.nonce,
+                    built.service.clone(),
+                    &self.reply_key,
+                ))
+            }
+            _ => panic!("unexpected transport call {}", self.calls),
+        }
     }
 }
 
@@ -220,7 +331,15 @@ fn synthetic_as_rep_with_ticket_service(
     nonce: u32,
     ticket_service: Principal,
 ) -> Vec<u8> {
-    let reply_key = reply_key();
+    synthetic_as_rep_with_reply_key(request, nonce, ticket_service, &reply_key())
+}
+
+fn synthetic_as_rep_with_reply_key(
+    request: &BuiltAsReq,
+    nonce: u32,
+    ticket_service: Principal,
+    reply_key: &EncryptionKey,
+) -> Vec<u8> {
     let session_key = EncryptionKey {
         etype: 18,
         value: decode_hex(SESSION_KEY),
@@ -244,7 +363,7 @@ fn synthetic_as_rep_with_ticket_service(
         encrypted_pa_data: None,
     });
     let encrypted = encrypt_message(
-        &reply_key,
+        reply_key,
         &rasn::der::encode(&enc_part).expect("EncAsRepPart encodes"),
         AS_REP_ENCPART_USAGE,
         AS_REP_CONFOUNDER,
@@ -272,6 +391,90 @@ fn synthetic_as_rep_with_ticket_service(
         },
     });
     rasn::der::encode(&as_rep).expect("AS-REP encodes")
+}
+
+fn synthetic_preauth_required_error() -> Vec<u8> {
+    let etype_info2 = rasn_kerberos::EtypeInfo2::from([rasn_kerberos::EtypeInfo2Entry {
+        etype: 18,
+        salt: Some(kerberos_string(TESTUSER_SALT)),
+        s2kparams: Some(vec![0, 0, 16, 0].into()),
+    }]);
+    let method_data = rasn_kerberos::MethodData::from([rasn_kerberos::PaData {
+        r#type: PA_ETYPE_INFO2,
+        value: rasn::der::encode(&etype_info2)
+            .expect("ETYPE-INFO2 encodes")
+            .into(),
+    }]);
+    let error = rasn_kerberos::KrbError {
+        pvno: rasn::types::Integer::from(5),
+        msg_type: rasn::types::Integer::from(30),
+        ctime: None,
+        cusec: None,
+        stime: kerberos_time(1_893_553_440),
+        susec: rasn::types::Integer::from(0),
+        error_code: KDC_ERR_PREAUTH_REQUIRED,
+        crealm: Some(realm("TEST.GOKRB5")),
+        cname: Some(rasn_principal(&Principal::user("TEST.GOKRB5", "testuser1"))),
+        realm: realm("TEST.GOKRB5"),
+        sname: rasn_principal(&Principal::tgt_service("TEST.GOKRB5")),
+        e_text: Some(kerberos_string("Additional pre-authentication required")),
+        e_data: Some(
+            rasn::der::encode(&method_data)
+                .expect("METHOD-DATA encodes")
+                .into(),
+        ),
+    };
+    rasn::der::encode(&error).expect("KRB-ERROR encodes")
+}
+
+fn password_key_info() -> PreauthKeyInfo {
+    PreauthKeyInfo {
+        etype: 18,
+        salt: Some(TESTUSER_SALT.to_owned()),
+        s2kparams: Some(vec![0, 0, 16, 0]),
+    }
+}
+
+fn keytab_with_reply_key(kvno: u32) -> Keytab {
+    let mut keytab = Keytab::new();
+    keytab.entries_mut().push(KeytabEntry {
+        principal: KeytabPrincipal {
+            realm: "TEST.GOKRB5".to_owned(),
+            components: vec!["testuser1".to_owned()],
+            name_type: 1,
+        },
+        timestamp: 1_893_553_440,
+        kvno8: kvno as u8,
+        key: reply_key(),
+        kvno,
+    });
+    keytab
+}
+
+fn assert_pa_enc_timestamp(request: &rasn_kerberos::AsReq, expected_kvno: Option<u32>) {
+    let padata = request.0.padata.as_ref().expect("second AS-REQ has padata");
+    let pa_enc_timestamp = padata
+        .iter()
+        .find(|padata| padata.r#type == PA_ENC_TIMESTAMP)
+        .expect("second AS-REQ has PA-ENC-TIMESTAMP");
+    let encrypted: rasn_kerberos::EncryptedData =
+        rasn::der::decode(pa_enc_timestamp.value.as_ref()).expect("encrypted timestamp decodes");
+    assert_eq!(encrypted.etype, 18);
+    assert_eq!(encrypted.kvno, expected_kvno);
+    assert!(!encrypted.cipher.as_ref().is_empty());
+}
+
+fn built_request_from_der(message: rasn_kerberos::AsReq, der: &[u8]) -> BuiltAsReq {
+    let body = &message.0.req_body;
+    let client = principal_from_parts(&body.realm, body.cname.as_ref().expect("cname"));
+    let service = principal_from_parts(&body.realm, body.sname.as_ref().expect("sname"));
+    BuiltAsReq {
+        nonce: body.nonce,
+        message,
+        der: der.to_vec(),
+        client,
+        service,
+    }
 }
 
 fn reply_key() -> EncryptionKey {

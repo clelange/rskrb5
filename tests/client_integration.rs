@@ -1,14 +1,15 @@
 #![cfg(feature = "tokio")]
 
 use std::error::Error;
+use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rskrb5::client::{
-    AsReqOptions, KdcProtocol, Principal, TokioKdcTransport, build_tgt_as_req,
-    pa_enc_timestamp_with_confounder,
+    AsReqOptions, KdcProtocol, PreauthKeyInfo, Principal, TokioKdcTransport, build_tgt_as_req,
+    derive_password_reply_key, pa_enc_timestamp_with_confounder,
 };
 use rskrb5::crypto::AesSha1Etype;
-use rskrb5::keytab::EncryptionKey;
+use rskrb5::keytab::{EncryptionKey, Entry as KeytabEntry, Keytab, Principal as KeytabPrincipal};
 
 const REALM: &str = "TEST.GOKRB5";
 const USER: &str = "testuser1";
@@ -16,6 +17,7 @@ const PASSWORD: &[u8] = b"passwordvalue";
 const TESTUSER1_SALT: &[u8] = b"TEST.GOKRB5testuser1";
 const AES256_ETYPE: i32 = 18;
 const TESTUSER1_KVNO: u32 = 2;
+static INTEGRATION_LOCK: Mutex<()> = Mutex::new(());
 
 #[test]
 fn docker_mit_kdc_as_login_through_tcp_and_udp() -> Result<(), Box<dyn Error>> {
@@ -23,6 +25,7 @@ fn docker_mit_kdc_as_login_through_tcp_and_udp() -> Result<(), Box<dyn Error>> {
         eprintln!("skipping Docker KDC integration test; set INTEGRATION=1 to enable");
         return Ok(());
     }
+    let _guard = INTEGRATION_LOCK.lock().expect("integration test lock");
 
     runtime().block_on(async {
         let addr = kdc_addr();
@@ -42,6 +45,51 @@ fn docker_mit_kdc_as_login_through_tcp_and_udp() -> Result<(), Box<dyn Error>> {
             assert!(!session.session_key.value.is_empty());
             assert!(!session.ticket.is_empty());
             assert!(session.end_time > session.start_time);
+        }
+
+        Ok::<_, Box<dyn Error>>(())
+    })
+}
+
+#[test]
+fn docker_mit_kdc_negotiated_as_login_with_password_and_keytab() -> Result<(), Box<dyn Error>> {
+    if std::env::var("INTEGRATION").as_deref() != Ok("1") {
+        eprintln!("skipping Docker KDC integration test; set INTEGRATION=1 to enable");
+        return Ok(());
+    }
+    let _guard = INTEGRATION_LOCK.lock().expect("integration test lock");
+
+    runtime().block_on(async {
+        let addr = kdc_addr();
+        let transport = TokioKdcTransport::new().with_timeout(Duration::from_secs(10));
+        let keytab = testuser_keytab()?;
+
+        for protocol in [KdcProtocol::Udp, KdcProtocol::Tcp] {
+            eprintln!(
+                "running negotiated Docker KDC password AS login over {protocol:?} to {addr}"
+            );
+            let password_session = transport
+                .login_tgt_with_password(
+                    protocol,
+                    addr.as_str(),
+                    Principal::user(REALM, USER),
+                    PASSWORD,
+                    login_options(protocol, 1)?,
+                )
+                .await?;
+            assert_login_session(password_session);
+
+            eprintln!("running negotiated Docker KDC keytab AS login over {protocol:?} to {addr}");
+            let keytab_session = transport
+                .login_tgt_with_keytab(
+                    protocol,
+                    addr.as_str(),
+                    Principal::user(REALM, USER),
+                    &keytab,
+                    login_options(protocol, 2)?,
+                )
+                .await?;
+            assert_login_session(keytab_session);
         }
 
         Ok::<_, Box<dyn Error>>(())
@@ -79,12 +127,58 @@ fn build_login_request(
     Ok(build_tgt_as_req(Principal::user(REALM, USER), options)?)
 }
 
+fn login_options(protocol: KdcProtocol, sequence: u32) -> Result<AsReqOptions, Box<dyn Error>> {
+    let now = SystemTime::now();
+    let elapsed = now.duration_since(UNIX_EPOCH)?;
+    let nonce = (((elapsed.as_nanos() as u32) & 0x00ff_ffff) | (sequence << 24))
+        | match protocol {
+            KdcProtocol::Udp => 0x1000_0000,
+            KdcProtocol::Tcp => 0x2000_0000,
+        };
+    Ok(AsReqOptions::new(now, nonce)
+        .with_ticket_lifetime(Duration::from_secs(24 * 60 * 60))
+        .with_etypes(vec![AES256_ETYPE]))
+}
+
 fn testuser_reply_key() -> Result<EncryptionKey, Box<dyn Error>> {
     let etype = AesSha1Etype::Aes256;
     Ok(EncryptionKey {
         etype: etype.etype_id(),
         value: etype.string_to_key(PASSWORD, TESTUSER1_SALT, etype.default_s2kparams())?,
     })
+}
+
+fn testuser_keytab() -> Result<Keytab, Box<dyn Error>> {
+    let mut keytab = Keytab::new();
+    keytab.entries_mut().push(KeytabEntry {
+        principal: KeytabPrincipal {
+            realm: REALM.to_owned(),
+            components: vec![USER.to_owned()],
+            name_type: 1,
+        },
+        timestamp: 1_893_553_440,
+        kvno8: TESTUSER1_KVNO as u8,
+        key: derive_password_reply_key(
+            &Principal::user(REALM, USER),
+            PASSWORD,
+            &PreauthKeyInfo {
+                etype: AES256_ETYPE,
+                salt: Some(String::from_utf8(TESTUSER1_SALT.to_vec())?),
+                s2kparams: Some(vec![0, 0, 16, 0]),
+            },
+        )?,
+        kvno: TESTUSER1_KVNO,
+    });
+    Ok(keytab)
+}
+
+fn assert_login_session(session: rskrb5::client::AsRepSession) {
+    assert_eq!(session.client, Principal::user(REALM, USER));
+    assert_eq!(session.service, Principal::tgt_service(REALM));
+    assert_eq!(session.session_key.etype, AES256_ETYPE);
+    assert!(!session.session_key.value.is_empty());
+    assert!(!session.ticket.is_empty());
+    assert!(session.end_time > session.start_time);
 }
 
 fn confounder(protocol: KdcProtocol, elapsed: Duration) -> [u8; 16] {
