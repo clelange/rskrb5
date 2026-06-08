@@ -15,12 +15,14 @@ pure-Rust Kerberos library.
   Kerberos DER/data types.
 - The ASN.1 spike now checks 51 gokrb5 unit-test fixtures with separate decode
   and exact DER round-trip expectations for `rasn-kerberos` and `picky-krb`.
-- The first real modules are `keytab`, `krb5.conf`, and `ccache`: keytabs
-  parse, serialize, and select keys against gokrb5 fixtures; config parsing
-  covers libdefaults, realm host mappings, domain realm lookup, duration
-  parsing, and configured KDC/KPassword server lookup; ccache parsing covers
-  MIT file caches, opaque ticket bytes, server entry lookup, and exact fixture
-  round-trips.
+- The first real modules are `keytab`, `krb5.conf`, `ccache`, and `crypto`:
+  keytabs parse, serialize, and select keys against gokrb5 fixtures; config
+  parsing covers libdefaults, realm host mappings, domain realm lookup,
+  duration parsing, and configured KDC/KPassword server lookup; ccache parsing
+  covers MIT file caches, opaque ticket bytes, server entry lookup, and exact
+  fixture round-trips; crypto covers RFC3961 n-fold and RFC3962
+  AES128/AES256-CTS-HMAC-SHA1-96 string-to-key, AES-CTS, checksums, and
+  deterministic encrypted-message vectors.
 - `sspi-rs` is treated as a mature Negotiate/Kerberos collaboration or facade
   candidate.
 - `krb5-rs` is not used as a base implementation because the published crate is

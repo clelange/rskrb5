@@ -11,6 +11,7 @@ pub mod evaluation;
 
 pub mod ccache;
 pub mod config;
+pub mod crypto;
 pub mod keytab;
 
 /// Current crate-level result type.
@@ -39,4 +40,8 @@ pub enum Error {
     /// Credential cache parsing or serialization failed.
     #[error("ccache error: {0}")]
     CCache(#[from] ccache::Error),
+
+    /// Kerberos cryptographic operation failed.
+    #[error("crypto error: {0}")]
+    Crypto(#[from] crypto::Error),
 }

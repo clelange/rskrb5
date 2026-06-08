@@ -662,7 +662,10 @@ dependencies = [
 name = "rskrb5"
 version = "0.0.0"
 dependencies = [
+ "aes",
  "hex",
+ "hmac",
+ "pbkdf2",
  "picky-asn1",
  "picky-asn1-der",
  "picky-krb",
@@ -670,6 +673,7 @@ dependencies = [
  "rasn",
  "rasn-kerberos",
  "serde",
+ "sha1",
  "thiserror",
  "tokio",
 ]
