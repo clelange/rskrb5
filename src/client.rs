@@ -12,6 +12,8 @@ use std::collections::BTreeMap;
 use std::fmt;
 #[cfg(feature = "tokio")]
 use std::future::Future;
+#[cfg(feature = "tokio")]
+use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::ccache;
@@ -558,6 +560,53 @@ impl TokioClient {
         kerberos
     }
 
+    /// Export current TGT and service-ticket state to a fresh MIT ccache.
+    pub fn to_ccache(&self) -> Result<ccache::CCache, Error> {
+        let mut cache = ccache::CCache::new(ccache_principal(&self.client));
+        for credential in self.ccache_credentials()? {
+            cache.upsert_credential(credential);
+        }
+        Ok(cache)
+    }
+
+    /// Replace this client's non-configuration entries in an existing ccache.
+    ///
+    /// X-CACHECONF metadata and entries for other clients are preserved. The
+    /// ccache default principal is set to this client's principal.
+    pub fn update_ccache(&self, cache: &mut ccache::CCache) -> Result<(), Error> {
+        let client = ccache_principal(&self.client);
+        *cache.default_principal_mut() = client.clone();
+        cache.remove_entries_for_client(&client);
+        for credential in self.ccache_credentials()? {
+            cache.upsert_credential(credential);
+        }
+        Ok(())
+    }
+
+    /// Save current TGT and service-ticket state to a fresh ccache file.
+    pub fn save_ccache(&self, path: impl AsRef<Path>) -> Result<(), Error> {
+        self.to_ccache()?.save(path)?;
+        Ok(())
+    }
+
+    /// Load an existing ccache when present, update this client's entries, and save it.
+    ///
+    /// Missing files are created. Existing X-CACHECONF metadata and entries for
+    /// other clients are preserved.
+    pub fn update_ccache_file(&self, path: impl AsRef<Path>) -> Result<(), Error> {
+        let path = path.as_ref();
+        let mut cache = match ccache::CCache::load(path) {
+            Ok(cache) => cache,
+            Err(ccache::Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+                ccache::CCache::new(ccache_principal(&self.client))
+            }
+            Err(error) => return Err(error.into()),
+        };
+        self.update_ccache(&mut cache)?;
+        cache.save(path)?;
+        Ok(())
+    }
+
     fn new(
         config: Config,
         protocol: KdcProtocol,
@@ -765,6 +814,18 @@ impl TokioClient {
                 service_realm(&self.config, &service).unwrap_or_else(|| self.client.realm.clone());
         }
         service
+    }
+
+    fn ccache_credentials(&self) -> Result<Vec<ccache::Credential>, Error> {
+        let mut credentials =
+            Vec::with_capacity(usize::from(self.tgt.is_some()) + self.service_tickets.len());
+        if let Some(tgt) = &self.tgt {
+            credentials.push(tgt.to_ccache_credential()?);
+        }
+        for ticket in self.service_tickets.values() {
+            credentials.push(ticket.to_ccache_credential()?);
+        }
+        Ok(credentials)
     }
 }
 
@@ -2276,6 +2337,10 @@ pub enum Error {
     /// Configuration parsing or lookup failed.
     #[error("config error: {0}")]
     Config(#[from] crate::config::Error),
+
+    /// Credential cache operation failed.
+    #[error("ccache error: {0}")]
+    CCache(#[from] crate::ccache::Error),
 
     /// Random byte generation failed.
     #[error("random byte generation failed: {0}")]

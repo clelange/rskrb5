@@ -37,6 +37,12 @@ impl CCache {
         Self::parse(&bytes)
     }
 
+    /// Save this credential cache to a file.
+    pub fn save(&self, path: impl AsRef<Path>) -> Result<(), Error> {
+        std::fs::write(path.as_ref(), self.to_bytes()?)?;
+        Ok(())
+    }
+
     /// Parse credential cache bytes.
     pub fn parse(bytes: &[u8]) -> Result<Self, Error> {
         if bytes.len() < 2 {
@@ -135,6 +141,41 @@ impl CCache {
         &mut self.credentials
     }
 
+    /// Insert a credential, replacing an existing credential for the same
+    /// exact client and server principals.
+    pub fn upsert_credential(&mut self, credential: Credential) -> Option<Credential> {
+        if let Some(existing) = self.credentials.iter_mut().find(|existing| {
+            existing.client == credential.client && existing.server == credential.server
+        }) {
+            Some(std::mem::replace(existing, credential))
+        } else {
+            self.credentials.push(credential);
+            None
+        }
+    }
+
+    /// Remove non-configuration credentials for a client principal.
+    ///
+    /// X-CACHECONF entries are preserved because they carry cache metadata
+    /// rather than Kerberos tickets.
+    pub fn remove_entries_for_client(&mut self, client: &Principal) -> Vec<Credential> {
+        let mut removed = Vec::new();
+        let mut index = 0;
+        while index < self.credentials.len() {
+            if same_principal_identity(&self.credentials[index].client, client)
+                && !self.credentials[index]
+                    .server
+                    .realm
+                    .starts_with("X-CACHECONF")
+            {
+                removed.push(self.credentials.remove(index));
+            } else {
+                index += 1;
+            }
+        }
+        removed
+    }
+
     /// Return credentials excluding X-CACHECONF configuration entries.
     pub fn entries(&self) -> Vec<&Credential> {
         self.credentials
@@ -156,6 +197,10 @@ impl CCache {
             .iter()
             .find(|credential| credential.server.matches_components(components))
     }
+}
+
+fn same_principal_identity(left: &Principal, right: &Principal) -> bool {
+    left.realm == right.realm && left.components == right.components
 }
 
 /// Version 4 ccache header.

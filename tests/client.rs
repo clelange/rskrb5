@@ -480,10 +480,7 @@ fn renew_tgt_uses_transport_boundary() {
 #[test]
 fn tokio_client_returns_cached_service_ticket_from_ccache() {
     let tgt = sample_tgt_session();
-    let request = sample_tgs_request(&tgt);
-    let response = synthetic_tgs_rep(&request, request.nonce, &tgt.session_key);
-    let service_ticket =
-        process_tgs_rep(&request, &response, &tgt.session_key).expect("TGS-REP validates");
+    let service_ticket = sample_service_ticket_session(&tgt);
     let mut cache = ccache::CCache::new(ccache::Principal::new(
         "TEST.GOKRB5",
         1,
@@ -516,6 +513,124 @@ fn tokio_client_returns_cached_service_ticket_from_ccache() {
     assert_eq!(returned.service, service_ticket.service);
     assert_eq!(returned.session_key, service_ticket.session_key);
     assert_eq!(returned.ticket, service_ticket.ticket);
+}
+
+#[cfg(feature = "tokio")]
+#[test]
+fn tokio_client_exports_and_saves_ccache() {
+    let tgt = sample_tgt_session();
+    let service_ticket = sample_service_ticket_session(&tgt);
+    let mut client = TokioClient::from_tgt_session(Config::new(), KdcProtocol::Tcp, tgt.clone());
+    client.cache_service_ticket(service_ticket.clone());
+
+    let cache = client.to_ccache().expect("client exports ccache");
+    assert_eq!(cache.default_principal().realm, "TEST.GOKRB5");
+    assert_eq!(cache.default_principal().components, ["testuser1"]);
+    assert_eq!(cache.entries().len(), 2);
+    assert!(cache.contains_server(&["krbtgt", "TEST.GOKRB5"]));
+    assert!(cache.contains_server(&["HTTP", "host.test.gokrb5"]));
+
+    let reloaded = TokioClient::from_ccache(Config::new(), KdcProtocol::Tcp, &cache);
+    assert_eq!(reloaded.tgt_session().expect("TGT reloads"), &tgt);
+    assert_eq!(reloaded.cached_service_ticket_count(), 1);
+
+    let path = temp_client_ccache_file("export-save");
+    client.save_ccache(&path).expect("client saves ccache");
+    let loaded = ccache::CCache::load(&path).expect("saved ccache loads");
+    let _ = std::fs::remove_file(&path);
+    assert_eq!(loaded, cache);
+}
+
+#[cfg(feature = "tokio")]
+#[test]
+fn tokio_client_updates_ccache_file_without_duplicate_tickets() {
+    let tgt = sample_tgt_session();
+    let service_ticket = sample_service_ticket_session(&tgt);
+    let mut client = TokioClient::from_tgt_session(Config::new(), KdcProtocol::Tcp, tgt.clone());
+    client.cache_service_ticket(service_ticket.clone());
+
+    let mut old_tgt = tgt.to_ccache_credential().expect("TGT converts");
+    old_tgt.client.name_type = 0;
+    old_tgt.key.value = vec![0xaa];
+    let mut old_service = service_ticket
+        .to_ccache_credential()
+        .expect("service ticket converts");
+    old_service.client.name_type = 0;
+    old_service.key.value = vec![0xbb];
+    let config_entry = x_cacheconf_credential(&old_service.client);
+    let mut other_client = old_service.clone();
+    other_client.client = ccache::Principal::new("OTHER.REALM", 1, vec!["other".to_owned()]);
+    other_client.server = ccache::Principal::new(
+        "OTHER.REALM",
+        2,
+        vec!["HTTP".to_owned(), "other".to_owned()],
+    );
+
+    let mut existing = ccache::CCache::new(old_tgt.client.clone());
+    existing.credentials_mut().push(old_tgt);
+    existing.credentials_mut().push(config_entry.clone());
+    existing.credentials_mut().push(old_service);
+    existing.credentials_mut().push(other_client.clone());
+
+    let path = temp_client_ccache_file("update-file");
+    existing.save(&path).expect("existing ccache saves");
+    client
+        .update_ccache_file(&path)
+        .expect("client updates ccache file");
+    let updated = ccache::CCache::load(&path).expect("updated ccache loads");
+    let _ = std::fs::remove_file(&path);
+
+    assert_eq!(updated.default_principal().components, ["testuser1"]);
+    assert_eq!(
+        updated
+            .credentials()
+            .iter()
+            .filter(|credential| credential.client == config_entry.client
+                && credential.server.components == ["krb5_ccache_conf_data", "fast_avail"])
+            .count(),
+        1
+    );
+    assert!(updated.credentials().contains(&other_client));
+    assert_eq!(
+        matching_credentials(
+            &updated,
+            &ccache::Principal::new(
+                "TEST.GOKRB5",
+                2,
+                vec!["krbtgt".to_owned(), "TEST.GOKRB5".to_owned()]
+            )
+        )
+        .len(),
+        1
+    );
+    assert_eq!(
+        matching_credentials(
+            &updated,
+            &ccache::Principal::new(
+                "TEST.GOKRB5",
+                2,
+                vec!["HTTP".to_owned(), "host.test.gokrb5".to_owned()]
+            )
+        )
+        .len(),
+        1
+    );
+    assert_eq!(
+        updated
+            .get_entry(&["krbtgt", "TEST.GOKRB5"])
+            .expect("updated TGT exists")
+            .key
+            .value,
+        tgt.session_key.value
+    );
+    assert_eq!(
+        updated
+            .get_entry(&["HTTP", "host.test.gokrb5"])
+            .expect("updated service ticket exists")
+            .key
+            .value,
+        service_ticket.session_key.value
+    );
 }
 
 #[test]
@@ -696,6 +811,15 @@ fn sample_tgs_request(tgt: &rskrb5::client::AsRepSession) -> BuiltTgsReq {
 
 fn sample_service_principal() -> Principal {
     Principal::new("TEST.GOKRB5", 2, ["HTTP", "host.test.gokrb5"])
+}
+
+#[cfg(feature = "tokio")]
+fn sample_service_ticket_session(
+    tgt: &rskrb5::client::AsRepSession,
+) -> rskrb5::client::TgsRepSession {
+    let request = sample_tgs_request(tgt);
+    let response = synthetic_tgs_rep(&request, request.nonce, &tgt.session_key);
+    process_tgs_rep(&request, &response, &tgt.session_key).expect("TGS-REP validates")
 }
 
 fn synthetic_as_rep(request: &BuiltAsReq, nonce: u32) -> Vec<u8> {
@@ -1029,6 +1153,57 @@ fn runtime() -> tokio::runtime::Runtime {
         .enable_time()
         .build()
         .expect("runtime")
+}
+
+#[cfg(feature = "tokio")]
+fn x_cacheconf_credential(client: &ccache::Principal) -> ccache::Credential {
+    ccache::Credential {
+        client: client.clone(),
+        server: ccache::Principal::new(
+            "X-CACHECONF:",
+            0,
+            vec!["krb5_ccache_conf_data".to_owned(), "fast_avail".to_owned()],
+        ),
+        key: ccache::EncryptionKey {
+            etype: 0,
+            value: Vec::new(),
+        },
+        times: ccache::CredentialTimes::default(),
+        is_skey: false,
+        ticket_flags: [0; 4],
+        addresses: Vec::new(),
+        auth_data: Vec::new(),
+        ticket: b"yes".to_vec(),
+        second_ticket: Vec::new(),
+    }
+}
+
+#[cfg(feature = "tokio")]
+fn matching_credentials<'a>(
+    cache: &'a ccache::CCache,
+    server: &ccache::Principal,
+) -> Vec<&'a ccache::Credential> {
+    cache
+        .credentials()
+        .iter()
+        .filter(|credential| {
+            credential.client.realm == "TEST.GOKRB5"
+                && credential.client.components == ["testuser1"]
+                && credential.server == *server
+        })
+        .collect()
+}
+
+#[cfg(feature = "tokio")]
+fn temp_client_ccache_file(name: &str) -> std::path::PathBuf {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("current time is after unix epoch")
+        .as_nanos();
+    std::env::temp_dir().join(format!(
+        "rskrb5-client-{name}-{}-{nanos}",
+        std::process::id()
+    ))
 }
 
 fn decode_hex(input: &str) -> Vec<u8> {

@@ -1,5 +1,7 @@
 use pretty_assertions::assert_eq;
 use rskrb5::ccache::{CCache, Error};
+use std::path::PathBuf;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const CCACHE_TEST: &str = concat!(
     "0504000c00010008000000060000000000000001000000010000000b544553542e474f4b524235000000097465737475",
@@ -59,6 +61,19 @@ fn roundtrips_gokrb5_ccache_fixture() {
 }
 
 #[test]
+fn saves_and_loads_ccache_file() {
+    let bytes = decode_hex(CCACHE_TEST);
+    let cache = CCache::parse(&bytes).expect("ccache fixture parses");
+    let path = temp_file("save-load");
+
+    cache.save(&path).expect("ccache saves");
+    let loaded = CCache::load(&path).expect("ccache loads");
+    let _ = std::fs::remove_file(&path);
+
+    assert_eq!(loaded, cache);
+}
+
+#[test]
 fn gets_client_and_server_entries() {
     let bytes = decode_hex(CCACHE_TEST);
     let cache = CCache::parse(&bytes).expect("ccache fixture parses");
@@ -91,6 +106,41 @@ fn entries_filter_out_x_cacheconf_credentials() {
             .credentials()
             .iter()
             .any(|entry| entry.server.realm.starts_with("X-CACHECONF"))
+    );
+}
+
+#[test]
+fn upserts_and_removes_client_entries_without_dropping_config() {
+    let bytes = decode_hex(CCACHE_TEST);
+    let mut cache = CCache::parse(&bytes).expect("ccache fixture parses");
+    let mut client = cache.default_principal().clone();
+    client.name_type = 0;
+    let mut replacement = cache
+        .get_entry(&["HTTP", "host.test.gokrb5"])
+        .expect("HTTP service entry exists")
+        .clone();
+    replacement.key.value = vec![1, 2, 3, 4];
+
+    let replaced = cache.upsert_credential(replacement.clone());
+    assert!(replaced.is_some());
+    assert_eq!(cache.credentials().len(), 3);
+    assert_eq!(
+        cache
+            .get_entry(&["HTTP", "host.test.gokrb5"])
+            .expect("HTTP service entry still exists")
+            .key
+            .value,
+        replacement.key.value
+    );
+
+    let removed = cache.remove_entries_for_client(&client);
+    assert_eq!(removed.len(), 2);
+    assert_eq!(cache.credentials().len(), 1);
+    assert!(
+        cache.credentials()[0]
+            .server
+            .realm
+            .starts_with("X-CACHECONF")
     );
 }
 
@@ -134,4 +184,15 @@ fn hex_value(byte: u8) -> u8 {
         b'A'..=b'F' => byte - b'A' + 10,
         _ => panic!("invalid hex byte: {byte}"),
     }
+}
+
+fn temp_file(name: &str) -> PathBuf {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("current time is after unix epoch")
+        .as_nanos();
+    std::env::temp_dir().join(format!(
+        "rskrb5-ccache-{name}-{}-{nanos}",
+        std::process::id()
+    ))
 }
