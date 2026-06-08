@@ -517,6 +517,115 @@ fn tokio_client_returns_cached_service_ticket_from_ccache() {
 
 #[cfg(feature = "tokio")]
 #[test]
+fn tokio_client_from_ccache_ignores_other_client_credentials() {
+    let tgt = sample_tgt_session();
+    let service_ticket = sample_service_ticket_session(&tgt);
+    let default_client = ccache::Principal::new("TEST.GOKRB5", 1, vec!["testuser1".to_owned()]);
+    let other_client = ccache::Principal::new("OTHER.REALM", 1, vec!["other".to_owned()]);
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("current time is after unix epoch")
+        .as_secs() as u32;
+    let mut cache = ccache::CCache::new(default_client.clone());
+
+    let mut tgt_credential = tgt.to_ccache_credential().expect("TGT converts");
+    make_credential_current(&mut tgt_credential, now);
+    let mut service_credential = service_ticket
+        .to_ccache_credential()
+        .expect("service ticket converts");
+    make_credential_current(&mut service_credential, now);
+
+    let mut other_tgt = tgt_credential.clone();
+    other_tgt.client = other_client.clone();
+    other_tgt.server = ccache::Principal::new(
+        "OTHER.REALM",
+        2,
+        vec!["krbtgt".to_owned(), "OTHER.REALM".to_owned()],
+    );
+    other_tgt.key.value = vec![0xee];
+    other_tgt.times.end_time = now + 2 * 60 * 60;
+    other_tgt.times.renew_till = now + 3 * 60 * 60;
+
+    let mut other_service = service_credential.clone();
+    other_service.client = other_client;
+    other_service.server = ccache::Principal::new(
+        "OTHER.REALM",
+        2,
+        vec!["HTTP".to_owned(), "other.test.gokrb5".to_owned()],
+    );
+    other_service.key.value = vec![0xdd];
+
+    cache.credentials_mut().push(other_tgt);
+    cache
+        .credentials_mut()
+        .push(x_cacheconf_credential(&default_client));
+    cache.credentials_mut().push(tgt_credential);
+    cache.credentials_mut().push(other_service);
+    cache.credentials_mut().push(service_credential);
+
+    let mut client = TokioClient::from_ccache(Config::new(), KdcProtocol::Tcp, &cache);
+    let returned = runtime()
+        .block_on(client.get_service_ticket(sample_service_principal()))
+        .expect("default client's cached service ticket is returned");
+    let loaded_tgt = client.tgt_session().expect("TGT loaded");
+
+    assert_eq!(client.client_principal(), &tgt.client);
+    assert_eq!(loaded_tgt.client, tgt.client);
+    assert_eq!(loaded_tgt.service, tgt.service);
+    assert_eq!(loaded_tgt.session_key, tgt.session_key);
+    assert_eq!(client.cached_service_ticket_count(), 1);
+    assert_eq!(returned.session_key, service_ticket.session_key);
+}
+
+#[cfg(feature = "tokio")]
+#[test]
+fn tokio_client_from_ccache_keeps_freshest_duplicate_service_ticket() {
+    let tgt = sample_tgt_session();
+    let mut fresh_service_ticket = sample_service_ticket_session(&tgt);
+    let mut older_service_ticket = fresh_service_ticket.clone();
+    fresh_service_ticket.session_key.value = vec![0xf1];
+    fresh_service_ticket.ticket = b"fresh-service-ticket".to_vec();
+    older_service_ticket.session_key.value = vec![0x0d];
+    older_service_ticket.ticket = b"older-service-ticket".to_vec();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("current time is after unix epoch")
+        .as_secs() as u32;
+
+    let mut cache = ccache::CCache::new(ccache::Principal::new(
+        "TEST.GOKRB5",
+        1,
+        vec!["testuser1".to_owned()],
+    ));
+    let mut tgt_credential = tgt.to_ccache_credential().expect("TGT converts");
+    make_credential_current(&mut tgt_credential, now);
+    let mut fresh_credential = fresh_service_ticket
+        .to_ccache_credential()
+        .expect("fresh service ticket converts");
+    make_credential_current(&mut fresh_credential, now);
+    fresh_credential.times.end_time = now + 2 * 60 * 60;
+    let mut older_credential = older_service_ticket
+        .to_ccache_credential()
+        .expect("older service ticket converts");
+    make_credential_current(&mut older_credential, now);
+    older_credential.times.end_time = now + 60;
+
+    cache.credentials_mut().push(tgt_credential);
+    cache.credentials_mut().push(fresh_credential);
+    cache.credentials_mut().push(older_credential);
+
+    let mut client = TokioClient::from_ccache(Config::new(), KdcProtocol::Tcp, &cache);
+    let returned = runtime()
+        .block_on(client.get_service_ticket(sample_service_principal()))
+        .expect("freshest cached service ticket is returned");
+
+    assert_eq!(client.cached_service_ticket_count(), 1);
+    assert_eq!(returned.session_key, fresh_service_ticket.session_key);
+    assert_eq!(returned.ticket, fresh_service_ticket.ticket);
+}
+
+#[cfg(feature = "tokio")]
+#[test]
 fn tokio_client_exports_and_saves_ccache() {
     let tgt = sample_tgt_session();
     let service_ticket = sample_service_ticket_session(&tgt);

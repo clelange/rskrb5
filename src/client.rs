@@ -543,6 +543,9 @@ impl TokioClient {
         let client = client_principal_from_ccache(cache.default_principal());
         let mut kerberos = Self::new(config, protocol, client, None);
         for credential in cache.entries() {
+            if !same_ccache_client_identity(&credential.client, cache.default_principal()) {
+                continue;
+            }
             let session = ccache_credential_session(credential);
             if is_tgt_principal(&session.service) {
                 kerberos.tgt = freshest_session(kerberos.tgt.take(), session);
@@ -662,8 +665,10 @@ impl TokioClient {
 
     /// Insert or replace a service ticket in the cache.
     pub fn cache_service_ticket(&mut self, ticket: TgsRepSession) {
-        self.service_tickets
-            .insert(service_cache_key(&ticket.service), ticket);
+        let key = service_cache_key(&ticket.service);
+        if let Some(ticket) = freshest_session(self.service_tickets.remove(&key), ticket) {
+            self.service_tickets.insert(key, ticket);
+        }
     }
 
     /// Perform AS login with the configured long-term credential.
@@ -2846,6 +2851,11 @@ fn ccache_principal(value: &Principal) -> ccache::Principal {
         value.name_type,
         value.components.clone(),
     )
+}
+
+#[cfg(feature = "tokio")]
+fn same_ccache_client_identity(left: &ccache::Principal, right: &ccache::Principal) -> bool {
+    left.realm == right.realm && left.components == right.components
 }
 
 #[cfg(feature = "tokio")]
