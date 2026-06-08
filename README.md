@@ -23,12 +23,13 @@ pure-Rust Kerberos library.
   covers MIT file caches, opaque ticket bytes, server entry lookup, and exact
   fixture round-trips; crypto covers RFC3961 n-fold and RFC3962
   AES128/AES256-CTS-HMAC-SHA1-96 string-to-key, AES-CTS, checksums, and
-  deterministic encrypted-message vectors; client AS exchange primitives cover
-  deterministic TGT AS-REQ construction, KRB-ERROR preauthentication
+  deterministic encrypted-message vectors; client AS/TGS exchange primitives
+  cover deterministic TGT AS-REQ construction, KRB-ERROR preauthentication
   negotiation, PA-ENC-TIMESTAMP encryption, password/keytab TGT login helpers,
-  a KDC transport boundary, Tokio TCP/UDP KDC transport, AS-REP encrypted-part
-  decryption and validation, Docker MIT KDC AS login coverage, and ccache
-  credential export; service validation covers
+  PA-TGS-REQ service-ticket acquisition, a KDC transport boundary, Tokio
+  TCP/UDP KDC transport, AS-REP and TGS-REP encrypted-part decryption and
+  validation, Docker MIT KDC AS/TGS login coverage, and ccache credential
+  export; service validation covers
   gokrb5-generated AP-REQ fixtures, service-ticket decryption, authenticator
   decryption, client matching, ticket time checks, clock skew, replay, and
   address-required behavior, plus AP-REP mutual-auth reply generation and

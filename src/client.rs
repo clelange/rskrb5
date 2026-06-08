@@ -1,10 +1,10 @@
-//! AS exchange client-side primitives.
+//! Kerberos client-side exchange primitives.
 //!
-//! This module covers the first client slice needed for gokrb5-compatible
-//! login flows: deterministic AS-REQ construction, PA-ENC-TIMESTAMP
-//! preauthentication, a KDC transport boundary, and AS-REP encrypted-part
-//! validation. Live KDC discovery and Tokio transport adapters sit above this
-//! runtime-neutral core.
+//! This module covers the first client slices needed for gokrb5-compatible
+//! login flows: deterministic AS-REQ and TGS-REQ construction,
+//! PA-ENC-TIMESTAMP and PA-TGS-REQ preauthentication, a KDC transport
+//! boundary, and encrypted-part validation. Live KDC discovery and Tokio
+//! transport adapters sit above this runtime-neutral core.
 
 #[cfg(feature = "tokio")]
 use std::future::Future;
@@ -22,11 +22,15 @@ use tokio::net::{TcpStream, ToSocketAddrs, UdpSocket};
 const KRB5_PVNO: i32 = 5;
 const KRB_AS_REQ_MSG_TYPE: i32 = 10;
 const KRB_AS_REP_MSG_TYPE: i32 = 11;
+const KRB_TGS_REQ_MSG_TYPE: i32 = 12;
+const KRB_TGS_REP_MSG_TYPE: i32 = 13;
+const KRB_AP_REQ_MSG_TYPE: i32 = 14;
 const KRB_ERROR_MSG_TYPE: i32 = 30;
 const KRB_NT_PRINCIPAL: i32 = 1;
 const KRB_NT_SRV_INST: i32 = 2;
 const DEFAULT_TICKET_LIFETIME: Duration = Duration::from_secs(24 * 60 * 60);
 const DEFAULT_TKT_ENCTYPES: &[i32] = &[18, 17];
+const DEFAULT_TGS_ENCTYPES: &[i32] = DEFAULT_TKT_ENCTYPES;
 #[cfg(feature = "tokio")]
 const DEFAULT_KDC_TIMEOUT: Duration = Duration::from_secs(5);
 #[cfg(feature = "tokio")]
@@ -36,6 +40,9 @@ const MAX_UDP_DATAGRAM: usize = 65_507;
 
 /// PA-ENC-TIMESTAMP preauthentication type.
 pub const PA_ENC_TIMESTAMP: i32 = 2;
+
+/// PA-TGS-REQ preauthentication type.
+pub const PA_TGS_REQ: i32 = 1;
 
 /// PA-ETYPE-INFO preauthentication hint type.
 pub const PA_ETYPE_INFO: i32 = 11;
@@ -54,6 +61,15 @@ pub const AS_REQ_PA_ENC_TIMESTAMP_USAGE: u32 = 1;
 
 /// Key usage for AS-REP encrypted parts.
 pub const AS_REP_ENCPART_USAGE: u32 = 3;
+
+/// Key usage for the TGS-REQ request-body checksum inside the authenticator.
+pub const TGS_REQ_AUTHENTICATOR_CHECKSUM_USAGE: u32 = 6;
+
+/// Key usage for the PA-TGS-REQ AP-REQ authenticator.
+pub const TGS_REQ_AUTHENTICATOR_USAGE: u32 = 7;
+
+/// Key usage for TGS-REP encrypted parts when encrypted with the TGT session key.
+pub const TGS_REP_ENCPART_SESSION_KEY_USAGE: u32 = 8;
 
 /// Kerberos principal identity used by client exchanges.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -176,6 +192,76 @@ impl AsReqOptions {
     }
 }
 
+/// Options for constructing a TGS-REQ.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TgsReqOptions {
+    /// Client clock used for request time fields.
+    pub now: SystemTime,
+    /// Requested service-ticket lifetime.
+    pub ticket_lifetime: Duration,
+    /// Optional renewable lifetime.
+    pub renew_lifetime: Option<Duration>,
+    /// Client nonce. Callers are responsible for supplying fresh randomness.
+    pub nonce: u32,
+    /// Requested response encryption types in preference order.
+    pub etypes: Vec<i32>,
+    /// KDC option bit string as stored in krb5.conf.
+    pub kdc_option_bits: u32,
+}
+
+impl TgsReqOptions {
+    /// Construct options with gokrb5-compatible AES defaults.
+    pub fn new(now: SystemTime, nonce: u32) -> Self {
+        Self {
+            now,
+            ticket_lifetime: DEFAULT_TICKET_LIFETIME,
+            renew_lifetime: None,
+            nonce,
+            etypes: DEFAULT_TGS_ENCTYPES.to_vec(),
+            kdc_option_bits: 0,
+        }
+    }
+
+    /// Construct options from parsed `[libdefaults]`.
+    pub fn from_libdefaults(now: SystemTime, nonce: u32, defaults: &LibDefaults) -> Self {
+        let mut options = Self::new(now, nonce);
+        options.ticket_lifetime = defaults.ticket_lifetime;
+        options.renew_lifetime =
+            (defaults.renew_lifetime != Duration::ZERO).then_some(defaults.renew_lifetime);
+        options.etypes = if defaults.default_tgs_enctype_ids.is_empty() {
+            DEFAULT_TGS_ENCTYPES.to_vec()
+        } else {
+            defaults.default_tgs_enctype_ids.clone()
+        };
+        options.kdc_option_bits = defaults.kdc_default_options;
+        options
+    }
+
+    /// Override the requested service-ticket lifetime.
+    pub fn with_ticket_lifetime(mut self, ticket_lifetime: Duration) -> Self {
+        self.ticket_lifetime = ticket_lifetime;
+        self
+    }
+
+    /// Override the renewable lifetime.
+    pub fn with_renew_lifetime(mut self, renew_lifetime: Option<Duration>) -> Self {
+        self.renew_lifetime = renew_lifetime;
+        self
+    }
+
+    /// Override requested response encryption types.
+    pub fn with_etypes(mut self, etypes: impl Into<Vec<i32>>) -> Self {
+        self.etypes = etypes.into();
+        self
+    }
+
+    /// Override KDC options using the raw krb5.conf bit representation.
+    pub fn with_kdc_option_bits(mut self, kdc_option_bits: u32) -> Self {
+        self.kdc_option_bits = kdc_option_bits;
+        self
+    }
+}
+
 /// Encoded AS-REQ plus validation metadata needed when processing the AS-REP.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BuiltAsReq {
@@ -187,6 +273,23 @@ pub struct BuiltAsReq {
     pub client: Principal,
     /// Request service principal.
     pub service: Principal,
+    /// Request nonce.
+    pub nonce: u32,
+}
+
+/// Encoded TGS-REQ plus validation metadata needed when processing the TGS-REP.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BuiltTgsReq {
+    /// ASN.1 TGS-REQ message.
+    pub message: rasn_kerberos::TgsReq,
+    /// DER-encoded TGS-REQ bytes suitable for KDC transport.
+    pub der: Vec<u8>,
+    /// Request client principal.
+    pub client: Principal,
+    /// Requested service principal.
+    pub service: Principal,
+    /// Realm contacted for the TGS exchange.
+    pub kdc_realm: String,
     /// Request nonce.
     pub nonce: u32,
 }
@@ -243,6 +346,12 @@ impl AsRepSession {
         })
     }
 }
+
+/// Successful TGS-REP processing result.
+///
+/// The ticket/session material is the same shape as an AS-REP result and can
+/// be written to the existing ccache credential representation.
+pub type TgsRepSession = AsRepSession;
 
 /// Runtime-neutral boundary for KDC request/response transport.
 pub trait KdcTransport {
@@ -426,6 +535,21 @@ impl TokioKdcTransport {
     {
         let response = self.send(protocol, addr, &request.der).await?;
         process_as_rep(request, &response, reply_key)
+    }
+
+    /// Send a TGS-REQ through Tokio transport and process the returned TGS-REP.
+    pub async fn exchange_tgs_req<A>(
+        &self,
+        protocol: KdcProtocol,
+        addr: A,
+        request: &BuiltTgsReq,
+        tgs_session_key: &EncryptionKey,
+    ) -> Result<TgsRepSession, Error>
+    where
+        A: ToSocketAddrs,
+    {
+        let response = self.send(protocol, addr, &request.der).await?;
+        process_tgs_rep(request, &response, tgs_session_key)
     }
 
     /// Perform a TGT AS login using password credentials and KDC preauth hints.
@@ -614,6 +738,120 @@ pub fn build_preauthenticated_tgt_as_req(
     build_tgt_as_req(client, options)
 }
 
+/// Build a TGS-REQ for a service ticket using the supplied TGT session.
+pub fn build_tgs_req(
+    tgt: &AsRepSession,
+    service: Principal,
+    options: TgsReqOptions,
+) -> Result<BuiltTgsReq, Error> {
+    let (timestamp, cusec) = current_preauth_time()?;
+    let etype = AesSha1Etype::from_etype_id(tgt.session_key.etype)
+        .ok_or(Error::UnsupportedEtype(tgt.session_key.etype))?;
+    let mut confounder = vec![0; etype.confounder_len()];
+    getrandom::fill(&mut confounder)?;
+    build_tgs_req_with_confounder(tgt, service, options, timestamp, cusec, &confounder)
+}
+
+/// Build a TGS-REQ with an explicit authenticator timestamp and confounder.
+pub fn build_tgs_req_with_confounder(
+    tgt: &AsRepSession,
+    service: Principal,
+    options: TgsReqOptions,
+    timestamp: SystemTime,
+    cusec: u32,
+    confounder: &[u8],
+) -> Result<BuiltTgsReq, Error> {
+    if options.etypes.is_empty() {
+        return Err(Error::EmptyEtypes);
+    }
+
+    let ticket = decode::<rasn_kerberos::Ticket>("Ticket", &tgt.ticket)?;
+    let till = options
+        .now
+        .checked_add(options.ticket_lifetime)
+        .ok_or(Error::TimeOverflow)?;
+    let renew_till = options
+        .renew_lifetime
+        .map(|duration| options.now.checked_add(duration).ok_or(Error::TimeOverflow))
+        .transpose()?;
+    let cname = principal_to_rasn(&tgt.client)?;
+    let req_body = rasn_kerberos::KdcReqBody {
+        kdc_options: kdc_options_from_bits(options.kdc_option_bits),
+        cname: Some(cname.clone()),
+        realm: kerberos_string(&service.realm)?,
+        sname: Some(principal_to_rasn(&service)?),
+        from: None,
+        till: kerberos_time_from_system_time(till)?,
+        rtime: renew_till.map(kerberos_time_from_system_time).transpose()?,
+        nonce: options.nonce,
+        etype: options.etypes,
+        addresses: None,
+        enc_authorization_data: None,
+        additional_tickets: None,
+    };
+    let req_body_der = encode("TGS-REQ-BODY", &req_body)?;
+    let etype = AesSha1Etype::from_etype_id(tgt.session_key.etype)
+        .ok_or(Error::UnsupportedEtype(tgt.session_key.etype))?;
+    let checksum = etype.checksum(
+        &tgt.session_key.value,
+        &req_body_der,
+        TGS_REQ_AUTHENTICATOR_CHECKSUM_USAGE,
+    )?;
+    let authenticator = rasn_kerberos::Authenticator {
+        authenticator_vno: rasn::types::Integer::from(KRB5_PVNO),
+        crealm: ticket.realm.clone(),
+        cname,
+        cksum: Some(rasn_kerberos::Checksum {
+            r#type: etype.checksum_type_id(),
+            checksum: checksum.into(),
+        }),
+        cusec: rasn::types::Integer::from(cusec),
+        ctime: kerberos_time_from_system_time(timestamp)?,
+        subkey: None,
+        seq_number: None,
+        authorization_data: None,
+    };
+    let authenticator_der = encode("Authenticator", &authenticator)?;
+    let cipher = etype.encrypt_message_with_confounder(
+        &tgt.session_key.value,
+        &authenticator_der,
+        TGS_REQ_AUTHENTICATOR_USAGE,
+        confounder,
+    )?;
+    let authenticator_kvno = ticket.enc_part.kvno;
+    let ap_req = rasn_kerberos::ApReq {
+        pvno: rasn::types::Integer::from(KRB5_PVNO),
+        msg_type: rasn::types::Integer::from(KRB_AP_REQ_MSG_TYPE),
+        ap_options: rasn_kerberos::ApOptions(zero_kerberos_flags()),
+        ticket,
+        authenticator: rasn_kerberos::EncryptedData {
+            etype: tgt.session_key.etype,
+            kvno: authenticator_kvno,
+            cipher: cipher.into(),
+        },
+    };
+    let padata = rasn_kerberos::PaData {
+        r#type: PA_TGS_REQ,
+        value: encode("PA-TGS-REQ AP-REQ", &ap_req)?.into(),
+    };
+    let message = rasn_kerberos::TgsReq(rasn_kerberos::KdcReq {
+        pvno: rasn::types::Integer::from(KRB5_PVNO),
+        msg_type: rasn::types::Integer::from(KRB_TGS_REQ_MSG_TYPE),
+        padata: Some(vec![padata]),
+        req_body,
+    });
+    let der = encode("TGS-REQ", &message)?;
+
+    Ok(BuiltTgsReq {
+        message,
+        der,
+        client: tgt.client.clone(),
+        kdc_realm: service.realm.clone(),
+        service,
+        nonce: options.nonce,
+    })
+}
+
 /// Send an AS-REQ through a transport and process the returned AS-REP.
 pub fn exchange_as_req<T>(
     transport: &mut T,
@@ -625,6 +863,19 @@ where
 {
     let response = transport.send(&request.client.realm, &request.der)?;
     process_as_rep(request, &response, reply_key)
+}
+
+/// Send a TGS-REQ through a transport and process the returned TGS-REP.
+pub fn exchange_tgs_req<T>(
+    transport: &mut T,
+    request: &BuiltTgsReq,
+    tgs_session_key: &EncryptionKey,
+) -> Result<TgsRepSession, Error>
+where
+    T: KdcTransport + ?Sized,
+{
+    let response = transport.send(&request.kdc_realm, &request.der)?;
+    process_tgs_rep(request, &response, tgs_session_key)
 }
 
 /// Perform a TGT AS login using password credentials and KDC preauth hints.
@@ -711,6 +962,83 @@ pub fn process_as_rep(
         AS_REP_ENCPART_USAGE,
     )?;
     let enc_part = decode_as_rep_enc_part(&plaintext)?;
+
+    if enc_part.nonce != request.nonce {
+        return Err(Error::NonceMismatch {
+            expected: request.nonce,
+            actual: enc_part.nonce,
+        });
+    }
+
+    let enc_part_service = principal_from_parts(&enc_part.srealm, &enc_part.sname)?;
+    if !principal_matches(&enc_part_service, &request.service) {
+        return Err(Error::ServicePrincipalMismatch {
+            expected: request.service.name(),
+            actual: enc_part_service.name(),
+        });
+    }
+
+    let ticket_service = principal_from_parts(&kdc_rep.ticket.realm, &kdc_rep.ticket.sname)?;
+    if !principal_matches(&ticket_service, &enc_part_service) {
+        return Err(Error::ServicePrincipalMismatch {
+            expected: enc_part_service.name(),
+            actual: ticket_service.name(),
+        });
+    }
+
+    let ticket = encode("Ticket", &kdc_rep.ticket)?;
+    Ok(AsRepSession {
+        client,
+        service: enc_part_service,
+        session_key: encryption_key_from_rasn(&enc_part.key),
+        ticket,
+        ticket_flags: ticket_flags_to_bytes(&enc_part.flags),
+        auth_time: system_time_from_kerberos_time(&enc_part.auth_time)?,
+        start_time: system_time_from_kerberos_time(
+            enc_part.start_time.as_ref().unwrap_or(&enc_part.auth_time),
+        )?,
+        end_time: system_time_from_kerberos_time(&enc_part.end_time)?,
+        renew_till: enc_part
+            .renew_till
+            .as_ref()
+            .map(system_time_from_kerberos_time)
+            .transpose()?,
+    })
+}
+
+/// Decrypt and validate a TGS-REP against the original TGS-REQ.
+pub fn process_tgs_rep(
+    request: &BuiltTgsReq,
+    bytes: &[u8],
+    tgs_session_key: &EncryptionKey,
+) -> Result<TgsRepSession, Error> {
+    let tgs_rep = decode::<rasn_kerberos::TgsRep>("TGS-REP", bytes)?;
+    let kdc_rep = &tgs_rep.0;
+    validate_integer("pvno", &kdc_rep.pvno, KRB5_PVNO)?;
+    validate_integer("msg-type", &kdc_rep.msg_type, KRB_TGS_REP_MSG_TYPE)?;
+
+    let client = principal_from_parts(&kdc_rep.crealm, &kdc_rep.cname)?;
+    if !principal_matches(&client, &request.client) {
+        return Err(Error::ClientPrincipalMismatch {
+            expected: request.client.name(),
+            actual: client.name(),
+        });
+    }
+
+    if tgs_session_key.etype != kdc_rep.enc_part.etype {
+        return Err(Error::KeyEtypeMismatch {
+            key_etype: tgs_session_key.etype,
+            encrypted_data_etype: kdc_rep.enc_part.etype,
+        });
+    }
+
+    let plaintext = decrypt_encrypted_data(
+        kdc_rep.enc_part.etype,
+        &tgs_session_key.value,
+        kdc_rep.enc_part.cipher.as_ref(),
+        TGS_REP_ENCPART_SESSION_KEY_USAGE,
+    )?;
+    let enc_part = decode_tgs_rep_enc_part(&plaintext)?;
 
     if enc_part.nonce != request.nonce {
         return Err(Error::NonceMismatch {
@@ -877,7 +1205,7 @@ pub fn select_keytab_reply_key(
     Ok((key.clone(), kvno))
 }
 
-/// AS exchange client error.
+/// Kerberos client exchange error.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// ASN.1 DER decode failed.
@@ -918,26 +1246,26 @@ pub enum Error {
     },
 
     /// No ticket encryption types were requested.
-    #[error("AS-REQ must request at least one encryption type")]
+    #[error("ticket request must request at least one encryption type")]
     EmptyEtypes,
 
     /// The encrypted data etype is not implemented yet.
     #[error("unsupported encryption type: {0}")]
     UnsupportedEtype(i32),
 
-    /// A reply key did not match the AS-REP encrypted data etype.
+    /// A key did not match the encrypted KDC reply data etype.
     #[error(
-        "reply key etype {key_etype} does not match AS-REP encrypted data etype {encrypted_data_etype}"
+        "key etype {key_etype} does not match KDC-REP encrypted data etype {encrypted_data_etype}"
     )]
     KeyEtypeMismatch {
         /// Reply key encryption type.
         key_etype: i32,
-        /// AS-REP encrypted data encryption type.
+        /// KDC-REP encrypted data encryption type.
         encrypted_data_etype: i32,
     },
 
-    /// The AS-REP client principal did not match the AS-REQ.
-    #[error("AS-REP client {actual} does not match requested client {expected}")]
+    /// The KDC-REP client principal did not match the KDC-REQ.
+    #[error("KDC-REP client {actual} does not match requested client {expected}")]
     ClientPrincipalMismatch {
         /// Expected request client.
         expected: String,
@@ -945,8 +1273,8 @@ pub enum Error {
         actual: String,
     },
 
-    /// The AS-REP service principal did not match the AS-REQ.
-    #[error("AS-REP service {actual} does not match requested service {expected}")]
+    /// The KDC-REP service principal did not match the KDC-REQ.
+    #[error("KDC-REP service {actual} does not match requested service {expected}")]
     ServicePrincipalMismatch {
         /// Expected request service.
         expected: String,
@@ -954,8 +1282,8 @@ pub enum Error {
         actual: String,
     },
 
-    /// The AS-REP nonce did not match the AS-REQ nonce.
-    #[error("AS-REP nonce {actual} does not match AS-REQ nonce {expected}")]
+    /// The KDC-REP nonce did not match the KDC-REQ nonce.
+    #[error("KDC-REP nonce {actual} does not match KDC-REQ nonce {expected}")]
     NonceMismatch {
         /// Expected request nonce.
         expected: u32,
@@ -1180,6 +1508,10 @@ fn decode_as_rep_enc_part(bytes: &[u8]) -> Result<rasn_kerberos::EncKdcRepPart, 
     }
 }
 
+fn decode_tgs_rep_enc_part(bytes: &[u8]) -> Result<rasn_kerberos::EncKdcRepPart, Error> {
+    decode::<rasn_kerberos::EncTgsRepPart>("EncTgsRepPart", bytes).map(|enc_part| enc_part.0)
+}
+
 #[cfg(feature = "tokio")]
 fn non_empty_kdc_response(response: Vec<u8>) -> Result<Vec<u8>, Error> {
     if response.is_empty() {
@@ -1315,6 +1647,10 @@ fn kdc_options_from_bits(bits: u32) -> rasn_kerberos::KdcOptions {
     rasn_kerberos::KdcOptions(rasn_kerberos::KerberosFlags::from_slice(
         &bits.to_be_bytes(),
     ))
+}
+
+fn zero_kerberos_flags() -> rasn_kerberos::KerberosFlags {
+    rasn_kerberos::KerberosFlags::repeat(false, 32)
 }
 
 fn ticket_flags_to_bytes(flags: &rasn_kerberos::TicketFlags) -> [u8; 4] {
