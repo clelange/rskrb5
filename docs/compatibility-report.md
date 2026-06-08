@@ -2,6 +2,35 @@
 
 This report is generated from `rskrb5::evaluation` and captures the decision gate before implementing a standalone Kerberos library.
 
+## gokrb5 v8 Contract
+
+| Area | gokrb5 tests | Gate | Porting note |
+|---|---|---|---|
+| ASN.1 / DER messages | messages/*_test.go, types/*_test.go, kadmin/*_test.go | unit | Translate fixture round-trip tests first; reuse permissive ASN.1 crates where they pass. |
+| Kerberos crypto vectors | crypto/**/*_test.go | unit | Use gokrb5/RFC vectors for string-to-key, checksum, encrypt, decrypt, and key usage behavior. |
+| keytab | keytab/keytab_test.go | unit | Parse/write keytabs and select keys by service principal, realm, kvno, and enctype. |
+| ccache | credentials/ccache_test.go, credentials/ccache_integration_test.go | unit, INTEGRATION=1 | Implement MIT file ccache parsing/writing plus KDC-issued credential capture. |
+| krb5.conf and host config | config/*_test.go | unit | Preserve gokrb5 parsing semantics, libdefaults, realm lookup, DNS flags, and host mappings. |
+| AS/TGS client flows | client/*_test.go | unit, INTEGRATION=1, TESTAD=1 | Cover password/keytab login, referrals, DNS KDC lookup, renewal, and service tickets. |
+| AP-REQ service validation | service/*_test.go, messages/Ticket_test.go | unit, INTEGRATION=1 | Decrypt tickets, validate authenticators, enforce clock skew, and provide replay cache hooks. |
+| GSSAPI/SPNEGO HTTP | gssapi/*_test.go, spnego/*_test.go | unit, INTEGRATION=1 | Implement tokens, wrap/MIC behavior, HTTP Negotiate helpers, and Tower/Axum adapters. |
+| PAC / NDR | pac/*_test.go, messages/Ticket_test.go | unit, TESTAD=1 | Parse PAC buffers, NDR validation info, claims, UPN/DNS info, and checksum verification. |
+| Docker KDC integration | client/*_integration_test.go, credentials/*_integration_test.go, spnego/http_test.go | INTEGRATION=1, TESTPRIVILEGED=1, TESTAD=1 | Reuse gokrb5 MIT KDC, DNS, short-ticket, referral-domain, HTTP, and AD gates where possible. |
+
+## Candidate Decision Matrix
+
+| Candidate | asn1 | crypto | keytab | ccache | conf | client | service | spnego | pac | docker |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| rasn-kerberos | partial | no | no | no | no | no | no | no | no | no |
+| picky-krb | partial | no | no | no | no | no | no | no | partial | no |
+| sspi-rs | partial | partial | partial | partial | partial | partial | partial | partial | partial | partial |
+| kerberos-parser | partial | no | no | no | no | no | no | no | no | no |
+| krb5-rs | no | no | no | no | no | no | no | no | no | no |
+| kerbeiros/kerberos_* | excluded | excluded | excluded | excluded | no | excluded | no | no | no | no |
+| kenobi | no | no | no | no | no | partial | no | partial | no | partial |
+| axum-negotiate-layer/axum-negotiate | no | no | no | no | no | no | no | partial | no | no |
+| cross-krb5/libgssapi | no | no | no | no | no | partial | partial | yes | no | partial |
+
 ## rasn-kerberos
 
 - License: `MIT OR Apache-2.0`

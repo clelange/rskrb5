@@ -56,6 +56,6 @@ id = "compat-report"
 name = "compatibility report is current"
 language = "system"
 entry = "bash -c 'cargo run --quiet --bin rskrb5-compat-report > /tmp/rskrb5-compatibility-report.md && diff -u docs/compatibility-report.md /tmp/rskrb5-compatibility-report.md'"
-files = "src/evaluation\\.rs|src/bin/rskrb5-compat-report\\.rs|docs/compatibility-report\\.md"
+files = "src/evaluation(/.*)?\\.rs|src/bin/rskrb5-compat-report\\.rs|docs/compatibility-report\\.md"
 pass_filenames = false
 stages = ["pre-push", "manual"]

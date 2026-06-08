@@ -27,6 +27,10 @@ Generate the compatibility report:
 cargo run --bin rskrb5-compat-report
 ```
 
+The report records the gokrb5 v8 test contract and the current support matrix
+for candidate crates. Keep it current whenever a candidate or porting milestone
+changes.
+
 Run the local checks:
 
 ```sh
@@ -38,6 +42,11 @@ cargo doc --all-features --no-deps
 cargo package --locked
 prek run --all-files --stage pre-push
 ```
+
+The GitHub workflow includes a manual Docker-backed integration job. Run it from
+`workflow_dispatch` with the `integration` input once equivalent Rust
+integration tests exist; it preserves the gokrb5-style `INTEGRATION=1`,
+`TESTPRIVILEGED=1`, and optional `TESTAD=1` gates.
 
 ## Distribution Direction
 

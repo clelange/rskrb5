@@ -1,5 +1,3 @@
-//! Candidate compatibility matrix and fixture probes.
-
 use std::fmt;
 
 /// Candidate crates evaluated before committing to a standalone `rskrb5`.
@@ -82,10 +80,25 @@ impl fmt::Display for Support {
     }
 }
 
-/// One row in the compatibility matrix.
+/// One row in the gokrb5 v8 parity contract.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ContractArea {
+    /// Short identifier used in the candidate matrix.
+    pub id: &'static str,
+    /// Contract area from `gokrb5` v8.
+    pub area: &'static str,
+    /// Representative gokrb5 test files that define expected behavior.
+    pub gokrb5_tests: &'static str,
+    /// Environment gate for equivalent Rust tests.
+    pub gate: &'static str,
+    /// Porting note for Rust implementation work.
+    pub porting_note: &'static str,
+}
+
+/// One row in a candidate-specific detail table.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Capability {
-    /// Contract area from `gokrb5` v8.
+    /// Capability area.
     pub area: &'static str,
     /// Evaluation result.
     pub support: Support,
@@ -103,6 +116,350 @@ pub struct CandidateReport {
     /// Overall recommendation.
     pub recommendation: &'static str,
 }
+
+/// Candidate support for a single contract area.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SupportByArea {
+    /// `ContractArea::id`.
+    pub area_id: &'static str,
+    /// Candidate support level.
+    pub support: Support,
+}
+
+/// Cross-product of a candidate and the gokrb5 v8 parity contract.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CandidateAssessment {
+    /// Candidate crate/project.
+    pub candidate: Candidate,
+    /// Support entries keyed by contract area id.
+    pub support: &'static [SupportByArea],
+}
+
+impl CandidateAssessment {
+    /// Return support for a contract area id.
+    pub fn support_for(self, area_id: &str) -> Support {
+        self.support
+            .iter()
+            .find(|entry| entry.area_id == area_id)
+            .map_or(Support::No, |entry| entry.support)
+    }
+}
+
+/// The gokrb5 v8 behavior that must be matched before `rskrb5` can claim parity.
+pub const V8_CONTRACT: &[ContractArea] = &[
+    ContractArea {
+        id: "asn1",
+        area: "ASN.1 / DER messages",
+        gokrb5_tests: "messages/*_test.go, types/*_test.go, kadmin/*_test.go",
+        gate: "unit",
+        porting_note: "Translate fixture round-trip tests first; reuse permissive ASN.1 crates where they pass.",
+    },
+    ContractArea {
+        id: "crypto",
+        area: "Kerberos crypto vectors",
+        gokrb5_tests: "crypto/**/*_test.go",
+        gate: "unit",
+        porting_note: "Use gokrb5/RFC vectors for string-to-key, checksum, encrypt, decrypt, and key usage behavior.",
+    },
+    ContractArea {
+        id: "keytab",
+        area: "keytab",
+        gokrb5_tests: "keytab/keytab_test.go",
+        gate: "unit",
+        porting_note: "Parse/write keytabs and select keys by service principal, realm, kvno, and enctype.",
+    },
+    ContractArea {
+        id: "ccache",
+        area: "ccache",
+        gokrb5_tests: "credentials/ccache_test.go, credentials/ccache_integration_test.go",
+        gate: "unit, INTEGRATION=1",
+        porting_note: "Implement MIT file ccache parsing/writing plus KDC-issued credential capture.",
+    },
+    ContractArea {
+        id: "conf",
+        area: "krb5.conf and host config",
+        gokrb5_tests: "config/*_test.go",
+        gate: "unit",
+        porting_note: "Preserve gokrb5 parsing semantics, libdefaults, realm lookup, DNS flags, and host mappings.",
+    },
+    ContractArea {
+        id: "client",
+        area: "AS/TGS client flows",
+        gokrb5_tests: "client/*_test.go",
+        gate: "unit, INTEGRATION=1, TESTAD=1",
+        porting_note: "Cover password/keytab login, referrals, DNS KDC lookup, renewal, and service tickets.",
+    },
+    ContractArea {
+        id: "service",
+        area: "AP-REQ service validation",
+        gokrb5_tests: "service/*_test.go, messages/Ticket_test.go",
+        gate: "unit, INTEGRATION=1",
+        porting_note: "Decrypt tickets, validate authenticators, enforce clock skew, and provide replay cache hooks.",
+    },
+    ContractArea {
+        id: "spnego",
+        area: "GSSAPI/SPNEGO HTTP",
+        gokrb5_tests: "gssapi/*_test.go, spnego/*_test.go",
+        gate: "unit, INTEGRATION=1",
+        porting_note: "Implement tokens, wrap/MIC behavior, HTTP Negotiate helpers, and Tower/Axum adapters.",
+    },
+    ContractArea {
+        id: "pac",
+        area: "PAC / NDR",
+        gokrb5_tests: "pac/*_test.go, messages/Ticket_test.go",
+        gate: "unit, TESTAD=1",
+        porting_note: "Parse PAC buffers, NDR validation info, claims, UPN/DNS info, and checksum verification.",
+    },
+    ContractArea {
+        id: "docker",
+        area: "Docker KDC integration",
+        gokrb5_tests: "client/*_integration_test.go, credentials/*_integration_test.go, spnego/http_test.go",
+        gate: "INTEGRATION=1, TESTPRIVILEGED=1, TESTAD=1",
+        porting_note: "Reuse gokrb5 MIT KDC, DNS, short-ticket, referral-domain, HTTP, and AD gates where possible.",
+    },
+];
+
+const RASN_KERBEROS_ASSESSMENT: &[SupportByArea] = &[
+    SupportByArea {
+        area_id: "asn1",
+        support: Support::Partial,
+    },
+    SupportByArea {
+        area_id: "crypto",
+        support: Support::No,
+    },
+    SupportByArea {
+        area_id: "keytab",
+        support: Support::No,
+    },
+    SupportByArea {
+        area_id: "ccache",
+        support: Support::No,
+    },
+    SupportByArea {
+        area_id: "conf",
+        support: Support::No,
+    },
+    SupportByArea {
+        area_id: "client",
+        support: Support::No,
+    },
+    SupportByArea {
+        area_id: "service",
+        support: Support::No,
+    },
+    SupportByArea {
+        area_id: "spnego",
+        support: Support::No,
+    },
+    SupportByArea {
+        area_id: "pac",
+        support: Support::No,
+    },
+    SupportByArea {
+        area_id: "docker",
+        support: Support::No,
+    },
+];
+
+const PICKY_KRB_ASSESSMENT: &[SupportByArea] = &[
+    SupportByArea {
+        area_id: "asn1",
+        support: Support::Partial,
+    },
+    SupportByArea {
+        area_id: "crypto",
+        support: Support::No,
+    },
+    SupportByArea {
+        area_id: "keytab",
+        support: Support::No,
+    },
+    SupportByArea {
+        area_id: "ccache",
+        support: Support::No,
+    },
+    SupportByArea {
+        area_id: "conf",
+        support: Support::No,
+    },
+    SupportByArea {
+        area_id: "client",
+        support: Support::No,
+    },
+    SupportByArea {
+        area_id: "service",
+        support: Support::No,
+    },
+    SupportByArea {
+        area_id: "spnego",
+        support: Support::No,
+    },
+    SupportByArea {
+        area_id: "pac",
+        support: Support::Partial,
+    },
+    SupportByArea {
+        area_id: "docker",
+        support: Support::No,
+    },
+];
+
+const SSPI_RS_ASSESSMENT: &[SupportByArea] = &[
+    SupportByArea {
+        area_id: "asn1",
+        support: Support::Partial,
+    },
+    SupportByArea {
+        area_id: "crypto",
+        support: Support::Partial,
+    },
+    SupportByArea {
+        area_id: "keytab",
+        support: Support::Partial,
+    },
+    SupportByArea {
+        area_id: "ccache",
+        support: Support::Partial,
+    },
+    SupportByArea {
+        area_id: "conf",
+        support: Support::Partial,
+    },
+    SupportByArea {
+        area_id: "client",
+        support: Support::Partial,
+    },
+    SupportByArea {
+        area_id: "service",
+        support: Support::Partial,
+    },
+    SupportByArea {
+        area_id: "spnego",
+        support: Support::Partial,
+    },
+    SupportByArea {
+        area_id: "pac",
+        support: Support::Partial,
+    },
+    SupportByArea {
+        area_id: "docker",
+        support: Support::Partial,
+    },
+];
+
+const PARSER_ONLY_ASSESSMENT: &[SupportByArea] = &[
+    SupportByArea {
+        area_id: "asn1",
+        support: Support::Partial,
+    },
+    SupportByArea {
+        area_id: "crypto",
+        support: Support::No,
+    },
+];
+
+const EXCLUDED_ASSESSMENT: &[SupportByArea] = &[
+    SupportByArea {
+        area_id: "asn1",
+        support: Support::Excluded,
+    },
+    SupportByArea {
+        area_id: "crypto",
+        support: Support::Excluded,
+    },
+    SupportByArea {
+        area_id: "keytab",
+        support: Support::Excluded,
+    },
+    SupportByArea {
+        area_id: "ccache",
+        support: Support::Excluded,
+    },
+    SupportByArea {
+        area_id: "client",
+        support: Support::Excluded,
+    },
+];
+
+const KENOBI_ASSESSMENT: &[SupportByArea] = &[
+    SupportByArea {
+        area_id: "client",
+        support: Support::Partial,
+    },
+    SupportByArea {
+        area_id: "spnego",
+        support: Support::Partial,
+    },
+    SupportByArea {
+        area_id: "docker",
+        support: Support::Partial,
+    },
+];
+
+const HTTP_LAYER_ASSESSMENT: &[SupportByArea] = &[SupportByArea {
+    area_id: "spnego",
+    support: Support::Partial,
+}];
+
+const SYSTEM_GSSAPI_ASSESSMENT: &[SupportByArea] = &[
+    SupportByArea {
+        area_id: "client",
+        support: Support::Partial,
+    },
+    SupportByArea {
+        area_id: "service",
+        support: Support::Partial,
+    },
+    SupportByArea {
+        area_id: "spnego",
+        support: Support::Yes,
+    },
+    SupportByArea {
+        area_id: "docker",
+        support: Support::Partial,
+    },
+];
+
+/// Candidate support across the gokrb5 v8 parity contract.
+pub const ASSESSMENTS: &[CandidateAssessment] = &[
+    CandidateAssessment {
+        candidate: Candidate::RasnKerberos,
+        support: RASN_KERBEROS_ASSESSMENT,
+    },
+    CandidateAssessment {
+        candidate: Candidate::PickyKrb,
+        support: PICKY_KRB_ASSESSMENT,
+    },
+    CandidateAssessment {
+        candidate: Candidate::SspiRs,
+        support: SSPI_RS_ASSESSMENT,
+    },
+    CandidateAssessment {
+        candidate: Candidate::KerberosParser,
+        support: PARSER_ONLY_ASSESSMENT,
+    },
+    CandidateAssessment {
+        candidate: Candidate::Krb5Rs,
+        support: &[],
+    },
+    CandidateAssessment {
+        candidate: Candidate::KerbeirosFamily,
+        support: EXCLUDED_ASSESSMENT,
+    },
+    CandidateAssessment {
+        candidate: Candidate::Kenobi,
+        support: KENOBI_ASSESSMENT,
+    },
+    CandidateAssessment {
+        candidate: Candidate::HttpNegotiateLayers,
+        support: HTTP_LAYER_ASSESSMENT,
+    },
+    CandidateAssessment {
+        candidate: Candidate::SystemGssapiWrappers,
+        support: SYSTEM_GSSAPI_ASSESSMENT,
+    },
+];
 
 const RASN_KERBEROS_CAPABILITIES: &[Capability] = &[
     Capability {
@@ -354,87 +711,3 @@ pub const REPORTS: &[CandidateReport] = &[
         recommendation: "Useful optional interop/reference layer, not the pure-Rust core.",
     },
 ];
-
-/// Render the current compatibility matrix as Markdown.
-pub fn render_markdown() -> String {
-    let mut out = String::from("# rskrb5 Compatibility Spike\n\n");
-    out.push_str("This report is generated from `rskrb5::evaluation` and captures the decision gate before implementing a standalone Kerberos library.\n\n");
-
-    for report in REPORTS {
-        out.push_str("## ");
-        out.push_str(report.candidate.name());
-        out.push('\n');
-        out.push('\n');
-        out.push_str("- License: `");
-        out.push_str(report.candidate.license());
-        out.push_str("`\n");
-        out.push_str("- Recommendation: ");
-        out.push_str(report.recommendation);
-        out.push_str("\n\n");
-        out.push_str("| Area | Support | Note |\n");
-        out.push_str("|---|---:|---|\n");
-        for capability in report.capabilities {
-            out.push_str("| ");
-            out.push_str(capability.area);
-            out.push_str(" | ");
-            out.push_str(&capability.support.to_string());
-            out.push_str(" | ");
-            out.push_str(capability.note);
-            out.push_str(" |\n");
-        }
-        out.push('\n');
-    }
-
-    out.push_str("## Decision\n\n");
-    out.push_str("Create a new `rskrb5` implementation only if `sspi-rs` plus permissively licensed ASN.1 crates cannot satisfy gokrb5 v8 parity without an awkward API facade. The immediate implementation work is to translate gokrb5 fixture tests and keep measuring candidates against those tests.\n");
-    out
-}
-
-/// Fixture probes that validate candidate DER support against representative
-/// gokrb5 vectors. These are intentionally small; the full parity suite should
-/// be translated after the decision gate.
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    const GOKRB5_TICKET: &str = "615C305AA003020105A1101B0E415448454E412E4D49542E454455A21A3018A003020101A111300F1B066866747361691B056578747261A3253023A003020100A103020105A21704156B726241534E2E312074657374206D657373616765";
-    const GOKRB5_AP_REQ: &str = "6E819D30819AA003020105A10302010EA207030500FEDCBA98A35E615C305AA003020105A1101B0E415448454E412E4D49542E454455A21A3018A003020101A111300F1B066866747361691B056578747261A3253023A003020100A103020105A21704156B726241534E2E312074657374206D657373616765A4253023A003020100A103020105A21704156B726241534E2E312074657374206D657373616765";
-    const GOKRB5_KRB_ERROR: &str = "7E81BA3081B7A003020105A10302011EA211180F31393934303631303036303331375AA305020301E240A411180F31393934303631303036303331375AA505020301E240A60302013CA7101B0E415448454E412E4D49542E454455A81A3018A003020101A111300F1B066866747361691B056578747261A9101B0E415448454E412E4D49542E454455AA1A3018A003020101A111300F1B066866747361691B056578747261AB0A1B086B72623564617461AC0A04086B72623564617461";
-
-    fn decode_hex(input: &str) -> Vec<u8> {
-        hex::decode(input).expect("fixture hex is valid")
-    }
-
-    #[test]
-    fn rasn_kerberos_decodes_representative_gokrb5_der() {
-        let ticket = decode_hex(GOKRB5_TICKET);
-        let ap_req = decode_hex(GOKRB5_AP_REQ);
-        let krb_error = decode_hex(GOKRB5_KRB_ERROR);
-
-        let _: rasn_kerberos::Ticket = rasn::der::decode(&ticket).expect("ticket DER");
-        let _: rasn_kerberos::ApReq = rasn::der::decode(&ap_req).expect("AP-REQ DER");
-        let _: rasn_kerberos::KrbError = rasn::der::decode(&krb_error).expect("KRB-ERROR DER");
-    }
-
-    #[test]
-    fn picky_krb_decodes_representative_gokrb5_der() {
-        let ticket = decode_hex(GOKRB5_TICKET);
-        let ap_req = decode_hex(GOKRB5_AP_REQ);
-        let krb_error = decode_hex(GOKRB5_KRB_ERROR);
-
-        let _: picky_krb::data_types::Ticket =
-            picky_asn1_der::from_bytes(&ticket).expect("ticket DER");
-        let _: picky_krb::messages::ApReq =
-            picky_asn1_der::from_bytes(&ap_req).expect("AP-REQ DER");
-        let _: picky_krb::messages::KrbError =
-            picky_asn1_der::from_bytes(&krb_error).expect("KRB-ERROR DER");
-    }
-
-    #[test]
-    fn report_mentions_all_candidates() {
-        let markdown = render_markdown();
-        for report in REPORTS {
-            assert!(markdown.contains(report.candidate.name()));
-        }
-    }
-}
