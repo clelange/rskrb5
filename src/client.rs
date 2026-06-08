@@ -542,13 +542,14 @@ impl TokioClient {
     pub fn from_ccache(config: Config, protocol: KdcProtocol, cache: &ccache::CCache) -> Self {
         let client = client_principal_from_ccache(cache.default_principal());
         let mut kerberos = Self::new(config, protocol, client, None);
+        let now = SystemTime::now();
         for credential in cache.entries() {
             if !same_ccache_client_identity(&credential.client, cache.default_principal()) {
                 continue;
             }
             let session = ccache_credential_session(credential);
             if is_tgt_principal(&session.service) {
-                kerberos.tgt = freshest_session(kerberos.tgt.take(), session);
+                kerberos.tgt = Some(preferred_session_at(kerberos.tgt.take(), session, now));
             } else {
                 kerberos.cache_service_ticket(session);
             }
@@ -666,9 +667,9 @@ impl TokioClient {
     /// Insert or replace a service ticket in the cache.
     pub fn cache_service_ticket(&mut self, ticket: TgsRepSession) {
         let key = service_cache_key(&ticket.service);
-        if let Some(ticket) = freshest_session(self.service_tickets.remove(&key), ticket) {
-            self.service_tickets.insert(key, ticket);
-        }
+        let ticket =
+            preferred_session_at(self.service_tickets.remove(&key), ticket, SystemTime::now());
+        self.service_tickets.insert(key, ticket);
     }
 
     /// Perform AS login with the configured long-term credential.
@@ -2898,13 +2899,30 @@ fn system_time_from_u32_seconds(seconds: u32) -> SystemTime {
 }
 
 #[cfg(feature = "tokio")]
-fn freshest_session(
+fn preferred_session_at(
     current: Option<AsRepSession>,
     candidate: AsRepSession,
-) -> Option<AsRepSession> {
+    now: SystemTime,
+) -> AsRepSession {
     match current {
-        Some(current) if current.end_time >= candidate.end_time => Some(current),
-        _ => Some(candidate),
+        Some(current) if prefer_current_session_at(&current, &candidate, now) => current,
+        _ => candidate,
+    }
+}
+
+#[cfg(feature = "tokio")]
+fn prefer_current_session_at(
+    current: &AsRepSession,
+    candidate: &AsRepSession,
+    now: SystemTime,
+) -> bool {
+    match (
+        session_valid_at(current, now),
+        session_valid_at(candidate, now),
+    ) {
+        (true, false) => true,
+        (false, true) => false,
+        _ => current.end_time >= candidate.end_time,
     }
 }
 
