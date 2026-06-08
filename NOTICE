@@ -1,0 +1,7 @@
+rskrb5
+
+This project is intended as a Rust compatibility port of gokrb5 v8.
+gokrb5 is Copyright (c) its contributors and is licensed under Apache-2.0.
+
+This repository currently contains only compatibility-spike code and does not
+include copied gokrb5 implementation source.

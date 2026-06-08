@@ -1,0 +1,61 @@
+#:schema https://www.schemastore.org/prek.json
+
+[[repos]]
+repo = "builtin"
+hooks = [
+  { id = "trailing-whitespace" },
+  { id = "end-of-file-fixer" },
+  { id = "check-added-large-files" },
+  { id = "check-case-conflict" },
+  { id = "check-merge-conflict" },
+  { id = "check-toml" },
+  { id = "check-yaml" },
+  { id = "detect-private-key" },
+]
+
+[[repos]]
+repo = "local"
+
+[[repos.hooks]]
+id = "cargo-fmt"
+name = "cargo fmt"
+language = "system"
+entry = "cargo fmt --check"
+files = "\\.rs$|Cargo\\.toml$"
+pass_filenames = false
+
+[[repos.hooks]]
+id = "cargo-clippy"
+name = "cargo clippy"
+language = "system"
+entry = "cargo clippy --all-targets --all-features -- -D warnings"
+files = "\\.rs$|Cargo\\.toml$"
+pass_filenames = false
+stages = ["pre-push", "manual"]
+
+[[repos.hooks]]
+id = "cargo-test"
+name = "cargo test"
+language = "system"
+entry = "cargo test --all-features"
+files = "\\.rs$|Cargo\\.toml$"
+pass_filenames = false
+stages = ["pre-push", "manual"]
+
+[[repos.hooks]]
+id = "cargo-doc"
+name = "cargo doc"
+language = "system"
+entry = "cargo doc --all-features --no-deps"
+files = "\\.rs$|Cargo\\.toml$|README\\.md$"
+pass_filenames = false
+stages = ["manual"]
+
+[[repos.hooks]]
+id = "compat-report"
+name = "compatibility report is current"
+language = "system"
+entry = "bash -c 'cargo run --quiet --bin rskrb5-compat-report > /tmp/rskrb5-compatibility-report.md && diff -u docs/compatibility-report.md /tmp/rskrb5-compatibility-report.md'"
+files = "src/evaluation\\.rs|src/bin/rskrb5-compat-report\\.rs|docs/compatibility-report\\.md"
+pass_filenames = false
+stages = ["pre-push", "manual"]

@@ -1,0 +1,42 @@
+[package]
+name = "rskrb5"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.88"
+license = "Apache-2.0"
+description = "Rust compatibility spike for a gokrb5-equivalent Kerberos library."
+repository = "https://github.com/clange/rskrb5"
+readme = "README.md"
+keywords = ["kerberos", "krb5", "spnego", "gssapi", "authentication"]
+categories = ["authentication", "cryptography", "network-programming"]
+publish = false
+
+[features]
+default = ["evaluation"]
+evaluation = [
+    "dep:hex",
+    "dep:picky-asn1-der",
+    "dep:picky-krb",
+    "dep:rasn",
+    "dep:rasn-kerberos",
+]
+tokio = ["dep:tokio"]
+serde = ["dep:serde"]
+
+[dependencies]
+hex = { version = "0.4", optional = true }
+picky-asn1-der = { version = "0.5", optional = true }
+picky-krb = { version = "0.12.3", optional = true }
+rasn = { version = "0.28.13", optional = true }
+rasn-kerberos = { version = "0.28.13", optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
+thiserror = "2"
+tokio = { version = "1.47", features = ["net", "io-util", "time", "rt"], optional = true }
+
+[[bin]]
+name = "rskrb5-compat-report"
+path = "src/bin/rskrb5-compat-report.rs"
+required-features = ["evaluation"]
+
+[dev-dependencies]
+pretty_assertions = "1.4"
