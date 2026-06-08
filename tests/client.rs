@@ -752,6 +752,20 @@ fn tokio_client_login_returns_current_cache_only_tgt() {
 
 #[cfg(feature = "tokio")]
 #[test]
+fn tokio_client_exposes_assume_preauthentication_setting() {
+    let client = TokioClient::with_password(
+        Config::new(),
+        KdcProtocol::Tcp,
+        Principal::user("TEST.GOKRB5", "testuser1"),
+        TESTUSER_PASSWORD,
+    )
+    .with_assume_preauthentication(true);
+
+    assert!(client.assume_preauthentication());
+}
+
+#[cfg(feature = "tokio")]
+#[test]
 fn tokio_client_login_rejects_expired_cache_only_tgt() {
     let tgt = sample_tgt_session();
     let now = SystemTime::now()
@@ -1085,6 +1099,30 @@ fn login_tgt_with_password_retries_after_preauth_required() {
 }
 
 #[test]
+fn login_tgt_with_password_can_assume_preauthentication() {
+    let client = Principal::user("TEST.GOKRB5", "testuser1");
+    let options = AsReqOptions::new(timestamp(1_893_553_447), 0x1122_3344)
+        .with_etypes(vec![18])
+        .with_assume_preauthentication(true);
+    let key_info = PreauthKeyInfo {
+        etype: 18,
+        salt: None,
+        s2kparams: None,
+    };
+    let reply_key = derive_password_reply_key(&client, TESTUSER_PASSWORD, &key_info)
+        .expect("password key derives");
+    let mut transport = AssumedPreauthTransport::new(reply_key, None);
+
+    let session =
+        login_tgt_with_password(&mut transport, client.clone(), TESTUSER_PASSWORD, options)
+            .expect("password login succeeds");
+
+    assert_eq!(transport.calls, 1);
+    assert_eq!(session.client, client);
+    assert_eq!(session.service, Principal::tgt_service("TEST.GOKRB5"));
+}
+
+#[test]
 fn login_tgt_with_keytab_retries_with_selected_keytab_kvno() {
     let client = Principal::user("TEST.GOKRB5", "testuser1");
     let options = AsReqOptions::new(timestamp(1_893_553_447), 0x1122_3344).with_etypes(vec![18]);
@@ -1095,6 +1133,23 @@ fn login_tgt_with_keytab_retries_with_selected_keytab_kvno() {
         .expect("keytab login succeeds");
 
     assert_eq!(transport.calls, 2);
+    assert_eq!(session.client, client);
+    assert_eq!(session.service, Principal::tgt_service("TEST.GOKRB5"));
+}
+
+#[test]
+fn login_tgt_with_keytab_can_assume_preauthentication() {
+    let client = Principal::user("TEST.GOKRB5", "testuser1");
+    let options = AsReqOptions::new(timestamp(1_893_553_447), 0x1122_3344)
+        .with_etypes(vec![20, 18])
+        .with_assume_preauthentication(true);
+    let keytab = keytab_with_reply_key(3);
+    let mut transport = AssumedPreauthTransport::new(reply_key(), Some(3));
+
+    let session = login_tgt_with_keytab(&mut transport, client.clone(), &keytab, options)
+        .expect("keytab login succeeds");
+
+    assert_eq!(transport.calls, 1);
     assert_eq!(session.client, client);
     assert_eq!(session.service, Principal::tgt_service("TEST.GOKRB5"));
 }
@@ -1188,6 +1243,52 @@ impl KdcTransport for PreauthTransport {
             }
             _ => panic!("unexpected transport call {}", self.calls),
         }
+    }
+}
+
+struct AssumedPreauthTransport {
+    reply_key: EncryptionKey,
+    expected_pa_kvno: Option<u32>,
+    calls: usize,
+}
+
+impl AssumedPreauthTransport {
+    fn new(reply_key: EncryptionKey, expected_pa_kvno: Option<u32>) -> Self {
+        Self {
+            reply_key,
+            expected_pa_kvno,
+            calls: 0,
+        }
+    }
+}
+
+impl KdcTransport for AssumedPreauthTransport {
+    fn send(&mut self, realm: &str, request: &[u8]) -> Result<Vec<u8>, Error> {
+        assert_eq!(realm, "TEST.GOKRB5");
+        let decoded: rasn_kerberos::AsReq = rasn::der::decode(request).expect("AS-REQ decodes");
+        self.calls += 1;
+        assert_eq!(self.calls, 1, "assumed preauth should only call KDC once");
+
+        let padata = decoded
+            .0
+            .padata
+            .as_ref()
+            .expect("assumed preauth request has padata");
+        assert!(
+            padata
+                .iter()
+                .any(|padata| padata.r#type == PA_REQ_ENC_PA_REP),
+            "assumed preauth keeps PA-REQ-ENC-PA-REP"
+        );
+        assert_pa_enc_timestamp(&decoded, self.expected_pa_kvno);
+
+        let built = built_request_from_der(decoded, request);
+        Ok(synthetic_as_rep_with_reply_key(
+            &built,
+            built.nonce,
+            built.service.clone(),
+            &self.reply_key,
+        ))
     }
 }
 

@@ -150,6 +150,8 @@ pub struct AsReqOptions {
     pub kdc_option_bits: u32,
     /// Optional preauthentication data.
     pub padata: Vec<rasn_kerberos::PaData>,
+    /// Send PA-ENC-TIMESTAMP in the first AS-REQ using requested etype defaults.
+    pub assume_preauthentication: bool,
 }
 
 impl AsReqOptions {
@@ -163,6 +165,7 @@ impl AsReqOptions {
             etypes: DEFAULT_TKT_ENCTYPES.to_vec(),
             kdc_option_bits: 0,
             padata: Vec::new(),
+            assume_preauthentication: false,
         }
     }
 
@@ -208,6 +211,12 @@ impl AsReqOptions {
     /// Add preauthentication data.
     pub fn with_padata(mut self, padata: impl Into<Vec<rasn_kerberos::PaData>>) -> Self {
         self.padata = padata.into();
+        self
+    }
+
+    /// Send PA-ENC-TIMESTAMP in the first AS-REQ.
+    pub fn with_assume_preauthentication(mut self, assume_preauthentication: bool) -> Self {
+        self.assume_preauthentication = assume_preauthentication;
         self
     }
 }
@@ -483,6 +492,7 @@ pub struct TokioClient {
     credentials: Option<TokioClientCredentials>,
     tgt: Option<AsRepSession>,
     service_tickets: BTreeMap<String, TgsRepSession>,
+    assume_preauthentication: bool,
 }
 
 #[cfg(feature = "tokio")]
@@ -496,6 +506,7 @@ impl fmt::Debug for TokioClient {
             .field("credentials", &self.credentials)
             .field("has_tgt", &self.tgt.is_some())
             .field("cached_service_tickets", &self.service_tickets.len())
+            .field("assume_preauthentication", &self.assume_preauthentication)
             .finish()
     }
 }
@@ -625,12 +636,19 @@ impl TokioClient {
             credentials,
             tgt: None,
             service_tickets: BTreeMap::new(),
+            assume_preauthentication: false,
         }
     }
 
     /// Override the transport used for KDC exchanges.
     pub fn with_transport(mut self, transport: TokioKdcTransport) -> Self {
         self.transport = transport;
+        self
+    }
+
+    /// Configure whether AS login sends PA-ENC-TIMESTAMP in the first AS-REQ.
+    pub fn with_assume_preauthentication(mut self, assume_preauthentication: bool) -> Self {
+        self.assume_preauthentication = assume_preauthentication;
         self
     }
 
@@ -647,6 +665,11 @@ impl TokioClient {
     /// Client principal.
     pub fn client_principal(&self) -> &Principal {
         &self.client
+    }
+
+    /// Whether AS login sends PA-ENC-TIMESTAMP in the first AS-REQ.
+    pub fn assume_preauthentication(&self) -> bool {
+        self.assume_preauthentication
     }
 
     /// Current TGT session, when logged in or loaded from cache.
@@ -810,7 +833,8 @@ impl TokioClient {
             SystemTime::now(),
             random_nonce()?,
             &self.config.libdefaults,
-        ))
+        )
+        .with_assume_preauthentication(self.assume_preauthentication))
     }
 
     fn tgs_req_options(&self) -> Result<TgsReqOptions, Error> {
@@ -1256,10 +1280,7 @@ impl TokioKdcTransport {
     where
         A: ToSocketAddrs + Clone,
     {
-        let initial_request = build_tgt_as_req(
-            client.clone(),
-            initial_preauth_probe_options(options.clone()),
-        )?;
+        let initial_request = password_initial_as_req(client.clone(), password, options.clone())?;
         let initial_response = self
             .send(protocol, addr.clone(), &initial_request.der)
             .await?;
@@ -1283,10 +1304,7 @@ impl TokioKdcTransport {
         password: &[u8],
         options: AsReqOptions,
     ) -> Result<AsRepSession, Error> {
-        let initial_request = build_tgt_as_req(
-            client.clone(),
-            initial_preauth_probe_options(options.clone()),
-        )?;
+        let initial_request = password_initial_as_req(client.clone(), password, options.clone())?;
         let initial_response = self
             .send_to_realm(config, protocol, &client.realm, &initial_request.der)
             .await?;
@@ -1315,10 +1333,7 @@ impl TokioKdcTransport {
     where
         A: ToSocketAddrs + Clone,
     {
-        let initial_request = build_tgt_as_req(
-            client.clone(),
-            initial_preauth_probe_options(options.clone()),
-        )?;
+        let initial_request = keytab_initial_as_req(client.clone(), keytab, options.clone())?;
         let initial_response = self
             .send(protocol, addr.clone(), &initial_request.der)
             .await?;
@@ -1342,10 +1357,7 @@ impl TokioKdcTransport {
         keytab: &Keytab,
         options: AsReqOptions,
     ) -> Result<AsRepSession, Error> {
-        let initial_request = build_tgt_as_req(
-            client.clone(),
-            initial_preauth_probe_options(options.clone()),
-        )?;
+        let initial_request = keytab_initial_as_req(client.clone(), keytab, options.clone())?;
         let initial_response = self
             .send_to_realm(config, protocol, &client.realm, &initial_request.der)
             .await?;
@@ -1881,10 +1893,7 @@ pub fn login_tgt_with_password<T>(
 where
     T: KdcTransport + ?Sized,
 {
-    let initial_request = build_tgt_as_req(
-        client.clone(),
-        initial_preauth_probe_options(options.clone()),
-    )?;
+    let initial_request = password_initial_as_req(client.clone(), password, options.clone())?;
     let initial_response = transport.send(&client.realm, &initial_request.der)?;
     if let Some(session) =
         password_initial_as_rep_session(&initial_request, &initial_response, &client, password)?
@@ -1907,10 +1916,7 @@ pub fn login_tgt_with_keytab<T>(
 where
     T: KdcTransport + ?Sized,
 {
-    let initial_request = build_tgt_as_req(
-        client.clone(),
-        initial_preauth_probe_options(options.clone()),
-    )?;
+    let initial_request = keytab_initial_as_req(client.clone(), keytab, options.clone())?;
     let initial_response = transport.send(&client.realm, &initial_request.der)?;
     if let Some(session) =
         keytab_initial_as_rep_session(&initial_request, &initial_response, &client, keytab)?
@@ -2515,6 +2521,21 @@ fn password_preauth_request(
     Ok((request, reply_key))
 }
 
+fn password_initial_as_req(
+    client: Principal,
+    password: &[u8],
+    options: AsReqOptions,
+) -> Result<BuiltAsReq, Error> {
+    let options = initial_preauth_probe_options(options);
+    if options.assume_preauthentication {
+        let key_info = assumed_preauth_key_info(&options.etypes)?;
+        let reply_key = derive_password_reply_key(&client, password, &key_info)?;
+        build_preauthenticated_tgt_as_req(client, options, &reply_key, None)
+    } else {
+        build_tgt_as_req(client, options)
+    }
+}
+
 fn password_initial_as_rep_session(
     request: &BuiltAsReq,
     response: &[u8],
@@ -2547,6 +2568,62 @@ fn keytab_preauth_request(
     let (reply_key, kvno) = select_keytab_reply_key(keytab, &client, &key_info)?;
     let request = build_preauthenticated_tgt_as_req(client, options, &reply_key, Some(kvno))?;
     Ok((request, reply_key))
+}
+
+fn keytab_initial_as_req(
+    client: Principal,
+    keytab: &Keytab,
+    options: AsReqOptions,
+) -> Result<BuiltAsReq, Error> {
+    let options = initial_preauth_probe_options(options);
+    if options.assume_preauthentication {
+        let (reply_key, kvno) = select_assumed_keytab_reply_key(keytab, &client, &options)?;
+        build_preauthenticated_tgt_as_req(client, options, &reply_key, Some(kvno))
+    } else {
+        build_tgt_as_req(client, options)
+    }
+}
+
+fn assumed_preauth_key_info(requested_etypes: &[i32]) -> Result<PreauthKeyInfo, Error> {
+    requested_etypes
+        .iter()
+        .copied()
+        .find(|etype| KerberosEtype::from_etype_id(*etype).is_some())
+        .map(|etype| PreauthKeyInfo {
+            etype,
+            salt: None,
+            s2kparams: None,
+        })
+        .ok_or_else(|| Error::NoSupportedPreauthEtype {
+            requested: requested_etypes.to_vec(),
+        })
+}
+
+fn select_assumed_keytab_reply_key(
+    keytab: &Keytab,
+    client: &Principal,
+    options: &AsReqOptions,
+) -> Result<(EncryptionKey, u32), Error> {
+    let components = client
+        .components
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    for etype in options
+        .etypes
+        .iter()
+        .copied()
+        .filter(|etype| KerberosEtype::from_etype_id(*etype).is_some())
+    {
+        match keytab.find_key(&components, &client.realm, 0, etype) {
+            Ok((key, kvno)) => return Ok((key.clone(), kvno)),
+            Err(crate::keytab::Error::NoMatchingKey { .. }) => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Err(Error::NoSupportedPreauthEtype {
+        requested: options.etypes.clone(),
+    })
 }
 
 fn keytab_initial_as_rep_session(
