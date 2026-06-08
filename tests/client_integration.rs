@@ -728,6 +728,83 @@ fn docker_mit_kdc_rc4_hmac_spnego_header_round_trip_through_service_validator()
     })
 }
 
+#[cfg(feature = "spnego")]
+#[test]
+fn docker_mit_kdc_des3_spnego_header_round_trip_through_service_validator()
+-> Result<(), Box<dyn Error>> {
+    if std::env::var("INTEGRATION").as_deref() != Ok("1") {
+        eprintln!("skipping Docker KDC integration test; set INTEGRATION=1 to enable");
+        return Ok(());
+    }
+    let _guard = INTEGRATION_LOCK.lock().expect("integration test lock");
+
+    runtime().block_on(async {
+        let addr = kdc_addr();
+        let transport = TokioKdcTransport::new().with_timeout(Duration::from_secs(10));
+
+        for protocol in [KdcProtocol::Udp, KdcProtocol::Tcp] {
+            eprintln!(
+                "running Docker KDC DES3 SPNEGO client header round-trip over {protocol:?} to {addr}"
+            );
+            let tgt = transport
+                .login_tgt_with_password(
+                    protocol,
+                    addr.as_str(),
+                    Principal::user(REALM, USER),
+                    PASSWORD,
+                    login_options_with_etypes(protocol, 22, vec![DES3_ETYPE])?,
+                )
+                .await?;
+            assert_eq!(tgt.session_key.etype, DES3_ETYPE);
+
+            let service = service_principal();
+            let request = build_tgs_req(
+                &tgt,
+                service.clone(),
+                tgs_options_with_etypes(protocol, 23, vec![DES3_ETYPE])?,
+            )?;
+            let service_ticket = transport
+                .exchange_tgs_req(protocol, addr.as_str(), &request, &tgt.session_key)
+                .await?;
+            assert_eq!(service_ticket.session_key.etype, DES3_ETYPE);
+
+            let context = rskrb5::spnego::init_sec_context(
+                &service_ticket,
+                rskrb5::spnego::InitiatorContextOptions::new(),
+            )?;
+            assert_eq!(context.service, service);
+            assert!(context.sequence_number.is_some());
+
+            let keytab = http_keytab()?;
+            let mut validator =
+                rskrb5::service::ServiceValidator::new(&keytab).with_now(SystemTime::now());
+            let accepted =
+                rskrb5::spnego::accept_sec_context_header(&mut validator, &context.header)?;
+            assert_eq!(
+                accepted.ap_req.client,
+                rskrb5::service::Principal {
+                    realm: REALM.to_owned(),
+                    name_type: 1,
+                    components: vec![USER.to_owned()],
+                }
+            );
+            assert_eq!(accepted.ap_req.service.name(), "HTTP/host.test.gokrb5");
+            assert_eq!(accepted.ap_req.session_key.etype, DES3_ETYPE);
+
+            let elapsed = SystemTime::now().duration_since(UNIX_EPOCH)?;
+            let response_header = accepted.ap_rep_response_header_with_confounder(
+                &des3_confounder(protocol, elapsed),
+                rskrb5::service::ApRepOptions::default(),
+            )?;
+            let verified = context.verify_ap_rep_response_header(&response_header)?;
+            assert_eq!(verified.ctime, context.authenticator_ctime);
+            assert_eq!(verified.cusec, context.authenticator_cusec);
+        }
+
+        Ok::<_, Box<dyn Error>>(())
+    })
+}
+
 fn build_login_request(
     protocol: KdcProtocol,
     key: EncryptionKey,
@@ -867,6 +944,18 @@ fn rc4_confounder(protocol: KdcProtocol, elapsed: Duration) -> [u8; 8] {
     confounder[0] = match protocol {
         KdcProtocol::Udp => 1,
         KdcProtocol::Tcp => 2,
+    };
+    confounder[1..5].copy_from_slice(&elapsed.subsec_nanos().to_be_bytes());
+    confounder[5..8].copy_from_slice(&elapsed.as_secs().to_be_bytes()[5..8]);
+    confounder
+}
+
+#[cfg(feature = "spnego")]
+fn des3_confounder(protocol: KdcProtocol, elapsed: Duration) -> [u8; 8] {
+    let mut confounder = [0; 8];
+    confounder[0] = match protocol {
+        KdcProtocol::Udp => 3,
+        KdcProtocol::Tcp => 4,
     };
     confounder[1..5].copy_from_slice(&elapsed.subsec_nanos().to_be_bytes());
     confounder[5..8].copy_from_slice(&elapsed.as_secs().to_be_bytes()[5..8]);
