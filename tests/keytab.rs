@@ -54,6 +54,32 @@ fn finds_matching_key_by_principal_kvno_and_etype() {
 }
 
 #[test]
+fn finds_rc4_hmac_and_des3_keys_from_gokrb5_fixture() {
+    let bytes = decode_hex(KEYTAB_TESTUSER1_TEST_GOKRB5);
+    let keytab = Keytab::parse(&bytes).expect("keytab fixture parses");
+
+    let (des3_key, des3_kvno) = keytab
+        .find_key(&["testuser1"], "TEST.GOKRB5", 2, 16)
+        .expect("DES3 key exists");
+    assert_eq!(des3_kvno, 2);
+    assert_eq!(des3_key.etype, 16);
+    assert_eq!(
+        encode_hex(&des3_key.value),
+        "4580fb91760dabe6f808c22c26494f644cb35d61d32c79e3"
+    );
+
+    let (rc4_key, rc4_kvno) = keytab
+        .find_key(&["testuser1"], "TEST.GOKRB5", 2, 23)
+        .expect("RC4-HMAC key exists");
+    assert_eq!(rc4_kvno, 2);
+    assert_eq!(rc4_key.etype, 23);
+    assert_eq!(
+        encode_hex(&rc4_key.value),
+        "084768c373663b3bef1f6385883cf7ff"
+    );
+}
+
+#[test]
 fn kvno_zero_selects_newest_matching_key() {
     let mut keytab = Keytab::new();
     keytab.entries_mut().extend([
