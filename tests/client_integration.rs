@@ -320,6 +320,55 @@ fn docker_mit_kdc_tgs_service_ticket_through_tcp_and_udp() -> Result<(), Box<dyn
 }
 
 #[test]
+fn docker_mit_kdc_rc4_hmac_tgs_service_ticket_through_tcp_and_udp() -> Result<(), Box<dyn Error>> {
+    if std::env::var("INTEGRATION").as_deref() != Ok("1") {
+        eprintln!("skipping Docker KDC integration test; set INTEGRATION=1 to enable");
+        return Ok(());
+    }
+    let _guard = INTEGRATION_LOCK.lock().expect("integration test lock");
+
+    runtime().block_on(async {
+        let addr = kdc_addr();
+        let transport = TokioKdcTransport::new().with_timeout(Duration::from_secs(10));
+
+        for protocol in [KdcProtocol::Udp, KdcProtocol::Tcp] {
+            eprintln!(
+                "running Docker KDC RC4-HMAC TGS service-ticket exchange over {protocol:?} to {addr}"
+            );
+            let tgt = transport
+                .login_tgt_with_password(
+                    protocol,
+                    addr.as_str(),
+                    Principal::user(REALM, USER),
+                    PASSWORD,
+                    login_options_with_etypes(protocol, 15, vec![RC4_HMAC_ETYPE])?,
+                )
+                .await?;
+            assert_eq!(tgt.session_key.etype, RC4_HMAC_ETYPE);
+
+            let service = service_principal();
+            let request = build_tgs_req(
+                &tgt,
+                service.clone(),
+                tgs_options_with_etypes(protocol, 16, vec![RC4_HMAC_ETYPE])?,
+            )?;
+            let ticket = transport
+                .exchange_tgs_req(protocol, addr.as_str(), &request, &tgt.session_key)
+                .await?;
+
+            assert_eq!(ticket.client, Principal::user(REALM, USER));
+            assert_eq!(ticket.service, service);
+            assert_eq!(ticket.session_key.etype, RC4_HMAC_ETYPE);
+            assert!(!ticket.session_key.value.is_empty());
+            assert!(!ticket.ticket.is_empty());
+            assert!(ticket.end_time > ticket.start_time);
+        }
+
+        Ok::<_, Box<dyn Error>>(())
+    })
+}
+
+#[test]
 fn docker_mit_kdc_tgt_renewal_through_tcp_and_udp() -> Result<(), Box<dyn Error>> {
     if std::env::var("INTEGRATION").as_deref() != Ok("1") {
         eprintln!("skipping Docker KDC integration test; set INTEGRATION=1 to enable");
@@ -566,6 +615,14 @@ fn login_options_with_etypes(
 }
 
 fn tgs_options(protocol: KdcProtocol, sequence: u32) -> Result<TgsReqOptions, Box<dyn Error>> {
+    tgs_options_with_etypes(protocol, sequence, vec![AES256_ETYPE])
+}
+
+fn tgs_options_with_etypes(
+    protocol: KdcProtocol,
+    sequence: u32,
+    etypes: Vec<i32>,
+) -> Result<TgsReqOptions, Box<dyn Error>> {
     let now = SystemTime::now();
     let elapsed = now.duration_since(UNIX_EPOCH)?;
     let nonce = (((elapsed.as_nanos() as u32) & 0x00ff_ffff) | (sequence << 24))
@@ -575,7 +632,7 @@ fn tgs_options(protocol: KdcProtocol, sequence: u32) -> Result<TgsReqOptions, Bo
         };
     Ok(TgsReqOptions::new(now, nonce)
         .with_ticket_lifetime(Duration::from_secs(24 * 60 * 60))
-        .with_etypes(vec![AES256_ETYPE]))
+        .with_etypes(etypes))
 }
 
 fn service_principal() -> Principal {
