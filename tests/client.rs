@@ -12,10 +12,10 @@ use rskrb5::client::{
     TGS_REP_ENCPART_SESSION_KEY_USAGE, TGS_REQ_AUTHENTICATOR_CHECKSUM_USAGE,
     TGS_REQ_AUTHENTICATOR_USAGE, TgsReqOptions, build_tgs_req_for_realm_with_confounder,
     build_tgs_req_with_confounder, build_tgt_as_req, build_tgt_renewal_req_with_confounder,
-    default_password_salt, derive_password_reply_key, exchange_as_req, exchange_tgs_req,
-    login_tgt_with_keytab, login_tgt_with_password, pa_enc_timestamp_with_confounder,
-    process_as_rep, process_kdc_error, process_tgs_rep, process_tgs_rep_with_referral, renew_tgt,
-    select_preauth_key_info,
+    build_ticket_renewal_req_with_confounder, default_password_salt, derive_password_reply_key,
+    exchange_as_req, exchange_tgs_req, login_tgt_with_keytab, login_tgt_with_password,
+    pa_enc_timestamp_with_confounder, process_as_rep, process_kdc_error, process_tgs_rep,
+    process_tgs_rep_with_referral, renew_tgt, renew_ticket, select_preauth_key_info,
 };
 #[cfg(feature = "tokio")]
 use rskrb5::client::{KdcProtocol, TokioClient};
@@ -383,6 +383,41 @@ fn builds_tgt_renewal_req_sets_renew_options() {
 }
 
 #[test]
+fn builds_ticket_renewal_req_sets_service_and_renew_options() {
+    let tgt = sample_tgt_session();
+    let service_ticket = sample_service_ticket_session(&tgt);
+    let request = build_ticket_renewal_req_with_confounder(
+        &service_ticket,
+        TgsReqOptions::new(timestamp(1_893_553_450), 0x8877_6655)
+            .with_kdc_option_bits(0x0000_0010)
+            .with_renew_lifetime(Some(Duration::from_secs(10 * 60 * 60)))
+            .with_etypes(vec![18]),
+        timestamp(1_893_553_451),
+        654_321,
+        &decode_hex(TGS_REQ_CONFOUNDER),
+    )
+    .expect("service-ticket renewal TGS-REQ builds");
+    let decoded: rasn_kerberos::TgsReq = rasn::der::decode(&request.der).expect("TGS-REQ decodes");
+    let expected_options = 0x0000_0010 | KDC_OPTION_RENEWABLE | KDC_OPTION_RENEW;
+
+    assert_eq!(request.kdc_realm, "TEST.GOKRB5");
+    assert_eq!(request.service, sample_service_principal());
+    let body = &decoded.0.req_body;
+    assert_eq!(
+        body.kdc_options.0.as_raw_slice(),
+        expected_options.to_be_bytes().as_slice()
+    );
+    assert_eq!(
+        principal_from_parts(&body.realm, body.sname.as_ref().expect("sname")),
+        sample_service_principal()
+    );
+    assert_eq!(
+        system_time_from_kerberos_time(body.rtime.as_ref().expect("renew time")),
+        timestamp(1_893_589_450)
+    );
+}
+
+#[test]
 fn processes_tgs_rep_and_exports_ccache_credential() {
     let tgt = sample_tgt_session();
     let request = sample_tgs_request(&tgt);
@@ -460,6 +495,7 @@ fn renew_tgt_uses_transport_boundary() {
     let tgt = sample_tgt_session();
     let mut transport = RenewalTransport {
         session_key: tgt.session_key.clone(),
+        expected_service: Principal::tgt_service("TEST.GOKRB5"),
         calls: 0,
     };
 
@@ -473,6 +509,29 @@ fn renew_tgt_uses_transport_boundary() {
     assert_eq!(transport.calls, 1);
     assert_eq!(session.client, Principal::user("TEST.GOKRB5", "testuser1"));
     assert_eq!(session.service, Principal::tgt_service("TEST.GOKRB5"));
+    assert!(!session.ticket.is_empty());
+}
+
+#[test]
+fn renew_ticket_uses_transport_boundary() {
+    let tgt = sample_tgt_session();
+    let service_ticket = sample_service_ticket_session(&tgt);
+    let mut transport = RenewalTransport {
+        session_key: service_ticket.session_key.clone(),
+        expected_service: sample_service_principal(),
+        calls: 0,
+    };
+
+    let session = renew_ticket(
+        &mut transport,
+        &service_ticket,
+        TgsReqOptions::new(timestamp(1_893_553_450), 0x7766_5544).with_etypes(vec![18]),
+    )
+    .expect("service-ticket renewal succeeds");
+
+    assert_eq!(transport.calls, 1);
+    assert_eq!(session.client, Principal::user("TEST.GOKRB5", "testuser1"));
+    assert_eq!(session.service, sample_service_principal());
     assert!(!session.ticket.is_empty());
 }
 
@@ -975,6 +1034,7 @@ impl KdcTransport for MockTransport {
 
 struct RenewalTransport {
     session_key: EncryptionKey,
+    expected_service: Principal,
     calls: usize,
 }
 
@@ -988,6 +1048,10 @@ impl KdcTransport for RenewalTransport {
             (KDC_OPTION_RENEWABLE | KDC_OPTION_RENEW)
                 .to_be_bytes()
                 .as_slice()
+        );
+        assert_eq!(
+            principal_from_parts(&body.realm, body.sname.as_ref().expect("sname")),
+            self.expected_service
         );
 
         self.calls += 1;
