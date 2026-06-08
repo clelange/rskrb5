@@ -2,11 +2,13 @@
 //!
 //! The implemented encryption families cover RFC3962
 //! `aes128-cts-hmac-sha1-96` / `aes256-cts-hmac-sha1-96` and RFC8009
-//! `aes128-cts-hmac-sha256-128` / `aes256-cts-hmac-sha384-192`, plus
-//! RFC4757 `arcfour-hmac-md5` / `rc4-hmac`, matching the gokrb5 v8 surface
-//! used by key derivation, checksums, and encrypted message handling.
+//! `aes128-cts-hmac-sha256-128` / `aes256-cts-hmac-sha384-192`, RFC3961
+//! `des3-cbc-sha1-kd`, and RFC4757 `arcfour-hmac-md5` / `rc4-hmac`,
+//! matching the gokrb5 v8 surface used by key derivation, checksums, and
+//! encrypted message handling.
 
 use aes::cipher::{Array, BlockCipherDecrypt, BlockCipherEncrypt, KeyInit};
+use des::TdesEde3;
 use hmac::{Hmac, Mac};
 use md4::{Digest, Md4};
 use md5::Md5;
@@ -15,14 +17,19 @@ use sha1::Sha1;
 use sha2::{Sha256, Sha384};
 
 const AES_BLOCK_SIZE: usize = 16;
+const DES3_BLOCK_SIZE: usize = 8;
+const DES3_KEY_SIZE: usize = 24;
+const DES3_SEED_SIZE: usize = 21;
 const RC4_HMAC_KEY_SIZE: usize = 16;
 const RC4_HMAC_CONFOUNDER_SIZE: usize = 8;
 const HMAC_SHA1_96_SIZE: usize = 12;
+const HMAC_SHA1_SIZE: usize = 20;
 const HMAC_SHA256_128_SIZE: usize = 16;
 const HMAC_SHA384_192_SIZE: usize = 24;
 const HMAC_MD5_SIZE: usize = 16;
 const DEFAULT_RFC3962_S2KPARAMS: &str = "00001000";
 const DEFAULT_RFC8009_S2KPARAMS: &str = "00008000";
+const DEFAULT_DES3_S2KPARAMS: &str = "";
 const DEFAULT_RC4_HMAC_S2KPARAMS: &str = "";
 const KERBEROS_CONSTANT: &[u8] = b"kerberos";
 const RC4_HMAC_SIGNATURE_KEY: &[u8] = b"signaturekey\0";
@@ -539,6 +546,223 @@ impl AesSha2Etype {
     }
 }
 
+/// Kerberos RFC3961 DES3-CBC-SHA1-KD encryption type.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Des3CbcSha1KdEtype;
+
+impl Des3CbcSha1KdEtype {
+    /// Return the DES3 encryption type for a Kerberos etype id.
+    pub fn from_etype_id(etype_id: i32) -> Option<Self> {
+        match etype_id {
+            16 => Some(Self),
+            _ => None,
+        }
+    }
+
+    /// Return the DES3 encryption type for a Kerberos checksum type id.
+    pub fn from_checksum_type_id(checksum_type_id: i32) -> Option<Self> {
+        match checksum_type_id {
+            12 => Some(Self),
+            _ => None,
+        }
+    }
+
+    /// Kerberos encryption type ID.
+    pub fn etype_id(self) -> i32 {
+        16
+    }
+
+    /// Kerberos checksum type ID.
+    pub fn checksum_type_id(self) -> i32 {
+        12
+    }
+
+    /// Protocol key size in bytes.
+    pub fn key_len(self) -> usize {
+        DES3_KEY_SIZE
+    }
+
+    /// Confounder size in bytes.
+    pub fn confounder_len(self) -> usize {
+        DES3_BLOCK_SIZE
+    }
+
+    /// HMAC-SHA1 size in bytes.
+    pub fn hmac_len(self) -> usize {
+        HMAC_SHA1_SIZE
+    }
+
+    /// DES3 string-to-key parameters must be empty.
+    pub fn default_s2kparams(self) -> &'static str {
+        DEFAULT_DES3_S2KPARAMS
+    }
+
+    /// Derive a DES3 protocol key from a password and salt.
+    pub fn string_to_key(
+        self,
+        secret: &[u8],
+        salt: &[u8],
+        s2kparams: &str,
+    ) -> Result<Vec<u8>, Error> {
+        if !s2kparams.is_empty() {
+            return Err(Error::NonEmptyDes3S2kParams);
+        }
+
+        let mut input = Vec::with_capacity(secret.len() + salt.len());
+        input.extend_from_slice(secret);
+        input.extend_from_slice(salt);
+
+        let folded = nfold(&input, DES3_SEED_SIZE * 8)?;
+        let tkey = self.random_to_key(&folded)?;
+        self.derive_key(&tkey, KERBEROS_CONSTANT)
+    }
+
+    /// Convert 21 seed bytes into a DES3 key with DES parity and weak-key fixups.
+    pub fn random_to_key(self, bytes: &[u8]) -> Result<Vec<u8>, Error> {
+        des3_random_to_key(bytes)
+    }
+
+    /// Derive a usage-specific key from a protocol key.
+    pub fn derive_key(self, protocol_key: &[u8], usage: &[u8]) -> Result<Vec<u8>, Error> {
+        let random = self.derive_random(protocol_key, usage)?;
+        self.random_to_key(&random)
+    }
+
+    /// RFC3961 DR function for DES3.
+    pub fn derive_random(self, protocol_key: &[u8], usage: &[u8]) -> Result<Vec<u8>, Error> {
+        self.validate_key(protocol_key)?;
+        if usage.is_empty() {
+            return Err(Error::EmptyUsage);
+        }
+
+        let folded_usage = nfold(usage, DES3_BLOCK_SIZE * 8)?;
+        let mut out = Vec::with_capacity(DES3_SEED_SIZE);
+        let (_, mut block) = self.encrypt_data(protocol_key, &folded_usage)?;
+
+        while out.len() < DES3_SEED_SIZE {
+            let remaining = DES3_SEED_SIZE - out.len();
+            out.extend_from_slice(&block[..remaining.min(block.len())]);
+            if out.len() < DES3_SEED_SIZE {
+                let (_, next) = self.encrypt_data(protocol_key, &block)?;
+                block = next;
+            }
+        }
+
+        Ok(out)
+    }
+
+    /// Calculate the keyed checksum for message bytes and a Kerberos key usage.
+    pub fn checksum(self, protocol_key: &[u8], data: &[u8], usage: u32) -> Result<Vec<u8>, Error> {
+        let key = self.derive_key(protocol_key, &usage_constant(usage, 0x99))?;
+        Ok(hmac_sha1(&key, data))
+    }
+
+    /// Verify a keyed checksum.
+    pub fn verify_checksum(
+        self,
+        protocol_key: &[u8],
+        data: &[u8],
+        checksum: &[u8],
+        usage: u32,
+    ) -> bool {
+        self.checksum(protocol_key, data, usage)
+            .is_ok_and(|expected| constant_time_eq(&expected, checksum))
+    }
+
+    /// Encrypt raw bytes with DES3-CBC and a zero initial IV.
+    ///
+    /// Returns `(next_iv, ciphertext)`, matching gokrb5's DES3-CBC helper.
+    pub fn encrypt_data(self, key: &[u8], plaintext: &[u8]) -> Result<(Vec<u8>, Vec<u8>), Error> {
+        self.validate_key(key)?;
+        des3_cbc_encrypt(key, plaintext)
+    }
+
+    /// Decrypt raw bytes with DES3-CBC and a zero initial IV.
+    pub fn decrypt_data(self, key: &[u8], ciphertext: &[u8]) -> Result<Vec<u8>, Error> {
+        self.validate_key(key)?;
+        des3_cbc_decrypt(key, ciphertext)
+    }
+
+    /// Encrypt a Kerberos message with an explicit confounder.
+    ///
+    /// The returned bytes are zero-padded DES3-CBC ciphertext plus the RFC3961
+    /// HMAC-SHA1 integrity hash over the padded confounder-plus-message bytes.
+    pub fn encrypt_message_with_confounder(
+        self,
+        protocol_key: &[u8],
+        message: &[u8],
+        usage: u32,
+        confounder: &[u8],
+    ) -> Result<Vec<u8>, Error> {
+        self.validate_key(protocol_key)?;
+        if confounder.len() != self.confounder_len() {
+            return Err(Error::InvalidConfounderLength {
+                expected: self.confounder_len(),
+                actual: confounder.len(),
+            });
+        }
+
+        let mut plain = Vec::with_capacity(confounder.len() + message.len());
+        plain.extend_from_slice(confounder);
+        plain.extend_from_slice(message);
+        zero_pad(&mut plain, DES3_BLOCK_SIZE);
+
+        let encryption_key = self.derive_key(protocol_key, &usage_constant(usage, 0xaa))?;
+        let (_, mut encrypted) = self.encrypt_data(&encryption_key, &plain)?;
+        let integrity_key = self.derive_key(protocol_key, &usage_constant(usage, 0x55))?;
+        encrypted.extend_from_slice(&hmac_sha1(&integrity_key, &plain));
+        Ok(encrypted)
+    }
+
+    /// Decrypt a Kerberos message and verify its RFC3961 integrity hash.
+    ///
+    /// Like gokrb5, this returns the decrypted message after the confounder and
+    /// preserves any zero padding added before encryption.
+    pub fn decrypt_message(
+        self,
+        protocol_key: &[u8],
+        ciphertext: &[u8],
+        usage: u32,
+    ) -> Result<Vec<u8>, Error> {
+        self.validate_key(protocol_key)?;
+        if ciphertext.len() < self.hmac_len() + self.confounder_len() {
+            return Err(Error::CiphertextTooShort {
+                minimum: self.hmac_len() + self.confounder_len(),
+                actual: ciphertext.len(),
+            });
+        }
+
+        let (encrypted, mac) = ciphertext.split_at(ciphertext.len() - self.hmac_len());
+        let encryption_key = self.derive_key(protocol_key, &usage_constant(usage, 0xaa))?;
+        let plain = self.decrypt_data(&encryption_key, encrypted)?;
+
+        if plain.len() < self.confounder_len() {
+            return Err(Error::PlaintextTooShort {
+                minimum: self.confounder_len(),
+                actual: plain.len(),
+            });
+        }
+
+        let integrity_key = self.derive_key(protocol_key, &usage_constant(usage, 0x55))?;
+        let expected = hmac_sha1(&integrity_key, &plain);
+        if !constant_time_eq(&expected, mac) {
+            return Err(Error::IntegrityCheckFailed);
+        }
+
+        Ok(plain[self.confounder_len()..].to_vec())
+    }
+
+    fn validate_key(self, key: &[u8]) -> Result<(), Error> {
+        if key.len() != self.key_len() {
+            return Err(Error::InvalidKeyLength {
+                expected: self.key_len(),
+                actual: key.len(),
+            });
+        }
+        Ok(())
+    }
+}
+
 /// Kerberos RFC4757 RC4-HMAC encryption type.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Rc4HmacEtype;
@@ -745,6 +969,8 @@ pub enum KerberosEtype {
     Sha1(AesSha1Etype),
     /// RFC8009 AES-SHA2 etype.
     Sha2(AesSha2Etype),
+    /// RFC3961 DES3-CBC-SHA1-KD etype.
+    Des3CbcSha1Kd(Des3CbcSha1KdEtype),
     /// RFC4757 RC4-HMAC etype.
     Rc4Hmac(Rc4HmacEtype),
 }
@@ -755,12 +981,14 @@ impl KerberosEtype {
         AesSha1Etype::from_etype_id(etype_id)
             .map(Self::Sha1)
             .or_else(|| AesSha2Etype::from_etype_id(etype_id).map(Self::Sha2))
+            .or_else(|| Des3CbcSha1KdEtype::from_etype_id(etype_id).map(Self::Des3CbcSha1Kd))
             .or_else(|| Rc4HmacEtype::from_etype_id(etype_id).map(Self::Rc4Hmac))
     }
 
     /// Return a supported encryption type for a Kerberos checksum type id.
     pub fn from_checksum_type_id(checksum_type_id: i32) -> Option<Self> {
         match checksum_type_id {
+            12 => Some(Self::Des3CbcSha1Kd(Des3CbcSha1KdEtype)),
             15 => Some(Self::Sha1(AesSha1Etype::Aes128)),
             16 => Some(Self::Sha1(AesSha1Etype::Aes256)),
             19 => Some(Self::Sha2(AesSha2Etype::Aes128)),
@@ -774,6 +1002,7 @@ impl KerberosEtype {
         match self {
             Self::Sha1(etype) => etype.etype_id(),
             Self::Sha2(etype) => etype.etype_id(),
+            Self::Des3CbcSha1Kd(etype) => etype.etype_id(),
             Self::Rc4Hmac(etype) => etype.etype_id(),
         }
     }
@@ -783,6 +1012,7 @@ impl KerberosEtype {
         match self {
             Self::Sha1(etype) => etype.checksum_type_id(),
             Self::Sha2(etype) => etype.checksum_type_id(),
+            Self::Des3CbcSha1Kd(etype) => etype.checksum_type_id(),
             Self::Rc4Hmac(etype) => etype.checksum_type_id(),
         }
     }
@@ -792,6 +1022,7 @@ impl KerberosEtype {
         match self {
             Self::Sha1(etype) => etype.key_len(),
             Self::Sha2(etype) => etype.key_len(),
+            Self::Des3CbcSha1Kd(etype) => etype.key_len(),
             Self::Rc4Hmac(etype) => etype.key_len(),
         }
     }
@@ -801,6 +1032,7 @@ impl KerberosEtype {
         match self {
             Self::Sha1(etype) => etype.confounder_len(),
             Self::Sha2(etype) => etype.confounder_len(),
+            Self::Des3CbcSha1Kd(etype) => etype.confounder_len(),
             Self::Rc4Hmac(etype) => etype.confounder_len(),
         }
     }
@@ -810,6 +1042,7 @@ impl KerberosEtype {
         match self {
             Self::Sha1(etype) => etype.hmac_len(),
             Self::Sha2(etype) => etype.hmac_len(),
+            Self::Des3CbcSha1Kd(etype) => etype.hmac_len(),
             Self::Rc4Hmac(etype) => etype.hmac_len(),
         }
     }
@@ -819,6 +1052,7 @@ impl KerberosEtype {
         match self {
             Self::Sha1(etype) => etype.default_s2kparams(),
             Self::Sha2(etype) => etype.default_s2kparams(),
+            Self::Des3CbcSha1Kd(etype) => etype.default_s2kparams(),
             Self::Rc4Hmac(etype) => etype.default_s2kparams(),
         }
     }
@@ -833,6 +1067,7 @@ impl KerberosEtype {
         match self {
             Self::Sha1(etype) => etype.string_to_key(secret, salt, s2kparams),
             Self::Sha2(etype) => etype.string_to_key(secret, salt, s2kparams),
+            Self::Des3CbcSha1Kd(etype) => etype.string_to_key(secret, salt, s2kparams),
             Self::Rc4Hmac(etype) => etype.string_to_key(secret, salt, s2kparams),
         }
     }
@@ -842,6 +1077,7 @@ impl KerberosEtype {
         match self {
             Self::Sha1(etype) => etype.checksum(protocol_key, data, usage),
             Self::Sha2(etype) => etype.checksum(protocol_key, data, usage),
+            Self::Des3CbcSha1Kd(etype) => etype.checksum(protocol_key, data, usage),
             Self::Rc4Hmac(etype) => etype.checksum(protocol_key, data, usage),
         }
     }
@@ -857,6 +1093,9 @@ impl KerberosEtype {
         match self {
             Self::Sha1(etype) => etype.verify_checksum(protocol_key, data, checksum, usage),
             Self::Sha2(etype) => etype.verify_checksum(protocol_key, data, checksum, usage),
+            Self::Des3CbcSha1Kd(etype) => {
+                etype.verify_checksum(protocol_key, data, checksum, usage)
+            }
             Self::Rc4Hmac(etype) => etype.verify_checksum(protocol_key, data, checksum, usage),
         }
     }
@@ -876,6 +1115,9 @@ impl KerberosEtype {
             Self::Sha2(etype) => {
                 etype.encrypt_message_with_confounder(protocol_key, message, usage, confounder)
             }
+            Self::Des3CbcSha1Kd(etype) => {
+                etype.encrypt_message_with_confounder(protocol_key, message, usage, confounder)
+            }
             Self::Rc4Hmac(etype) => {
                 etype.encrypt_message_with_confounder(protocol_key, message, usage, confounder)
             }
@@ -892,6 +1134,7 @@ impl KerberosEtype {
         match self {
             Self::Sha1(etype) => etype.decrypt_message(protocol_key, ciphertext, usage),
             Self::Sha2(etype) => etype.decrypt_message(protocol_key, ciphertext, usage),
+            Self::Des3CbcSha1Kd(etype) => etype.decrypt_message(protocol_key, ciphertext, usage),
             Self::Rc4Hmac(etype) => etype.decrypt_message(protocol_key, ciphertext, usage),
         }
     }
@@ -1009,6 +1252,19 @@ pub enum Error {
     #[error("RC4-HMAC string-to-key secret must be valid UTF-8")]
     InvalidStringToKeySecret,
 
+    /// DES3 string-to-key parameters are required to be empty.
+    #[error("DES3 string-to-key parameters must be empty")]
+    NonEmptyDes3S2kParams,
+
+    /// DES3 random-to-key seed material length did not match RFC3961.
+    #[error("invalid random-to-key seed length: expected {expected} bytes, got {actual}")]
+    InvalidSeedLength {
+        /// Expected seed length.
+        expected: usize,
+        /// Actual seed length.
+        actual: usize,
+    },
+
     /// The n-fold input was empty.
     #[error("n-fold input must not be empty")]
     EmptyNfoldInput,
@@ -1021,9 +1277,18 @@ pub enum Error {
     #[error("invalid n-fold output bit count: {0}")]
     InvalidNfoldOutputBits(usize),
 
-    /// AES-CTS data encryption needs at least one plaintext byte.
+    /// Data encryption needs at least one plaintext byte.
     #[error("plaintext must not be empty")]
     EmptyPlaintext,
+
+    /// CBC ciphertext was not an exact multiple of the selected block size.
+    #[error("ciphertext length {actual} is not a multiple of {block_size}")]
+    InvalidCiphertextBlockSize {
+        /// Required block size.
+        block_size: usize,
+        /// Actual ciphertext length.
+        actual: usize,
+    },
 }
 
 fn aes_cts_encrypt(key: &[u8], plaintext: &[u8]) -> Result<(Vec<u8>, Vec<u8>), Error> {
@@ -1212,6 +1477,163 @@ fn decrypt_block(key: &[u8], block: &mut [u8; AES_BLOCK_SIZE]) {
     block.copy_from_slice(&block_array);
 }
 
+fn des3_cbc_encrypt(key: &[u8], plaintext: &[u8]) -> Result<(Vec<u8>, Vec<u8>), Error> {
+    if plaintext.is_empty() {
+        return Err(Error::EmptyPlaintext);
+    }
+
+    let mut padded = plaintext.to_vec();
+    zero_pad(&mut padded, DES3_BLOCK_SIZE);
+
+    let mut previous = [0; DES3_BLOCK_SIZE];
+    let mut out = Vec::with_capacity(padded.len());
+    for chunk in padded.chunks_exact(DES3_BLOCK_SIZE) {
+        let mut block = [0; DES3_BLOCK_SIZE];
+        for i in 0..DES3_BLOCK_SIZE {
+            block[i] = chunk[i] ^ previous[i];
+        }
+        des3_encrypt_block(key, &mut block);
+        previous = block;
+        out.extend_from_slice(&block);
+    }
+
+    Ok((previous.to_vec(), out))
+}
+
+fn des3_cbc_decrypt(key: &[u8], ciphertext: &[u8]) -> Result<Vec<u8>, Error> {
+    if ciphertext.len() < DES3_BLOCK_SIZE {
+        return Err(Error::CiphertextTooShort {
+            minimum: DES3_BLOCK_SIZE,
+            actual: ciphertext.len(),
+        });
+    }
+    if !ciphertext.len().is_multiple_of(DES3_BLOCK_SIZE) {
+        return Err(Error::InvalidCiphertextBlockSize {
+            block_size: DES3_BLOCK_SIZE,
+            actual: ciphertext.len(),
+        });
+    }
+
+    let mut previous = [0; DES3_BLOCK_SIZE];
+    let mut out = Vec::with_capacity(ciphertext.len());
+    for chunk in ciphertext.chunks_exact(DES3_BLOCK_SIZE) {
+        let mut block = [0; DES3_BLOCK_SIZE];
+        block.copy_from_slice(chunk);
+        let cipher_block = block;
+        des3_decrypt_block(key, &mut block);
+        for i in 0..DES3_BLOCK_SIZE {
+            block[i] ^= previous[i];
+        }
+        previous = cipher_block;
+        out.extend_from_slice(&block);
+    }
+
+    Ok(out)
+}
+
+fn des3_encrypt_block(key: &[u8], block: &mut [u8; DES3_BLOCK_SIZE]) {
+    let key_bytes: [u8; DES3_KEY_SIZE] = key
+        .try_into()
+        .expect("key length is validated before DES3 encryption");
+    let key_array = Array::from(key_bytes);
+    let cipher = TdesEde3::new(&key_array);
+    let mut block_array = Array::from(*block);
+    cipher.encrypt_block(&mut block_array);
+    block.copy_from_slice(&block_array);
+}
+
+fn des3_decrypt_block(key: &[u8], block: &mut [u8; DES3_BLOCK_SIZE]) {
+    let key_bytes: [u8; DES3_KEY_SIZE] = key
+        .try_into()
+        .expect("key length is validated before DES3 decryption");
+    let key_array = Array::from(key_bytes);
+    let cipher = TdesEde3::new(&key_array);
+    let mut block_array = Array::from(*block);
+    cipher.decrypt_block(&mut block_array);
+    block.copy_from_slice(&block_array);
+}
+
+fn des3_random_to_key(bytes: &[u8]) -> Result<Vec<u8>, Error> {
+    if bytes.len() != DES3_SEED_SIZE {
+        return Err(Error::InvalidSeedLength {
+            expected: DES3_SEED_SIZE,
+            actual: bytes.len(),
+        });
+    }
+
+    let mut key = Vec::with_capacity(DES3_KEY_SIZE);
+    for seed in bytes.chunks_exact(7) {
+        let mut block = des3_stretch_56_bits(seed);
+        des3_fix_weak_key(&mut block);
+        key.extend_from_slice(&block);
+    }
+    Ok(key)
+}
+
+fn des3_stretch_56_bits(bytes: &[u8]) -> [u8; DES3_BLOCK_SIZE] {
+    debug_assert_eq!(bytes.len(), 7);
+
+    let mut out = [0; DES3_BLOCK_SIZE];
+    let mut last_byte = 0;
+    for (idx, byte) in bytes.iter().enumerate() {
+        let (lowest_bit, adjusted) = des3_calc_odd_parity(*byte);
+        out[idx] = adjusted;
+        if lowest_bit != 0 {
+            last_byte |= 1 << (idx + 1);
+        }
+    }
+
+    let (_, adjusted_last) = des3_calc_odd_parity(last_byte);
+    out[DES3_BLOCK_SIZE - 1] = adjusted_last;
+    out
+}
+
+fn des3_calc_odd_parity(mut byte: u8) -> (u8, u8) {
+    let lowest_bit = byte & 0x01;
+    let mut count = 0;
+    for position in 1..8 {
+        if byte & (1 << position) != 0 {
+            count += 1;
+        }
+    }
+
+    if count % 2 == 0 {
+        byte |= 1;
+    } else {
+        byte &= !1;
+    }
+    (lowest_bit, byte)
+}
+
+fn des3_fix_weak_key(block: &mut [u8; DES3_BLOCK_SIZE]) {
+    if des3_is_weak_key(block) {
+        block[DES3_BLOCK_SIZE - 1] ^= 0xf0;
+    }
+}
+
+fn des3_is_weak_key(block: &[u8; DES3_BLOCK_SIZE]) -> bool {
+    const WEAK_KEYS: [[u8; DES3_BLOCK_SIZE]; 16] = [
+        [0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01],
+        [0xfe, 0xfe, 0xfe, 0xfe, 0xfe, 0xfe, 0xfe, 0xfe],
+        [0xe0, 0xe0, 0xe0, 0xe0, 0xf1, 0xf1, 0xf1, 0xf1],
+        [0x1f, 0x1f, 0x1f, 0x1f, 0x0e, 0x0e, 0x0e, 0x0e],
+        [0x01, 0x1f, 0x01, 0x1f, 0x01, 0x0e, 0x01, 0x0e],
+        [0x1f, 0x01, 0x1f, 0x01, 0x0e, 0x01, 0x0e, 0x01],
+        [0x01, 0xe0, 0x01, 0xe0, 0x01, 0xf1, 0x01, 0xf1],
+        [0xe0, 0x01, 0xe0, 0x01, 0xf1, 0x01, 0xf1, 0x01],
+        [0x01, 0xfe, 0x01, 0xfe, 0x01, 0xfe, 0x01, 0xfe],
+        [0xfe, 0x01, 0xfe, 0x01, 0xfe, 0x01, 0xfe, 0x01],
+        [0x1f, 0xe0, 0x1f, 0xe0, 0x0e, 0xf1, 0x0e, 0xf1],
+        [0xe0, 0x1f, 0xe0, 0x1f, 0xf1, 0x0e, 0xf1, 0x0e],
+        [0x1f, 0xfe, 0x1f, 0xfe, 0x0e, 0xfe, 0x0e, 0xfe],
+        [0xfe, 0x1f, 0xfe, 0x1f, 0xfe, 0x0e, 0xfe, 0x0e],
+        [0xe0, 0xfe, 0xe0, 0xfe, 0xf1, 0xfe, 0xf1, 0xfe],
+        [0xfe, 0xe0, 0xfe, 0xe0, 0xfe, 0xf1, 0xfe, 0xf1],
+    ];
+
+    WEAK_KEYS.contains(block)
+}
+
 fn zero_pad(bytes: &mut Vec<u8>, block_size: usize) {
     let remainder = bytes.len() % block_size;
     if remainder != 0 {
@@ -1262,9 +1684,13 @@ fn rc4_hmac_crypt(key: &[u8], input: &[u8]) -> Result<Vec<u8>, Error> {
 }
 
 fn hmac_sha1_96(key: &[u8], data: &[u8]) -> Vec<u8> {
+    hmac_sha1(key, data)[..HMAC_SHA1_96_SIZE].to_vec()
+}
+
+fn hmac_sha1(key: &[u8], data: &[u8]) -> Vec<u8> {
     let mut mac = Hmac::<Sha1>::new_from_slice(key).expect("HMAC-SHA1 accepts keys of any size");
     mac.update(data);
-    mac.finalize().into_bytes()[..HMAC_SHA1_96_SIZE].to_vec()
+    mac.finalize().into_bytes().to_vec()
 }
 
 fn hmac_md5(key: &[u8], data: &[u8]) -> Vec<u8> {
