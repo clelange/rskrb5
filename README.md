@@ -16,14 +16,17 @@ pure-Rust Kerberos library.
 - The ASN.1 spike now checks 51 gokrb5 unit-test fixtures with separate decode
   and exact DER round-trip expectations for `rasn-kerberos` and `picky-krb`.
 - The first real modules are `keytab`, `krb5.conf`, `ccache`, `crypto`,
-  `service`, and `pac`: keytabs parse, serialize, and select keys against
+  `client`, `service`, and `pac`: keytabs parse, serialize, and select keys against
   gokrb5 fixtures;
   config parsing covers libdefaults, realm host mappings, domain realm lookup,
   duration parsing, and configured KDC/KPassword server lookup; ccache parsing
   covers MIT file caches, opaque ticket bytes, server entry lookup, and exact
   fixture round-trips; crypto covers RFC3961 n-fold and RFC3962
   AES128/AES256-CTS-HMAC-SHA1-96 string-to-key, AES-CTS, checksums, and
-  deterministic encrypted-message vectors; service validation covers
+  deterministic encrypted-message vectors; client AS exchange primitives cover
+  deterministic TGT AS-REQ construction, PA-ENC-TIMESTAMP encryption, a KDC
+  transport boundary, AS-REP encrypted-part decryption and validation, and
+  ccache credential export; service validation covers
   gokrb5-generated AP-REQ fixtures, service-ticket decryption, authenticator
   decryption, client matching, ticket time checks, clock skew, replay, and
   address-required behavior, plus AP-REP mutual-auth reply generation and

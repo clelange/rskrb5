@@ -10,6 +10,8 @@
 pub mod evaluation;
 
 pub mod ccache;
+#[cfg(feature = "messages")]
+pub mod client;
 pub mod config;
 pub mod crypto;
 pub mod keytab;
@@ -53,6 +55,11 @@ pub enum Error {
     /// PAC parsing or verification failed.
     #[error("PAC error: {0}")]
     Pac(#[from] pac::Error),
+
+    /// AS exchange client processing failed.
+    #[cfg(feature = "messages")]
+    #[error("client error: {0}")]
+    Client(#[from] client::Error),
 
     /// AP-REQ service validation failed.
     #[cfg(feature = "messages")]

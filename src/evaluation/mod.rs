@@ -12,7 +12,7 @@ pub use data::{
 /// Render the current compatibility matrix as Markdown.
 pub fn render_markdown() -> String {
     let mut out = String::from("# rskrb5 Compatibility Spike\n\n");
-    out.push_str("This report is generated from `rskrb5::evaluation` and captures the decision gate before implementing a standalone Kerberos library.\n\n");
+    out.push_str("This report is generated from `rskrb5::evaluation` and captures the dependency decision gate and ongoing candidate matrix for a gokrb5-equivalent Rust implementation.\n\n");
 
     render_contract(&mut out);
     render_decision_matrix(&mut out);
@@ -20,7 +20,7 @@ pub fn render_markdown() -> String {
     render_candidate_details(&mut out);
 
     out.push_str("## Decision\n\n");
-    out.push_str("Create a new `rskrb5` implementation only if `sspi-rs` plus permissively licensed ASN.1 crates cannot satisfy gokrb5 v8 parity without an awkward API facade. The immediate implementation work is to translate gokrb5 fixture tests and keep measuring candidates against those tests.\n");
+    out.push_str("Proceed with `rskrb5` as the high-level pure-Rust implementation while reusing permissively licensed ASN.1/data-type crates where they pass gokrb5 vectors. Candidate crates remain useful dependencies or references, but none currently supplies a clean gokrb5-equivalent client/service/SPNEGO API. The immediate implementation work is live AS/TGS transport, referrals, renewal, and Docker KDC integration tests.\n");
     out
 }
 

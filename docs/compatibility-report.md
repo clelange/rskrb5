@@ -1,6 +1,6 @@
 # rskrb5 Compatibility Spike
 
-This report is generated from `rskrb5::evaluation` and captures the decision gate before implementing a standalone Kerberos library.
+This report is generated from `rskrb5::evaluation` and captures the dependency decision gate and ongoing candidate matrix for a gokrb5-equivalent Rust implementation.
 
 ## gokrb5 v8 Contract
 
@@ -197,4 +197,4 @@ This report is generated from `rskrb5::evaluation` and captures the decision gat
 
 ## Decision
 
-Create a new `rskrb5` implementation only if `sspi-rs` plus permissively licensed ASN.1 crates cannot satisfy gokrb5 v8 parity without an awkward API facade. The immediate implementation work is to translate gokrb5 fixture tests and keep measuring candidates against those tests.
+Proceed with `rskrb5` as the high-level pure-Rust implementation while reusing permissively licensed ASN.1/data-type crates where they pass gokrb5 vectors. Candidate crates remain useful dependencies or references, but none currently supplies a clean gokrb5-equivalent client/service/SPNEGO API. The immediate implementation work is live AS/TGS transport, referrals, renewal, and Docker KDC integration tests.
