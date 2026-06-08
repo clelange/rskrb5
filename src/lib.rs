@@ -9,6 +9,7 @@
 #[cfg(feature = "evaluation")]
 pub mod evaluation;
 
+pub mod ccache;
 pub mod config;
 pub mod keytab;
 
@@ -34,4 +35,8 @@ pub enum Error {
     /// krb5.conf parsing failed.
     #[error("config error: {0}")]
     Config(#[from] config::Error),
+
+    /// Credential cache parsing or serialization failed.
+    #[error("ccache error: {0}")]
+    CCache(#[from] ccache::Error),
 }
