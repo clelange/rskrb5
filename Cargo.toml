@@ -14,7 +14,7 @@ publish = false
 [features]
 default = ["evaluation"]
 evaluation = [
-    "messages",
+    "spnego",
     "dep:hex",
     "dep:picky-asn1",
     "dep:picky-asn1-der",
@@ -22,11 +22,13 @@ evaluation = [
     "dep:serde",
 ]
 messages = ["dep:chrono", "dep:rasn", "dep:rasn-kerberos"]
+spnego = ["messages", "dep:base64"]
 tokio = ["dep:tokio"]
 serde = ["dep:serde"]
 
 [dependencies]
 aes = "0.9.1"
+base64 = { version = "0.22", optional = true }
 chrono = { version = "0.4", default-features = false, features = ["std"], optional = true }
 hex = { version = "0.4", optional = true }
 hmac = "0.13.0"

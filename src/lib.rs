@@ -15,6 +15,8 @@ pub mod crypto;
 pub mod keytab;
 #[cfg(feature = "messages")]
 pub mod service;
+#[cfg(feature = "spnego")]
+pub mod spnego;
 
 /// Current crate-level result type.
 pub type Result<T> = std::result::Result<T, Error>;
@@ -51,4 +53,9 @@ pub enum Error {
     #[cfg(feature = "messages")]
     #[error("service validation error: {0}")]
     Service(#[from] service::Error),
+
+    /// SPNEGO/GSSAPI token processing failed.
+    #[cfg(feature = "spnego")]
+    #[error("SPNEGO error: {0}")]
+    Spnego(#[from] spnego::Error),
 }

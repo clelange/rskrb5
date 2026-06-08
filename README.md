@@ -26,7 +26,8 @@ pure-Rust Kerberos library.
   gokrb5-generated AP-REQ fixtures, service-ticket decryption, authenticator
   decryption, client matching, ticket time checks, clock skew, replay, and
   address-required behavior, plus AP-REP mutual-auth reply generation and
-  verification.
+  verification; SPNEGO/GSSAPI covers KRB5 mech tokens, NegTokenInit/Resp,
+  HTTP Negotiate headers, and service-side AP-REQ to AP-REP response flow.
 - `sspi-rs` is treated as a mature Negotiate/Kerberos collaboration or facade
   candidate.
 - `krb5-rs` is not used as a base implementation because the published crate is
