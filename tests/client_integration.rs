@@ -949,11 +949,13 @@ fn build_login_request(
     let cusec = match protocol {
         KdcProtocol::Udp => elapsed.subsec_micros(),
         KdcProtocol::Tcp => (elapsed.subsec_micros() + 1) % 1_000_000,
+        KdcProtocol::Auto => (elapsed.subsec_micros() + 2) % 1_000_000,
     };
     let nonce = ((elapsed.as_nanos() as u32) & 0x0fff_ffff)
         | match protocol {
             KdcProtocol::Udp => 0x1000_0000,
             KdcProtocol::Tcp => 0x2000_0000,
+            KdcProtocol::Auto => 0x3000_0000,
         };
     let padata = pa_enc_timestamp_with_confounder(
         &key,
@@ -985,6 +987,7 @@ fn login_options_with_etypes(
         | match protocol {
             KdcProtocol::Udp => 0x1000_0000,
             KdcProtocol::Tcp => 0x2000_0000,
+            KdcProtocol::Auto => 0x3000_0000,
         };
     Ok(AsReqOptions::new(now, nonce)
         .with_ticket_lifetime(Duration::from_secs(24 * 60 * 60))
@@ -1006,6 +1009,7 @@ fn tgs_options_with_etypes(
         | match protocol {
             KdcProtocol::Udp => 0x1000_0000,
             KdcProtocol::Tcp => 0x2000_0000,
+            KdcProtocol::Auto => 0x3000_0000,
         };
     Ok(TgsReqOptions::new(now, nonce)
         .with_ticket_lifetime(Duration::from_secs(24 * 60 * 60))
@@ -1133,6 +1137,7 @@ fn confounder(protocol: KdcProtocol, elapsed: Duration) -> [u8; 16] {
     confounder[0] = match protocol {
         KdcProtocol::Udp => 1,
         KdcProtocol::Tcp => 2,
+        KdcProtocol::Auto => 3,
     };
     confounder[1..9].copy_from_slice(&elapsed.as_secs().to_be_bytes());
     confounder[9..13].copy_from_slice(&elapsed.subsec_nanos().to_be_bytes());
@@ -1145,6 +1150,7 @@ fn rc4_confounder(protocol: KdcProtocol, elapsed: Duration) -> [u8; 8] {
     confounder[0] = match protocol {
         KdcProtocol::Udp => 1,
         KdcProtocol::Tcp => 2,
+        KdcProtocol::Auto => 3,
     };
     confounder[1..5].copy_from_slice(&elapsed.subsec_nanos().to_be_bytes());
     confounder[5..8].copy_from_slice(&elapsed.as_secs().to_be_bytes()[5..8]);
@@ -1157,6 +1163,7 @@ fn des3_confounder(protocol: KdcProtocol, elapsed: Duration) -> [u8; 8] {
     confounder[0] = match protocol {
         KdcProtocol::Udp => 3,
         KdcProtocol::Tcp => 4,
+        KdcProtocol::Auto => 5,
     };
     confounder[1..5].copy_from_slice(&elapsed.subsec_nanos().to_be_bytes());
     confounder[5..8].copy_from_slice(&elapsed.as_secs().to_be_bytes()[5..8]);

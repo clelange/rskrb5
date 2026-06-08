@@ -69,6 +69,8 @@ pub const PA_REQ_ENC_PA_REP: i32 = 149;
 
 /// KDC error code for additional preauthentication required.
 pub const KDC_ERR_PREAUTH_REQUIRED: i32 = 25;
+/// KDC error code indicating the client should retry over TCP.
+pub const KRB_ERR_RESPONSE_TOO_BIG: i32 = 52;
 
 /// Key usage for AS-REQ encrypted timestamp preauthentication.
 pub const AS_REQ_PA_ENC_TIMESTAMP_USAGE: u32 = 1;
@@ -434,6 +436,8 @@ pub enum KdcProtocol {
     Udp,
     /// RFC 4120 TCP transport with a four-byte big-endian length prefix.
     Tcp,
+    /// gokrb5-style transport preference using UDP/TCP fallback.
+    Auto,
 }
 
 /// Source used to discover a KDC endpoint.
@@ -1075,11 +1079,21 @@ impl TokioKdcTransport {
         request: &[u8],
     ) -> Result<Vec<u8>, Error>
     where
-        A: ToSocketAddrs,
+        A: ToSocketAddrs + Clone,
     {
         match protocol {
             KdcProtocol::Udp => self.send_udp(addr, request).await,
             KdcProtocol::Tcp => self.send_tcp(addr, request).await,
+            KdcProtocol::Auto => {
+                let udp = self.send_udp(addr.clone(), request).await;
+                match udp {
+                    Ok(response) if kdc_error_code(&response) == Some(KRB_ERR_RESPONSE_TOO_BIG) => {
+                        self.send_tcp(addr, request).await
+                    }
+                    Ok(response) => Ok(response),
+                    Err(_) => self.send_tcp(addr, request).await,
+                }
+            }
         }
     }
 
@@ -1125,6 +1139,20 @@ impl TokioKdcTransport {
         realm: &str,
         request: &[u8],
     ) -> Result<Vec<u8>, Error> {
+        if protocol == KdcProtocol::Auto {
+            return self.send_to_realm_auto(config, realm, request).await;
+        }
+        self.send_to_realm_explicit(config, protocol, realm, request)
+            .await
+    }
+
+    async fn send_to_realm_explicit(
+        &self,
+        config: &Config,
+        protocol: KdcProtocol,
+        realm: &str,
+        request: &[u8],
+    ) -> Result<Vec<u8>, Error> {
         let endpoints = self.discover_kdcs(config, realm, protocol).await?;
         self.send_to_endpoints(realm, protocol, endpoints, request)
             .await
@@ -1139,7 +1167,7 @@ impl TokioKdcTransport {
         reply_key: &EncryptionKey,
     ) -> Result<AsRepSession, Error>
     where
-        A: ToSocketAddrs,
+        A: ToSocketAddrs + Clone,
     {
         let response = self.send(protocol, addr, &request.der).await?;
         process_as_rep(request, &response, reply_key)
@@ -1168,7 +1196,7 @@ impl TokioKdcTransport {
         tgs_session_key: &EncryptionKey,
     ) -> Result<TgsRepSession, Error>
     where
-        A: ToSocketAddrs,
+        A: ToSocketAddrs + Clone,
     {
         let response = self.send(protocol, addr, &request.der).await?;
         process_tgs_rep(request, &response, tgs_session_key)
@@ -1197,7 +1225,7 @@ impl TokioKdcTransport {
         options: TgsReqOptions,
     ) -> Result<TgsRepSession, Error>
     where
-        A: ToSocketAddrs,
+        A: ToSocketAddrs + Clone,
     {
         let request = build_tgt_renewal_req(tgt, options)?;
         self.exchange_tgs_req(protocol, addr, &request, &tgt.session_key)
@@ -1226,7 +1254,7 @@ impl TokioKdcTransport {
         options: TgsReqOptions,
     ) -> Result<TgsRepSession, Error>
     where
-        A: ToSocketAddrs,
+        A: ToSocketAddrs + Clone,
     {
         let request = build_ticket_renewal_req(ticket, options)?;
         self.exchange_tgs_req(protocol, addr, &request, &ticket.session_key)
@@ -1453,6 +1481,7 @@ impl TokioKdcTransport {
         let service = match protocol {
             KdcProtocol::Udp => "_kerberos._udp",
             KdcProtocol::Tcp => "_kerberos._tcp",
+            KdcProtocol::Auto => "_kerberos._udp",
         };
         let query = format!("{service}.{realm}.");
         let resolver = TokioResolver::builder_tokio()
@@ -1546,6 +1575,38 @@ impl TokioKdcTransport {
             protocol,
             failures,
         })
+    }
+
+    async fn send_to_realm_auto(
+        &self,
+        config: &Config,
+        realm: &str,
+        request: &[u8],
+    ) -> Result<Vec<u8>, Error> {
+        let udp_first = auto_uses_udp_first(config, request.len());
+        let (first, second) = if udp_first {
+            (KdcProtocol::Udp, KdcProtocol::Tcp)
+        } else {
+            (KdcProtocol::Tcp, KdcProtocol::Udp)
+        };
+
+        match self
+            .send_to_realm_explicit(config, first, realm, request)
+            .await
+        {
+            Ok(response)
+                if first == KdcProtocol::Udp
+                    && kdc_error_code(&response) == Some(KRB_ERR_RESPONSE_TOO_BIG) =>
+            {
+                self.send_to_realm_explicit(config, second, realm, request)
+                    .await
+            }
+            Ok(response) => Ok(response),
+            Err(_) => {
+                self.send_to_realm_explicit(config, second, realm, request)
+                    .await
+            }
+        }
     }
 
     async fn with_transport_timeout<F, T>(&self, operation: F) -> Result<T, Error>
@@ -2866,6 +2927,18 @@ fn preauth_key_info_from_method_data(
         }
     }
     Ok(infos)
+}
+
+fn kdc_error_code(bytes: &[u8]) -> Option<i32> {
+    rasn::der::decode::<rasn_kerberos::KrbError>(bytes)
+        .ok()
+        .map(|error| error.error_code)
+}
+
+#[cfg(feature = "tokio")]
+fn auto_uses_udp_first(config: &Config, request_len: usize) -> bool {
+    let limit = config.libdefaults.udp_preference_limit;
+    limit != 1 && limit >= 0 && request_len <= limit as usize
 }
 
 fn current_preauth_time() -> Result<(SystemTime, u32), Error> {

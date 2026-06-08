@@ -3,7 +3,9 @@
 use std::error::Error;
 use std::time::Duration;
 
-use rskrb5::client::{KdcEndpoint, KdcEndpointSource, KdcProtocol, TokioKdcTransport};
+use rskrb5::client::{
+    KRB_ERR_RESPONSE_TOO_BIG, KdcEndpoint, KdcEndpointSource, KdcProtocol, TokioKdcTransport,
+};
 use rskrb5::config::Config;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, UdpSocket};
@@ -223,7 +225,75 @@ fn tokio_transport_tries_next_configured_kdc_after_tcp_failure() -> Result<(), B
     })
 }
 
+#[test]
+fn tokio_transport_auto_retries_tcp_after_udp_response_too_big() -> Result<(), Box<dyn Error>> {
+    runtime().block_on(async {
+        let udp = UdpSocket::bind("127.0.0.1:0").await?;
+        let addr = udp.local_addr()?;
+        let listener = TcpListener::bind(addr).await?;
+
+        let udp_task = tokio::spawn(async move {
+            let mut request = [0; 64];
+            let (len, peer) = udp.recv_from(&mut request).await.expect("receive UDP");
+            assert_eq!(&request[..len], b"auto-as-req");
+            udp.send_to(&response_too_big_error(), peer)
+                .await
+                .expect("send UDP KRB-ERROR");
+        });
+        let tcp_task = tokio::spawn(async move {
+            let (request, mut socket) = read_tcp_request(&listener).await;
+            assert_eq!(request, b"auto-as-req");
+            write_tcp_response(&mut socket, b"auto-tcp-as-rep").await;
+        });
+
+        let response = TokioKdcTransport::new()
+            .with_timeout(Duration::from_secs(2))
+            .send(KdcProtocol::Auto, addr, b"auto-as-req")
+            .await?;
+
+        udp_task.await?;
+        tcp_task.await?;
+        assert_eq!(response, b"auto-tcp-as-rep");
+        Ok::<_, Box<dyn Error>>(())
+    })
+}
+
+#[test]
+fn tokio_transport_auto_honors_tcp_only_udp_preference_limit() -> Result<(), Box<dyn Error>> {
+    runtime().block_on(async {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let addr = listener.local_addr()?;
+        let config = config_with_kdcs_and_udp_limit([addr.to_string()], 1);
+        let task = tokio::spawn(async move {
+            let (request, mut socket) = read_tcp_request(&listener).await;
+            assert_eq!(request, b"auto-config-as-req");
+            write_tcp_response(&mut socket, b"auto-config-tcp-as-rep").await;
+        });
+
+        let response = TokioKdcTransport::new()
+            .with_timeout(Duration::from_secs(2))
+            .send_to_realm(
+                &config,
+                KdcProtocol::Auto,
+                "TEST.GOKRB5",
+                b"auto-config-as-req",
+            )
+            .await?;
+
+        task.await?;
+        assert_eq!(response, b"auto-config-tcp-as-rep");
+        Ok::<_, Box<dyn Error>>(())
+    })
+}
+
 fn config_with_kdcs<I>(kdcs: I) -> Config
+where
+    I: IntoIterator<Item = String>,
+{
+    config_with_kdcs_and_udp_limit(kdcs, 1465)
+}
+
+fn config_with_kdcs_and_udp_limit<I>(kdcs: I, udp_preference_limit: i32) -> Config
 where
     I: IntoIterator<Item = String>,
 {
@@ -231,6 +301,12 @@ where
         r#"
 [libdefaults]
  dns_lookup_kdc = false
+"#,
+    );
+    input.push_str(" udp_preference_limit = ");
+    input.push_str(&udp_preference_limit.to_string());
+    input.push_str(
+        r#"
 
 [realms]
  TEST.GOKRB5 = {
@@ -243,6 +319,70 @@ where
     }
     input.push_str(" }\n");
     Config::parse(&input).expect("config parses")
+}
+
+async fn read_tcp_request(listener: &TcpListener) -> (Vec<u8>, tokio::net::TcpStream) {
+    let (mut socket, _) = listener.accept().await.expect("accept client");
+    let mut header = [0; 4];
+    socket
+        .read_exact(&mut header)
+        .await
+        .expect("read request length");
+    let request_len = u32::from_be_bytes(header) as usize;
+    let mut request = vec![0; request_len];
+    socket.read_exact(&mut request).await.expect("read request");
+    (request, socket)
+}
+
+async fn write_tcp_response(socket: &mut tokio::net::TcpStream, response: &[u8]) {
+    socket
+        .write_all(&(response.len() as u32).to_be_bytes())
+        .await
+        .expect("write response length");
+    socket.write_all(response).await.expect("write response");
+}
+
+fn response_too_big_error() -> Vec<u8> {
+    let error = rasn_kerberos::KrbError {
+        pvno: rasn::types::Integer::from(5),
+        msg_type: rasn::types::Integer::from(30),
+        ctime: None,
+        cusec: None,
+        stime: kerberos_time(1_893_553_440),
+        susec: rasn::types::Integer::from(0),
+        error_code: KRB_ERR_RESPONSE_TOO_BIG,
+        crealm: None,
+        cname: None,
+        realm: realm("TEST.GOKRB5"),
+        sname: rasn_principal(&["krbtgt", "TEST.GOKRB5"]),
+        e_text: Some(kerberos_string("response too big")),
+        e_data: None,
+    };
+    rasn::der::encode(&error).expect("KRB-ERROR encodes")
+}
+
+fn kerberos_time(seconds: i64) -> rasn_kerberos::KerberosTime {
+    let utc = chrono::DateTime::<chrono::Utc>::from_timestamp(seconds, 0).expect("valid time");
+    let offset = chrono::FixedOffset::east_opt(0).expect("UTC offset exists");
+    rasn_kerberos::KerberosTime(utc.with_timezone(&offset))
+}
+
+fn rasn_principal(components: &[&str]) -> rasn_kerberos::PrincipalName {
+    rasn_kerberos::PrincipalName {
+        r#type: 2,
+        string: components
+            .iter()
+            .map(|component| kerberos_string(component))
+            .collect(),
+    }
+}
+
+fn realm(value: &str) -> rasn_kerberos::Realm {
+    kerberos_string(value)
+}
+
+fn kerberos_string(value: &str) -> rasn_kerberos::KerberosString {
+    rasn_kerberos::KerberosString::try_from(value).expect("valid KerberosString")
 }
 
 fn runtime() -> tokio::runtime::Runtime {
