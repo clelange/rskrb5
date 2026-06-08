@@ -86,7 +86,7 @@ This report is generated from `rskrb5::evaluation` and captures the dependency d
 | `MarshaledKRB5enc_data` | EncryptedData | types/Cryptosystem_test.go | yes | yes | yes | yes |
 | `MarshaledKRB5enc_dataMSBSetkvno` | EncryptedData | types/Cryptosystem_test.go | yes | no | yes | yes |
 | `MarshaledKRB5enc_dataKVNONegOne` | EncryptedData | types/Cryptosystem_test.go | yes | no | yes | yes |
-| `MarshaledChangePasswdData` | ChangePasswdData | kadmin/changepasswddata_test.go | no | no | yes | yes |
+| `MarshaledChangePasswdData` | ChangePasswdData | kadmin/changepasswddata_test.go | yes | yes | yes | yes |
 
 ## rasn-kerberos
 

@@ -17,6 +17,8 @@ pub mod crypto;
 mod der;
 #[cfg(feature = "http")]
 pub mod http;
+#[cfg(feature = "messages")]
+pub mod kadmin;
 pub mod keytab;
 pub mod pac;
 #[cfg(feature = "messages")]

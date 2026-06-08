@@ -269,7 +269,7 @@ fn rasn_decode(der_type: DerType, bytes: &[u8]) -> Probe {
         DerType::EtypeInfo => rasn_decode_type::<rasn_kerberos::EtypeInfo>(bytes),
         DerType::EtypeInfo2 => rasn_decode_type::<rasn_kerberos::EtypeInfo2>(bytes),
         DerType::EncryptedData => rasn_decode_type::<rasn_kerberos::EncryptedData>(bytes),
-        DerType::ChangePasswdData => Probe::Unsupported,
+        DerType::ChangePasswdData => rasn_decode_type::<rskrb5::kadmin::ChangePasswdData>(bytes),
     }
 }
 
@@ -304,7 +304,7 @@ fn rasn_roundtrip(der_type: DerType, bytes: &[u8]) -> Probe {
         DerType::EtypeInfo => rasn_roundtrip_type::<rasn_kerberos::EtypeInfo>(bytes),
         DerType::EtypeInfo2 => rasn_roundtrip_type::<rasn_kerberos::EtypeInfo2>(bytes),
         DerType::EncryptedData => rasn_roundtrip_type::<rasn_kerberos::EncryptedData>(bytes),
-        DerType::ChangePasswdData => Probe::Unsupported,
+        DerType::ChangePasswdData => rasn_roundtrip_type::<rskrb5::kadmin::ChangePasswdData>(bytes),
     }
 }
 
