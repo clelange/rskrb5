@@ -43,7 +43,7 @@ pure-Rust Kerberos library.
   service-side AP-REQ to AP-REP response flow; HTTP/Tower adapters cover
   generic `http` request helpers and service-side Tower middleware that
   challenges, validates, attaches accepted contexts, and emits AP-REP response
-  headers; PAC
+  headers, with a compileable Axum Negotiate example; PAC
   parsing covers the PAC container, KERB_VALIDATION_INFO NDR, client info,
   UPN/DNS info, signature zeroing, authorization-data extraction, resource
   group SID expansion, and AES-SHA1 service checksum verification.
@@ -64,6 +64,12 @@ cargo run --bin rskrb5-compat-report
 The report records the gokrb5 v8 test contract and the current support matrix
 for candidate crates. Keep it current whenever a candidate or porting milestone
 changes.
+
+Run the Axum Negotiate example with a service keytab:
+
+```sh
+KRB5_KTNAME=FILE:/path/to/http.keytab cargo run --example axum-negotiate --features http --no-default-features
+```
 
 Run the local checks:
 
