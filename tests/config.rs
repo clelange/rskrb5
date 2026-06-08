@@ -274,6 +274,21 @@ fn libdefaults_keys_are_case_insensitive_and_extra_addresses_are_comma_separated
 }
 
 #[test]
+fn maps_rc4_hmac_enctype_aliases() {
+    let config = Config::parse(
+        r#"
+[libdefaults]
+ default_tkt_enctypes = arcfour-hmac rc4-hmac arcfour-hmac-md5
+ default_tgs_enctypes = rc4-hmac
+"#,
+    )
+    .expect("config parses");
+
+    assert_eq!(config.libdefaults.default_tkt_enctype_ids, [23, 23, 23]);
+    assert_eq!(config.libdefaults.default_tgs_enctype_ids, [23]);
+}
+
+#[test]
 fn rejects_v4_realm_directives() {
     let err = Config::parse(
         r#"

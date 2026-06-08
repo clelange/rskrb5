@@ -2,22 +2,30 @@
 //!
 //! The implemented encryption families cover RFC3962
 //! `aes128-cts-hmac-sha1-96` / `aes256-cts-hmac-sha1-96` and RFC8009
-//! `aes128-cts-hmac-sha256-128` / `aes256-cts-hmac-sha384-192`, matching the
-//! gokrb5 v8 AES surface used by key derivation, checksums, and encrypted
-//! message handling.
+//! `aes128-cts-hmac-sha256-128` / `aes256-cts-hmac-sha384-192`, plus
+//! RFC4757 `arcfour-hmac-md5` / `rc4-hmac`, matching the gokrb5 v8 surface
+//! used by key derivation, checksums, and encrypted message handling.
 
 use aes::cipher::{Array, BlockCipherDecrypt, BlockCipherEncrypt, KeyInit};
 use hmac::{Hmac, Mac};
+use md4::{Digest, Md4};
+use md5::Md5;
+use rc4::{Rc4, StreamCipher};
 use sha1::Sha1;
 use sha2::{Sha256, Sha384};
 
 const AES_BLOCK_SIZE: usize = 16;
+const RC4_HMAC_KEY_SIZE: usize = 16;
+const RC4_HMAC_CONFOUNDER_SIZE: usize = 8;
 const HMAC_SHA1_96_SIZE: usize = 12;
 const HMAC_SHA256_128_SIZE: usize = 16;
 const HMAC_SHA384_192_SIZE: usize = 24;
+const HMAC_MD5_SIZE: usize = 16;
 const DEFAULT_RFC3962_S2KPARAMS: &str = "00001000";
 const DEFAULT_RFC8009_S2KPARAMS: &str = "00008000";
+const DEFAULT_RC4_HMAC_S2KPARAMS: &str = "";
 const KERBEROS_CONSTANT: &[u8] = b"kerberos";
+const RC4_HMAC_SIGNATURE_KEY: &[u8] = b"signaturekey\0";
 
 /// Kerberos AES CTS-HMAC-SHA1-96 encryption type.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -531,31 +539,233 @@ impl AesSha2Etype {
     }
 }
 
-/// Kerberos AES encryption type supported by this crate.
+/// Kerberos RFC4757 RC4-HMAC encryption type.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Rc4HmacEtype;
+
+impl Rc4HmacEtype {
+    /// Return the RC4-HMAC encryption type for a Kerberos etype id.
+    pub fn from_etype_id(etype_id: i32) -> Option<Self> {
+        match etype_id {
+            23 => Some(Self),
+            _ => None,
+        }
+    }
+
+    /// Return the RC4-HMAC encryption type for a Kerberos checksum type id.
+    pub fn from_checksum_type_id(checksum_type_id: i32) -> Option<Self> {
+        match checksum_type_id {
+            -138 => Some(Self),
+            _ => None,
+        }
+    }
+
+    /// Kerberos encryption type ID.
+    pub fn etype_id(self) -> i32 {
+        23
+    }
+
+    /// Kerberos checksum type ID.
+    pub fn checksum_type_id(self) -> i32 {
+        -138
+    }
+
+    /// Protocol key size in bytes.
+    pub fn key_len(self) -> usize {
+        RC4_HMAC_KEY_SIZE
+    }
+
+    /// Confounder size in bytes.
+    pub fn confounder_len(self) -> usize {
+        RC4_HMAC_CONFOUNDER_SIZE
+    }
+
+    /// HMAC-MD5 size in bytes.
+    pub fn hmac_len(self) -> usize {
+        HMAC_MD5_SIZE
+    }
+
+    /// Default RFC4757 string-to-key parameters.
+    pub fn default_s2kparams(self) -> &'static str {
+        DEFAULT_RC4_HMAC_S2KPARAMS
+    }
+
+    /// Derive an RC4-HMAC protocol key from a password.
+    ///
+    /// RFC4757 ignores salt and string-to-key parameters and hashes the
+    /// password's UTF-16LE form with MD4.
+    pub fn string_to_key(
+        self,
+        secret: &[u8],
+        _salt: &[u8],
+        _s2kparams: &str,
+    ) -> Result<Vec<u8>, Error> {
+        let password = std::str::from_utf8(secret).map_err(|_| Error::InvalidStringToKeySecret)?;
+        let mut utf16le = Vec::with_capacity(password.len() * 2);
+        for unit in password.encode_utf16() {
+            utf16le.extend_from_slice(&unit.to_le_bytes());
+        }
+        Ok(Md4::digest(&utf16le).to_vec())
+    }
+
+    /// Convert random bytes into an RC4-HMAC key.
+    pub fn random_to_key(self, bytes: &[u8]) -> Vec<u8> {
+        Md4::digest(bytes).to_vec()
+    }
+
+    /// Derive a usage-specific key from a protocol key.
+    pub fn derive_key(self, protocol_key: &[u8], usage: &[u8]) -> Result<Vec<u8>, Error> {
+        self.validate_key(protocol_key)?;
+        if usage.is_empty() {
+            return Err(Error::EmptyUsage);
+        }
+        Ok(hmac_md5(protocol_key, usage))
+    }
+
+    /// Calculate the RFC4757 keyed checksum for message bytes and a key usage.
+    pub fn checksum(self, protocol_key: &[u8], data: &[u8], usage: u32) -> Result<Vec<u8>, Error> {
+        self.validate_key(protocol_key)?;
+        let signing_key = hmac_md5(protocol_key, RC4_HMAC_SIGNATURE_KEY);
+        let msg_type = rc4_hmac_usage_to_ms_msg_type(usage);
+        let mut md5_input = Vec::with_capacity(msg_type.len() + data.len());
+        md5_input.extend_from_slice(&msg_type);
+        md5_input.extend_from_slice(data);
+        let digest = Md5::digest(&md5_input);
+        Ok(hmac_md5(&signing_key, &digest))
+    }
+
+    /// Verify an RFC4757 keyed checksum.
+    pub fn verify_checksum(
+        self,
+        protocol_key: &[u8],
+        data: &[u8],
+        checksum: &[u8],
+        usage: u32,
+    ) -> bool {
+        self.checksum(protocol_key, data, usage)
+            .is_ok_and(|expected| constant_time_eq(&expected, checksum))
+    }
+
+    /// Encrypt raw bytes with RC4.
+    pub fn encrypt_data(self, key: &[u8], plaintext: &[u8]) -> Result<Vec<u8>, Error> {
+        self.validate_key(key)?;
+        rc4_hmac_crypt(key, plaintext)
+    }
+
+    /// Decrypt raw bytes with RC4.
+    pub fn decrypt_data(self, key: &[u8], ciphertext: &[u8]) -> Result<Vec<u8>, Error> {
+        self.validate_key(key)?;
+        rc4_hmac_crypt(key, ciphertext)
+    }
+
+    /// Encrypt a Kerberos message with an explicit confounder.
+    ///
+    /// The returned bytes are the 16-byte HMAC-MD5 checksum followed by the
+    /// RC4 encrypted confounder-plus-message payload.
+    pub fn encrypt_message_with_confounder(
+        self,
+        protocol_key: &[u8],
+        message: &[u8],
+        usage: u32,
+        confounder: &[u8],
+    ) -> Result<Vec<u8>, Error> {
+        self.validate_key(protocol_key)?;
+        if confounder.len() != self.confounder_len() {
+            return Err(Error::InvalidConfounderLength {
+                expected: self.confounder_len(),
+                actual: confounder.len(),
+            });
+        }
+
+        let mut plain = Vec::with_capacity(confounder.len() + message.len());
+        plain.extend_from_slice(confounder);
+        plain.extend_from_slice(message);
+
+        let usage_key = hmac_md5(protocol_key, &rc4_hmac_usage_to_ms_msg_type(usage));
+        let checksum = hmac_md5(&usage_key, &plain);
+        let encryption_key = hmac_md5(&usage_key, &checksum);
+        let encrypted = rc4_hmac_crypt(&encryption_key, &plain)?;
+
+        let mut out = Vec::with_capacity(checksum.len() + encrypted.len());
+        out.extend_from_slice(&checksum);
+        out.extend_from_slice(&encrypted);
+        Ok(out)
+    }
+
+    /// Decrypt a Kerberos message and verify its RFC4757 integrity checksum.
+    pub fn decrypt_message(
+        self,
+        protocol_key: &[u8],
+        ciphertext: &[u8],
+        usage: u32,
+    ) -> Result<Vec<u8>, Error> {
+        self.validate_key(protocol_key)?;
+        if ciphertext.len() < self.hmac_len() + self.confounder_len() {
+            return Err(Error::CiphertextTooShort {
+                minimum: self.hmac_len() + self.confounder_len(),
+                actual: ciphertext.len(),
+            });
+        }
+
+        let (checksum, encrypted) = ciphertext.split_at(self.hmac_len());
+        let usage_key = hmac_md5(protocol_key, &rc4_hmac_usage_to_ms_msg_type(usage));
+        let encryption_key = hmac_md5(&usage_key, checksum);
+        let plain = rc4_hmac_crypt(&encryption_key, encrypted)?;
+
+        if plain.len() < self.confounder_len() {
+            return Err(Error::PlaintextTooShort {
+                minimum: self.confounder_len(),
+                actual: plain.len(),
+            });
+        }
+
+        let expected = hmac_md5(&usage_key, &plain);
+        if !constant_time_eq(&expected, checksum) {
+            return Err(Error::IntegrityCheckFailed);
+        }
+
+        Ok(plain[self.confounder_len()..].to_vec())
+    }
+
+    fn validate_key(self, key: &[u8]) -> Result<(), Error> {
+        if key.len() != self.key_len() {
+            return Err(Error::InvalidKeyLength {
+                expected: self.key_len(),
+                actual: key.len(),
+            });
+        }
+        Ok(())
+    }
+}
+
+/// Kerberos encryption type supported by this crate.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AesEtype {
     /// RFC3962 AES-SHA1 etype.
     Sha1(AesSha1Etype),
     /// RFC8009 AES-SHA2 etype.
     Sha2(AesSha2Etype),
+    /// RFC4757 RC4-HMAC etype.
+    Rc4Hmac(Rc4HmacEtype),
 }
 
 impl AesEtype {
-    /// Return a supported AES encryption type for a Kerberos etype id.
+    /// Return a supported encryption type for a Kerberos etype id.
     pub fn from_etype_id(etype_id: i32) -> Option<Self> {
         AesSha1Etype::from_etype_id(etype_id)
             .map(Self::Sha1)
             .or_else(|| AesSha2Etype::from_etype_id(etype_id).map(Self::Sha2))
+            .or_else(|| Rc4HmacEtype::from_etype_id(etype_id).map(Self::Rc4Hmac))
     }
 
-    /// Return a supported AES encryption type for a Kerberos checksum type id.
+    /// Return a supported encryption type for a Kerberos checksum type id.
     pub fn from_checksum_type_id(checksum_type_id: i32) -> Option<Self> {
         match checksum_type_id {
             15 => Some(Self::Sha1(AesSha1Etype::Aes128)),
             16 => Some(Self::Sha1(AesSha1Etype::Aes256)),
             19 => Some(Self::Sha2(AesSha2Etype::Aes128)),
             20 => Some(Self::Sha2(AesSha2Etype::Aes256)),
-            _ => None,
+            _ => Rc4HmacEtype::from_checksum_type_id(checksum_type_id).map(Self::Rc4Hmac),
         }
     }
 
@@ -564,6 +774,7 @@ impl AesEtype {
         match self {
             Self::Sha1(etype) => etype.etype_id(),
             Self::Sha2(etype) => etype.etype_id(),
+            Self::Rc4Hmac(etype) => etype.etype_id(),
         }
     }
 
@@ -572,6 +783,7 @@ impl AesEtype {
         match self {
             Self::Sha1(etype) => etype.checksum_type_id(),
             Self::Sha2(etype) => etype.checksum_type_id(),
+            Self::Rc4Hmac(etype) => etype.checksum_type_id(),
         }
     }
 
@@ -580,6 +792,7 @@ impl AesEtype {
         match self {
             Self::Sha1(etype) => etype.key_len(),
             Self::Sha2(etype) => etype.key_len(),
+            Self::Rc4Hmac(etype) => etype.key_len(),
         }
     }
 
@@ -588,6 +801,7 @@ impl AesEtype {
         match self {
             Self::Sha1(etype) => etype.confounder_len(),
             Self::Sha2(etype) => etype.confounder_len(),
+            Self::Rc4Hmac(etype) => etype.confounder_len(),
         }
     }
 
@@ -596,6 +810,7 @@ impl AesEtype {
         match self {
             Self::Sha1(etype) => etype.hmac_len(),
             Self::Sha2(etype) => etype.hmac_len(),
+            Self::Rc4Hmac(etype) => etype.hmac_len(),
         }
     }
 
@@ -604,10 +819,11 @@ impl AesEtype {
         match self {
             Self::Sha1(etype) => etype.default_s2kparams(),
             Self::Sha2(etype) => etype.default_s2kparams(),
+            Self::Rc4Hmac(etype) => etype.default_s2kparams(),
         }
     }
 
-    /// Derive an AES protocol key from a password and salt.
+    /// Derive a protocol key from a password and salt.
     pub fn string_to_key(
         self,
         secret: &[u8],
@@ -617,6 +833,7 @@ impl AesEtype {
         match self {
             Self::Sha1(etype) => etype.string_to_key(secret, salt, s2kparams),
             Self::Sha2(etype) => etype.string_to_key(secret, salt, s2kparams),
+            Self::Rc4Hmac(etype) => etype.string_to_key(secret, salt, s2kparams),
         }
     }
 
@@ -625,6 +842,7 @@ impl AesEtype {
         match self {
             Self::Sha1(etype) => etype.checksum(protocol_key, data, usage),
             Self::Sha2(etype) => etype.checksum(protocol_key, data, usage),
+            Self::Rc4Hmac(etype) => etype.checksum(protocol_key, data, usage),
         }
     }
 
@@ -639,6 +857,7 @@ impl AesEtype {
         match self {
             Self::Sha1(etype) => etype.verify_checksum(protocol_key, data, checksum, usage),
             Self::Sha2(etype) => etype.verify_checksum(protocol_key, data, checksum, usage),
+            Self::Rc4Hmac(etype) => etype.verify_checksum(protocol_key, data, checksum, usage),
         }
     }
 
@@ -657,6 +876,9 @@ impl AesEtype {
             Self::Sha2(etype) => {
                 etype.encrypt_message_with_confounder(protocol_key, message, usage, confounder)
             }
+            Self::Rc4Hmac(etype) => {
+                etype.encrypt_message_with_confounder(protocol_key, message, usage, confounder)
+            }
         }
     }
 
@@ -670,6 +892,7 @@ impl AesEtype {
         match self {
             Self::Sha1(etype) => etype.decrypt_message(protocol_key, ciphertext, usage),
             Self::Sha2(etype) => etype.decrypt_message(protocol_key, ciphertext, usage),
+            Self::Rc4Hmac(etype) => etype.decrypt_message(protocol_key, ciphertext, usage),
         }
     }
 }
@@ -778,6 +1001,10 @@ pub enum Error {
     /// RFC3962's zero iteration value means 2^32 iterations and is not run.
     #[error("s2kparams iteration count zero is not supported")]
     UnsupportedIterationCountZero,
+
+    /// RC4-HMAC string-to-key requires a UTF-8 password byte string.
+    #[error("RC4-HMAC string-to-key secret must be valid UTF-8")]
+    InvalidStringToKeySecret,
 
     /// The n-fold input was empty.
     #[error("n-fold input must not be empty")]
@@ -1001,10 +1228,46 @@ fn usage_constant(usage: u32, suffix: u8) -> [u8; 5] {
     [usage[0], usage[1], usage[2], usage[3], suffix]
 }
 
+fn rc4_hmac_usage_to_ms_msg_type(usage: u32) -> [u8; 4] {
+    let mut usage = match usage {
+        3 | 9 => 8,
+        23 => 13,
+        _ => usage,
+    };
+
+    let mut out = [0; 4];
+    for byte in &mut out {
+        if usage < 0x80 {
+            *byte = usage as u8;
+            break;
+        }
+        *byte = ((usage as u8) & 0x7f) | 0x80;
+        usage >>= 7;
+    }
+    out
+}
+
+fn rc4_hmac_crypt(key: &[u8], input: &[u8]) -> Result<Vec<u8>, Error> {
+    let mut cipher =
+        <Rc4 as rc4::KeyInit>::new_from_slice(key).map_err(|_| Error::InvalidKeyLength {
+            expected: RC4_HMAC_KEY_SIZE,
+            actual: key.len(),
+        })?;
+    let mut out = input.to_vec();
+    cipher.apply_keystream(&mut out);
+    Ok(out)
+}
+
 fn hmac_sha1_96(key: &[u8], data: &[u8]) -> Vec<u8> {
     let mut mac = Hmac::<Sha1>::new_from_slice(key).expect("HMAC-SHA1 accepts keys of any size");
     mac.update(data);
     mac.finalize().into_bytes()[..HMAC_SHA1_96_SIZE].to_vec()
+}
+
+fn hmac_md5(key: &[u8], data: &[u8]) -> Vec<u8> {
+    let mut mac = Hmac::<Md5>::new_from_slice(key).expect("HMAC-MD5 accepts keys of any size");
+    mac.update(data);
+    mac.finalize().into_bytes().to_vec()
 }
 
 fn hmac_sha256(key: &[u8], data: &[u8]) -> Vec<u8> {

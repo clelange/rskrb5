@@ -1,6 +1,6 @@
 use pretty_assertions::assert_eq;
 use rskrb5::crypto::{
-    AesEtype, AesSha1Etype, AesSha2Etype, Error, iterations_to_s2kparams, nfold,
+    AesEtype, AesSha1Etype, AesSha2Etype, Error, Rc4HmacEtype, iterations_to_s2kparams, nfold,
     s2kparams_to_iterations,
 };
 
@@ -56,7 +56,10 @@ fn reports_aes_sha2_metadata_and_dispatch() {
         AesEtype::from_checksum_type_id(19),
         Some(AesEtype::Sha2(AesSha2Etype::Aes128))
     );
-    assert_eq!(AesEtype::from_etype_id(23), None);
+    assert_eq!(
+        AesEtype::from_etype_id(23),
+        Some(AesEtype::Rc4Hmac(Rc4HmacEtype))
+    );
 }
 
 #[test]

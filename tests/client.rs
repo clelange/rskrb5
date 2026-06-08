@@ -7,9 +7,9 @@ use pretty_assertions::assert_eq;
 use rskrb5::ccache;
 use rskrb5::client::{
     AS_REP_ENCPART_USAGE, AS_REQ_PA_ENC_TIMESTAMP_USAGE, AsReqOptions, BuiltAsReq, BuiltTgsReq,
-    Error, KDC_ERR_PREAUTH_REQUIRED, KDC_OPTION_RENEW, KDC_OPTION_RENEWABLE, KdcTransport,
-    PA_ENC_TIMESTAMP, PA_ETYPE_INFO2, PA_REQ_ENC_PA_REP, PA_TGS_REQ, PreauthKeyInfo, Principal,
-    TGS_REP_ENCPART_SESSION_KEY_USAGE, TGS_REQ_AUTHENTICATOR_CHECKSUM_USAGE,
+    Error, KDC_ERR_PREAUTH_REQUIRED, KDC_OPTION_RENEW, KDC_OPTION_RENEWABLE, KdcError,
+    KdcTransport, PA_ENC_TIMESTAMP, PA_ETYPE_INFO2, PA_REQ_ENC_PA_REP, PA_TGS_REQ, PreauthKeyInfo,
+    Principal, TGS_REP_ENCPART_SESSION_KEY_USAGE, TGS_REQ_AUTHENTICATOR_CHECKSUM_USAGE,
     TGS_REQ_AUTHENTICATOR_USAGE, TgsReqOptions, build_tgs_req_for_realm_with_confounder,
     build_tgs_req_with_confounder, build_tgt_as_req, build_tgt_renewal_req_with_confounder,
     build_ticket_renewal_req_with_confounder, default_password_salt, derive_password_reply_key,
@@ -1034,6 +1034,35 @@ fn parses_kdc_preauth_required_error_and_selects_etype_info2() {
     assert_eq!(
         default_password_salt(&Principal::user("TEST.GOKRB5", "testuser1")),
         TESTUSER_SALT
+    );
+}
+
+#[test]
+fn selects_and_derives_rc4_hmac_preauth_key_info() {
+    let client = Principal::user("TEST.GOKRB5", "testuser1");
+    let error = KdcError {
+        error_code: KDC_ERR_PREAUTH_REQUIRED,
+        text: None,
+        client: Some(client.clone()),
+        service: Principal::tgt_service("TEST.GOKRB5"),
+        e_data: None,
+        method_data: Vec::new(),
+        preauth_key_info: vec![PreauthKeyInfo {
+            etype: 23,
+            salt: Some("ignored-by-rc4".to_owned()),
+            s2kparams: None,
+        }],
+    };
+
+    let selected = select_preauth_key_info(&error, &[18, 23]).expect("RC4 hint is selected");
+    assert_eq!(selected.etype, 23);
+
+    let reply_key =
+        derive_password_reply_key(&client, b"foo", &selected).expect("RC4 reply key derives");
+    assert_eq!(reply_key.etype, 23);
+    assert_eq!(
+        reply_key.value,
+        decode_hex("ac8e657f83df82beea5d43bdaf7800cc")
     );
 }
 

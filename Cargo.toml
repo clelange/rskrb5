@@ -38,12 +38,15 @@ getrandom = { version = "0.3", features = ["std"] }
 hickory-resolver = { version = "0.26.1", default-features = false, features = ["system-config", "tokio"], optional = true }
 http_types = { package = "http", version = "1", optional = true }
 hmac = "0.13.0"
+md-5 = "0.11.0"
+md4 = "0.11.0"
 pbkdf2 = "=0.13.0-rc.10"
 picky-asn1 = { version = "0.10.1", optional = true }
 picky-asn1-der = { version = "0.5", optional = true }
 picky-krb = { version = "0.12.3", optional = true }
 rasn = { version = "0.28.13", optional = true }
 rasn-kerberos = { version = "0.28.13", features = ["otp"], optional = true }
+rc4 = "0.2.0"
 serde = { version = "1", features = ["derive"], optional = true }
 sha1 = "0.11.0"
 sha2 = "0.11.0"
