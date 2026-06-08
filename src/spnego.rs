@@ -687,6 +687,15 @@ pub struct AcceptedContext {
 
 impl AcceptedContext {
     /// Build a `WWW-Authenticate` header containing an AP-REP response token.
+    pub fn ap_rep_response_header(&self, options: ApRepOptions) -> Result<String, Error> {
+        let etype = AesSha1Etype::from_etype_id(self.ap_req.session_key.etype)
+            .ok_or(Error::UnsupportedEtype(self.ap_req.session_key.etype))?;
+        let mut confounder = vec![0; etype.confounder_len()];
+        getrandom::fill(&mut confounder)?;
+        self.ap_rep_response_header_with_confounder(&confounder, options)
+    }
+
+    /// Build a `WWW-Authenticate` header containing an AP-REP response token.
     pub fn ap_rep_response_header_with_confounder(
         &self,
         confounder: &[u8],
