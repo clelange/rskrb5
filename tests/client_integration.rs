@@ -561,6 +561,37 @@ fn docker_mit_latest_kdc_aes_sha2_as_tgs_through_tcp_and_udp() -> Result<(), Box
 }
 
 #[test]
+fn docker_mit_kdc_keytab_enctype_as_tgs_through_tcp_and_udp() -> Result<(), Box<dyn Error>> {
+    if std::env::var("INTEGRATION").as_deref() != Ok("1") {
+        eprintln!("skipping Docker KDC integration test; set INTEGRATION=1 to enable");
+        return Ok(());
+    }
+    let _guard = INTEGRATION_LOCK.lock().expect("integration test lock");
+
+    runtime().block_on(assert_keytab_as_tgs_for_etypes(
+        &kdc_addr(),
+        &[AES128_ETYPE, AES256_ETYPE, DES3_ETYPE, RC4_HMAC_ETYPE],
+        29,
+    ))
+}
+
+#[test]
+fn docker_mit_latest_kdc_keytab_aes_sha2_as_tgs_through_tcp_and_udp() -> Result<(), Box<dyn Error>>
+{
+    if std::env::var("INTEGRATION").as_deref() != Ok("1") {
+        eprintln!("skipping Docker KDC integration test; set INTEGRATION=1 to enable");
+        return Ok(());
+    }
+    let _guard = INTEGRATION_LOCK.lock().expect("integration test lock");
+
+    runtime().block_on(assert_keytab_as_tgs_for_etypes(
+        &latest_kdc_addr(),
+        &[AES128_SHA2_ETYPE, AES256_SHA2_ETYPE],
+        45,
+    ))
+}
+
+#[test]
 fn docker_mit_kdc_tgt_renewal_through_tcp_and_udp() -> Result<(), Box<dyn Error>> {
     if std::env::var("INTEGRATION").as_deref() != Ok("1") {
         eprintln!("skipping Docker KDC integration test; set INTEGRATION=1 to enable");
@@ -989,6 +1020,55 @@ fn resdom_service_principal() -> Principal {
     Principal::new(RESDOM_REALM, 2, ["HTTP", RESDOM_SERVICE_HOST])
 }
 
+async fn assert_keytab_as_tgs_for_etypes(
+    addr: &str,
+    etypes: &[i32],
+    mut sequence: u32,
+) -> Result<(), Box<dyn Error>> {
+    let transport = TokioKdcTransport::new().with_timeout(Duration::from_secs(10));
+    let keytab = testuser_keytab_for_etypes(etypes)?;
+
+    for etype in etypes {
+        for protocol in [KdcProtocol::Udp, KdcProtocol::Tcp] {
+            eprintln!(
+                "running Docker KDC keytab etype {etype} AS/TGS exchange over {protocol:?} to {addr}"
+            );
+            let tgt = transport
+                .login_tgt_with_keytab(
+                    protocol,
+                    addr,
+                    Principal::user(REALM, USER),
+                    &keytab,
+                    login_options_with_etypes(protocol, sequence, vec![*etype])?,
+                )
+                .await?;
+            sequence += 1;
+            assert_eq!(tgt.session_key.etype, *etype);
+            assert!(!tgt.session_key.value.is_empty());
+
+            let service = service_principal();
+            let request = build_tgs_req(
+                &tgt,
+                service.clone(),
+                tgs_options_with_etypes(protocol, sequence, vec![*etype])?,
+            )?;
+            sequence += 1;
+            let ticket = transport
+                .exchange_tgs_req(protocol, addr, &request, &tgt.session_key)
+                .await?;
+
+            assert_eq!(ticket.client, Principal::user(REALM, USER));
+            assert_eq!(ticket.service, service);
+            assert_eq!(ticket.session_key.etype, *etype);
+            assert!(!ticket.session_key.value.is_empty());
+            assert!(!ticket.ticket.is_empty());
+            assert!(ticket.end_time > ticket.start_time);
+        }
+    }
+
+    Ok(())
+}
+
 fn testuser_reply_key() -> Result<EncryptionKey, Box<dyn Error>> {
     let etype = AesSha1Etype::Aes256;
     Ok(EncryptionKey {
@@ -998,8 +1078,19 @@ fn testuser_reply_key() -> Result<EncryptionKey, Box<dyn Error>> {
 }
 
 fn testuser_keytab() -> Result<Keytab, Box<dyn Error>> {
+    testuser_keytab_for_etypes(&[AES256_ETYPE])
+}
+
+fn testuser_keytab_for_etypes(etypes: &[i32]) -> Result<Keytab, Box<dyn Error>> {
     let mut keytab = Keytab::new();
-    keytab.entries_mut().push(KeytabEntry {
+    for etype in etypes {
+        keytab.entries_mut().push(testuser_keytab_entry(*etype)?);
+    }
+    Ok(keytab)
+}
+
+fn testuser_keytab_entry(etype: i32) -> Result<KeytabEntry, Box<dyn Error>> {
+    Ok(KeytabEntry {
         principal: KeytabPrincipal {
             realm: REALM.to_owned(),
             components: vec![USER.to_owned()],
@@ -1011,14 +1102,21 @@ fn testuser_keytab() -> Result<Keytab, Box<dyn Error>> {
             &Principal::user(REALM, USER),
             PASSWORD,
             &PreauthKeyInfo {
-                etype: AES256_ETYPE,
+                etype,
                 salt: Some(String::from_utf8(TESTUSER1_SALT.to_vec())?),
-                s2kparams: Some(vec![0, 0, 16, 0]),
+                s2kparams: testuser_s2kparams(etype),
             },
         )?,
         kvno: TESTUSER1_KVNO,
-    });
-    Ok(keytab)
+    })
+}
+
+fn testuser_s2kparams(etype: i32) -> Option<Vec<u8>> {
+    match etype {
+        AES128_ETYPE | AES256_ETYPE => Some(vec![0, 0, 16, 0]),
+        AES128_SHA2_ETYPE | AES256_SHA2_ETYPE => Some(vec![0, 0, 128, 0]),
+        _ => None,
+    }
 }
 
 fn assert_login_session(session: rskrb5::client::AsRepSession) {
