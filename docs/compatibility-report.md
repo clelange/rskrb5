@@ -33,7 +33,7 @@ This report is generated from `rskrb5::evaluation` and captures the dependency d
 
 ## ASN.1 Fixture Probe Matrix
 
-| Fixture | Type | gokrb5 test | rasn decode | rasn round-trip | picky decode | picky round-trip |
+| Fixture | Type | gokrb5 test | rasn-backed decode | rasn-backed round-trip | picky decode | picky round-trip |
 |---|---|---|---:|---:|---:|---:|
 | `MarshaledKRB5authenticator` | Authenticator | types/Authenticator_test.go | yes | yes | yes | yes |
 | `MarshaledKRB5authenticatorOptionalsEmpty` | Authenticator | types/Authenticator_test.go | yes | yes | yes | yes |
@@ -84,8 +84,8 @@ This report is generated from `rskrb5::evaluation` and captures the dependency d
 | `MarshaledKRB5etype_info2` | ETYPE-INFO2 | types/PAData_test.go | yes | yes | yes | yes |
 | `MarshaledKRB5etype_info2Only1` | ETYPE-INFO2 | types/PAData_test.go | yes | yes | yes | yes |
 | `MarshaledKRB5enc_data` | EncryptedData | types/Cryptosystem_test.go | yes | yes | yes | yes |
-| `MarshaledKRB5enc_dataMSBSetkvno` | EncryptedData | types/Cryptosystem_test.go | yes | no | yes | yes |
-| `MarshaledKRB5enc_dataKVNONegOne` | EncryptedData | types/Cryptosystem_test.go | yes | no | yes | yes |
+| `MarshaledKRB5enc_dataMSBSetkvno` | EncryptedData | types/Cryptosystem_test.go | yes | yes | yes | yes |
+| `MarshaledKRB5enc_dataKVNONegOne` | EncryptedData | types/Cryptosystem_test.go | yes | yes | yes | yes |
 | `MarshaledChangePasswdData` | ChangePasswdData | kadmin/changepasswddata_test.go | yes | yes | yes | yes |
 
 ## rasn-kerberos

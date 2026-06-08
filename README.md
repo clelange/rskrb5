@@ -14,7 +14,8 @@ pure-Rust Kerberos library.
 - `rasn-kerberos` and `picky-krb` are treated as dependency candidates for
   Kerberos DER/data types.
 - The ASN.1 spike now checks 51 gokrb5 unit-test fixtures with separate decode
-  and exact DER round-trip expectations for `rasn-kerberos` and `picky-krb`.
+  and exact DER round-trip expectations for rasn-backed rskrb5 wrappers and
+  `picky-krb`.
 - The first real modules are `keytab`, `krb5.conf`, `ccache`, `crypto`,
   `client`, `kadmin`, `service`, and `pac`: keytabs parse, serialize, and select keys against
   gokrb5 fixtures;
@@ -24,7 +25,8 @@ pure-Rust Kerberos library.
   fixture round-trips; crypto covers RFC3961 n-fold, RFC3962
   AES128/AES256-CTS-HMAC-SHA1-96, RFC8009
   AES128/AES256-CTS-HMAC-SHA2, DES3-CBC-SHA1-KD, and RC4-HMAC string-to-key,
-  KDF, checksums, and deterministic encrypted-message vectors; kadmin covers
+  KDF, checksums, and deterministic encrypted-message vectors; message wrappers
+  preserve gokrb5 EncryptedData signed-kvno DER edge fixtures; kadmin covers
   ChangePasswdData DER decode and exact fixture round-trip; client AS/TGS exchange primitives
   cover deterministic TGT AS-REQ construction, KRB-ERROR preauthentication
   negotiation and surfacing, PA-ENC-TIMESTAMP encryption, assumed

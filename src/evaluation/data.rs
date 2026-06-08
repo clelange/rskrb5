@@ -203,9 +203,9 @@ pub struct Asn1Fixture {
     pub gokrb5_test: &'static str,
     /// DER shape.
     pub der_type: DerType,
-    /// Expected `rasn-kerberos` decode support for this fixture.
+    /// Expected rasn-backed decode support for this fixture.
     pub rasn_kerberos: Support,
-    /// Expected `rasn-kerberos` exact DER round-trip support for this fixture.
+    /// Expected rasn-backed exact DER round-trip support for this fixture.
     pub rasn_kerberos_roundtrip: Support,
     /// Expected `picky-krb` decode support for this fixture.
     pub picky_krb: Support,
@@ -835,7 +835,7 @@ pub const ASN1_FIXTURES: &[Asn1Fixture] = &[
         gokrb5_test: "types/Cryptosystem_test.go",
         der_type: DerType::EncryptedData,
         rasn_kerberos: Support::Yes,
-        rasn_kerberos_roundtrip: Support::No,
+        rasn_kerberos_roundtrip: Support::Yes,
         picky_krb: Support::Yes,
         picky_krb_roundtrip: Support::Yes,
     },
@@ -845,7 +845,7 @@ pub const ASN1_FIXTURES: &[Asn1Fixture] = &[
         gokrb5_test: "types/Cryptosystem_test.go",
         der_type: DerType::EncryptedData,
         rasn_kerberos: Support::Yes,
-        rasn_kerberos_roundtrip: Support::No,
+        rasn_kerberos_roundtrip: Support::Yes,
         picky_krb: Support::Yes,
         picky_krb_roundtrip: Support::Yes,
     },

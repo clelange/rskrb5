@@ -20,6 +20,8 @@ pub mod http;
 #[cfg(feature = "messages")]
 pub mod kadmin;
 pub mod keytab;
+#[cfg(feature = "messages")]
+pub mod messages;
 pub mod pac;
 #[cfg(feature = "messages")]
 pub mod service;

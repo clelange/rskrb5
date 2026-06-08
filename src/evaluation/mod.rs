@@ -66,7 +66,7 @@ fn render_decision_matrix(out: &mut String) {
 fn render_asn1_fixture_matrix(out: &mut String) {
     out.push_str("## ASN.1 Fixture Probe Matrix\n\n");
     out.push_str(
-        "| Fixture | Type | gokrb5 test | rasn decode | rasn round-trip | picky decode | picky round-trip |\n",
+        "| Fixture | Type | gokrb5 test | rasn-backed decode | rasn-backed round-trip | picky decode | picky round-trip |\n",
     );
     out.push_str("|---|---|---|---:|---:|---:|---:|\n");
     for fixture in ASN1_FIXTURES {

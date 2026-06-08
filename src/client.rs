@@ -2937,6 +2937,7 @@ fn preauth_key_info_from_method_data(
     Ok(infos)
 }
 
+#[cfg(feature = "tokio")]
 fn kdc_error_code(bytes: &[u8]) -> Option<i32> {
     rasn::der::decode::<rasn_kerberos::KrbError>(bytes)
         .ok()
