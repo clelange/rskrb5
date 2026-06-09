@@ -905,6 +905,21 @@ fn tokio_client_exposes_and_removes_cached_service_ticket() {
 
 #[cfg(feature = "tokio")]
 #[test]
+fn tokio_client_clears_service_ticket_cache_without_dropping_tgt() {
+    let tgt = sample_tgt_session();
+    let service_ticket = sample_service_ticket_session(&tgt);
+    let mut client = TokioClient::from_tgt_session(Config::new(), KdcProtocol::Tcp, tgt.clone());
+    client.cache_service_ticket(service_ticket);
+
+    assert_eq!(client.cached_service_ticket_count(), 1);
+    client.clear_service_ticket_cache();
+
+    assert_eq!(client.cached_service_ticket_count(), 0);
+    assert_eq!(client.tgt_session().expect("TGT remains cached"), &tgt);
+}
+
+#[cfg(feature = "tokio")]
+#[test]
 fn tokio_client_cached_service_ticket_resolves_empty_realm_and_ignores_expired_entries() {
     let tgt = sample_tgt_session();
     let mut service_ticket = sample_service_ticket_session(&tgt);
