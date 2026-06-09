@@ -55,6 +55,8 @@ const DEFAULT_MAX_REFERRALS: usize = 5;
 #[cfg(feature = "tokio")]
 const KRB5CCNAME_ENV: &str = "KRB5CCNAME";
 #[cfg(feature = "tokio")]
+const KRB5_CLIENT_KTNAME_ENV: &str = "KRB5_CLIENT_KTNAME";
+#[cfg(feature = "tokio")]
 const SESSION_REFRESH_DIVISOR: u32 = 6;
 
 /// PA-ENC-TIMESTAMP preauthentication type.
@@ -842,6 +844,30 @@ impl TokioClient {
         client: Principal,
     ) -> Result<Self, Error> {
         let keytab_name = config.libdefaults.default_client_keytab_name.clone();
+        Self::with_keytab_name(config, protocol, client, keytab_name)
+    }
+
+    /// Create a keytab-backed client from the default client keytab.
+    ///
+    /// `KRB5_CLIENT_KTNAME` takes precedence when set. Otherwise this falls
+    /// back to `config.libdefaults.default_client_keytab_name`.
+    pub fn with_client_keytab_from_default(
+        config: Config,
+        protocol: KdcProtocol,
+        client: Principal,
+    ) -> Result<Self, Error> {
+        let keytab_name = default_client_keytab_name(&config)?;
+        Self::with_keytab_name(config, protocol, client, keytab_name)
+    }
+
+    /// Create a keytab-backed client by loading the file keytab named by `KRB5_CLIENT_KTNAME`.
+    pub fn with_client_keytab_from_env(
+        config: Config,
+        protocol: KdcProtocol,
+        client: Principal,
+    ) -> Result<Self, Error> {
+        let keytab_name =
+            std::env::var(KRB5_CLIENT_KTNAME_ENV).map_err(Error::DefaultClientKeytabName)?;
         Self::with_keytab_name(config, protocol, client, keytab_name)
     }
 
@@ -3967,6 +3993,11 @@ pub enum Error {
     #[error("config.libdefaults.default_ccache_name is not configured")]
     NoDefaultCCacheName,
 
+    /// The default client keytab name could not be read from `KRB5_CLIENT_KTNAME`.
+    #[cfg(feature = "tokio")]
+    #[error("default client keytab name could not be read from KRB5_CLIENT_KTNAME: {0}")]
+    DefaultClientKeytabName(std::env::VarError),
+
     /// A high-level client operation needs a non-empty client principal name.
     #[cfg(feature = "tokio")]
     #[error("client principal name is not configured")]
@@ -4648,6 +4679,17 @@ fn default_ccache_name(config: &Config) -> Result<String, Error> {
         Ok(cache_name) => Ok(cache_name),
         Err(std::env::VarError::NotPresent) => configured_default_ccache_name(config),
         Err(error) => Err(ccache::Error::DefaultCacheName(error).into()),
+    }
+}
+
+#[cfg(feature = "tokio")]
+fn default_client_keytab_name(config: &Config) -> Result<String, Error> {
+    match std::env::var(KRB5_CLIENT_KTNAME_ENV) {
+        Ok(keytab_name) => Ok(keytab_name),
+        Err(std::env::VarError::NotPresent) => {
+            Ok(config.libdefaults.default_client_keytab_name.clone())
+        }
+        Err(error) => Err(Error::DefaultClientKeytabName(error)),
     }
 }
 

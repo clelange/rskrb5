@@ -2123,6 +2123,48 @@ fn tokio_client_loads_client_keytab_from_config_name() {
     assert_eq!(diagnostics.keytab_enctypes, [18]);
 }
 
+#[cfg(all(feature = "tokio", feature = "serde"))]
+#[test]
+fn tokio_client_loads_default_client_keytab_when_env_is_absent() {
+    if std::env::var_os("KRB5_CLIENT_KTNAME").is_some() {
+        return;
+    }
+
+    let keytab = keytab_with_reply_key(1);
+    let path = temp_client_keytab_file("load-default-client-keytab");
+    let name = format!("FILE:{}", path.display());
+    keytab.save_name(&name).expect("keytab saves by name");
+
+    let client = TokioClient::with_client_keytab_from_default(
+        config_with_client_keytab_name(name),
+        KdcProtocol::Tcp,
+        Principal::user("TEST.GOKRB5", "testuser1"),
+    )
+    .expect("client loads default client keytab");
+    let _ = std::fs::remove_file(&path);
+
+    let diagnostics = runtime().block_on(client.diagnostics());
+    assert_eq!(diagnostics.credential_source, "keytab");
+    assert_eq!(diagnostics.keytab_enctypes, [18]);
+}
+
+#[cfg(feature = "tokio")]
+#[test]
+fn tokio_client_reports_missing_client_keytab_env() {
+    if std::env::var_os("KRB5_CLIENT_KTNAME").is_some() {
+        return;
+    }
+
+    let error = TokioClient::with_client_keytab_from_env(
+        Config::new(),
+        KdcProtocol::Tcp,
+        Principal::user("TEST.GOKRB5", "testuser1"),
+    )
+    .expect_err("missing client keytab env is rejected");
+
+    assert!(matches!(error, Error::DefaultClientKeytabName(_)));
+}
+
 #[cfg(feature = "tokio")]
 #[test]
 fn tokio_client_tracks_multiple_tgt_sessions() {
