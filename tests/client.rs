@@ -1627,16 +1627,7 @@ fn tokio_client_renews_expired_renewable_cached_service_ticket() {
         assert_eq!(client.cached_service_ticket_count(), 1);
 
         let task = tokio::spawn(async move {
-            let (mut socket, _) = listener.accept().await.expect("accept client");
-            let mut header = [0; 4];
-            socket
-                .read_exact(&mut header)
-                .await
-                .expect("read request length");
-            let request_len = u32::from_be_bytes(header) as usize;
-            let mut request = vec![0; request_len];
-            socket.read_exact(&mut request).await.expect("read request");
-
+            let (request, mut socket) = read_tcp_kdc_request(&listener).await;
             let decoded: rasn_kerberos::TgsReq =
                 rasn::der::decode(&request).expect("TGS-REQ decodes");
             let body = &decoded.0.req_body;
@@ -1652,11 +1643,7 @@ fn tokio_client_renews_expired_renewable_cached_service_ticket() {
 
             let built = built_tgs_request_from_der(decoded, &request);
             let response = synthetic_tgs_rep(&built, built.nonce, &renewal_reply_key);
-            socket
-                .write_all(&(response.len() as u32).to_be_bytes())
-                .await
-                .expect("write response length");
-            socket.write_all(&response).await.expect("write response");
+            write_tcp_kdc_response(&mut socket, &response).await;
         });
 
         let renewed = client
@@ -1673,6 +1660,131 @@ fn tokio_client_renews_expired_renewable_cached_service_ticket() {
             .expect("renewed service ticket is cached");
         assert_eq!(cached.session_key, renewed.session_key);
         assert_ne!(cached.session_key, cached_session_key);
+    });
+}
+
+#[cfg(feature = "tokio")]
+#[test]
+fn tokio_client_renews_cached_referral_tgt_before_reusing_it() {
+    runtime().block_on(async {
+        let primary_tgt = current_tgt_session(10, 50);
+        let referral_service = Principal::tgt_service("RESDOM.GOKRB5");
+        let referral_request = build_tgs_req_with_confounder(
+            &primary_tgt,
+            referral_service.clone(),
+            TgsReqOptions::new(timestamp(1_893_553_450), 0x8877_6655).with_etypes(vec![18]),
+            timestamp(1_893_553_451),
+            654_321,
+            &decode_hex(TGS_REQ_CONFOUNDER),
+        )
+        .expect("referral TGS-REQ builds");
+        let referral_response = synthetic_tgs_rep_with_service(
+            &referral_request,
+            referral_request.nonce,
+            &primary_tgt.session_key,
+            referral_service.clone(),
+        );
+        let mut referral_tgt = process_tgs_rep_with_referral(
+            &referral_request,
+            &referral_response,
+            &primary_tgt.session_key,
+        )
+        .expect("referral TGT validates");
+        referral_tgt.session_key.value = vec![0x45; 32];
+        let cached_referral_key = referral_tgt.session_key.clone();
+        let referral_renewal_reply_key = referral_tgt.session_key.clone();
+        let now = SystemTime::now();
+        referral_tgt.start_time = now
+            .checked_sub(Duration::from_secs(2 * 60 * 60))
+            .expect("expired start time");
+        referral_tgt.end_time = now
+            .checked_sub(Duration::from_secs(60 * 60))
+            .expect("expired end time");
+        referral_tgt.renew_till = Some(
+            now.checked_add(Duration::from_secs(60 * 60))
+                .expect("renew-till time"),
+        );
+
+        let resource_service = Principal::new("RESDOM.GOKRB5", 2, ["HTTP", "app.resdom.gokrb5"]);
+        let expected_client = primary_tgt.client.clone();
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind local KDC listener");
+        let addr = listener.local_addr().expect("local listener address");
+        let mut client = TokioClient::from_tgt_session(
+            config_with_kdc_server(addr.to_string()),
+            KdcProtocol::Tcp,
+            primary_tgt,
+        );
+        client
+            .cache_tgt_session(referral_tgt)
+            .expect("expired referral TGT caches");
+
+        let expected_resource_service = resource_service.clone();
+        let task = tokio::spawn(async move {
+            let (renewal_request, mut renewal_socket) = read_tcp_kdc_request(&listener).await;
+            let renewal_decoded: rasn_kerberos::TgsReq =
+                rasn::der::decode(&renewal_request).expect("renewal TGS-REQ decodes");
+            let renewal_body = &renewal_decoded.0.req_body;
+            let expected_options = 0x0000_0010 | KDC_OPTION_RENEWABLE | KDC_OPTION_RENEW;
+            assert_eq!(
+                renewal_body.kdc_options.0.as_raw_slice(),
+                expected_options.to_be_bytes().as_slice()
+            );
+            assert_eq!(
+                principal_from_parts(
+                    &renewal_body.realm,
+                    renewal_body.sname.as_ref().expect("renewal sname")
+                ),
+                Principal::tgt_service("RESDOM.GOKRB5")
+            );
+            let mut renewal_built = built_tgs_request_from_der(renewal_decoded, &renewal_request);
+            renewal_built.client = expected_client.clone();
+            let renewal_response = synthetic_tgs_rep(
+                &renewal_built,
+                renewal_built.nonce,
+                &referral_renewal_reply_key,
+            );
+            write_tcp_kdc_response(&mut renewal_socket, &renewal_response).await;
+
+            let (service_request, mut service_socket) = read_tcp_kdc_request(&listener).await;
+            let service_decoded: rasn_kerberos::TgsReq =
+                rasn::der::decode(&service_request).expect("service TGS-REQ decodes");
+            let service_body = &service_decoded.0.req_body;
+            assert_eq!(
+                principal_from_parts(
+                    &service_body.realm,
+                    service_body.sname.as_ref().expect("service sname")
+                ),
+                expected_resource_service
+            );
+            let mut service_built = built_tgs_request_from_der(service_decoded, &service_request);
+            service_built.client = expected_client;
+            let renewed_referral_key = EncryptionKey {
+                etype: 18,
+                value: decode_hex(SERVICE_SESSION_KEY),
+            };
+            let service_response =
+                synthetic_tgs_rep(&service_built, service_built.nonce, &renewed_referral_key);
+            write_tcp_kdc_response(&mut service_socket, &service_response).await;
+        });
+
+        let ticket = client
+            .get_service_ticket(resource_service.clone())
+            .await
+            .expect("service ticket is acquired through renewed referral TGT");
+        task.await.expect("KDC task succeeds");
+
+        assert_eq!(ticket.service, resource_service);
+        assert_eq!(client.cached_service_ticket_count(), 1);
+        let renewed_referral = client
+            .tgt_session_for_realm("RESDOM.GOKRB5")
+            .expect("renewed referral TGT is cached");
+        assert_ne!(renewed_referral.session_key, cached_referral_key);
+        assert_eq!(
+            hex_encode(&renewed_referral.session_key.value),
+            SERVICE_SESSION_KEY
+        );
     });
 }
 
@@ -2841,6 +2953,9 @@ fn config_with_kdc_server(server: String) -> Config {
  TEST.GOKRB5 = {{
   kdc = {server}
  }}
+ RESDOM.GOKRB5 = {{
+  kdc = {server}
+ }}
 "#,
     );
     Config::parse(&input).expect("config parses")
@@ -2878,6 +2993,29 @@ fn config_with_kpasswd_server(server: String) -> Config {
 "#,
     );
     Config::parse(&input).expect("config parses")
+}
+
+#[cfg(feature = "tokio")]
+async fn read_tcp_kdc_request(listener: &TcpListener) -> (Vec<u8>, tokio::net::TcpStream) {
+    let (mut socket, _) = listener.accept().await.expect("accept client");
+    let mut header = [0; 4];
+    socket
+        .read_exact(&mut header)
+        .await
+        .expect("read request length");
+    let request_len = u32::from_be_bytes(header) as usize;
+    let mut request = vec![0; request_len];
+    socket.read_exact(&mut request).await.expect("read request");
+    (request, socket)
+}
+
+#[cfg(feature = "tokio")]
+async fn write_tcp_kdc_response(socket: &mut tokio::net::TcpStream, response: &[u8]) {
+    socket
+        .write_all(&(response.len() as u32).to_be_bytes())
+        .await
+        .expect("write response length");
+    socket.write_all(response).await.expect("write response");
 }
 
 #[cfg(feature = "tokio")]

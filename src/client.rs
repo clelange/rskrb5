@@ -1418,6 +1418,13 @@ impl TokioClient {
 
         let tgt = match self.cached_tgt_session_for_realm(&service.realm) {
             Some(tgt) => tgt,
+            None if service.realm != self.client.realm => match self
+                .renew_cached_tgt_session_for_realm(&service.realm)
+                .await?
+            {
+                Some(tgt) => tgt,
+                None => self.ensure_tgt().await?,
+            },
             None => self.ensure_tgt().await?,
         };
         let result = self
@@ -1610,6 +1617,28 @@ impl TokioClient {
     fn cached_tgt_session_for_realm(&self, realm: &str) -> Option<AsRepSession> {
         let tgt = self.tgt_sessions.get(realm)?;
         session_valid_at(tgt, SystemTime::now()).then(|| tgt.clone())
+    }
+
+    async fn renew_cached_tgt_session_for_realm(
+        &mut self,
+        realm: &str,
+    ) -> Result<Option<AsRepSession>, Error> {
+        let Some(tgt) = self.tgt_sessions.get(realm).cloned() else {
+            return Ok(None);
+        };
+        if !session_renewable_at(&tgt, SystemTime::now()) {
+            return Ok(None);
+        }
+
+        let Ok(renewed) = self
+            .transport
+            .renew_tgt_with_config(&self.config, self.protocol, &tgt, self.tgs_req_options()?)
+            .await
+        else {
+            return Ok(None);
+        };
+        self.cache_tgt_session(renewed.clone())?;
+        Ok(Some(renewed))
     }
 
     async fn diagnostic_kdc_endpoints(
