@@ -2783,6 +2783,10 @@ fn parses_kdc_preauth_required_error_and_selects_etype_info2() {
     let error = process_kdc_error(&error_bytes).expect("KRB-ERROR decodes");
 
     assert_eq!(error.error_code, KDC_ERR_PREAUTH_REQUIRED);
+    assert_eq!(error.ctime, None);
+    assert_eq!(error.cusec, None);
+    assert_eq!(error.stime, timestamp(1_893_553_440));
+    assert_eq!(error.susec, 0);
     assert_eq!(
         error.client,
         Some(Principal::user("TEST.GOKRB5", "testuser1"))
@@ -2810,6 +2814,10 @@ fn parses_kdc_preauth_required_error_and_selects_etype_info2() {
 fn selects_and_derives_rc4_hmac_preauth_key_info() {
     let client = Principal::user("TEST.GOKRB5", "testuser1");
     let error = KdcError {
+        ctime: None,
+        cusec: None,
+        stime: timestamp(1_893_553_440),
+        susec: 0,
         error_code: KDC_ERR_PREAUTH_REQUIRED,
         text: None,
         client: Some(client.clone()),

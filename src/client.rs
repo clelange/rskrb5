@@ -38,7 +38,6 @@ const KRB_TGS_REQ_MSG_TYPE: i32 = 12;
 const KRB_TGS_REP_MSG_TYPE: i32 = 13;
 const KRB_AP_REQ_MSG_TYPE: i32 = 14;
 const KRB_AP_REP_MSG_TYPE: i32 = 15;
-const KRB_ERROR_MSG_TYPE: i32 = 30;
 const KRB_NT_PRINCIPAL: i32 = 1;
 const KRB_NT_SRV_INST: i32 = 2;
 const DEFAULT_TICKET_LIFETIME: Duration = Duration::from_secs(24 * 60 * 60);
@@ -579,6 +578,14 @@ pub trait KdcTransport {
 /// Parsed KRB-ERROR returned by a KDC.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct KdcError {
+    /// Client time, when present.
+    pub ctime: Option<SystemTime>,
+    /// Client microseconds, when present.
+    pub cusec: Option<u32>,
+    /// KDC/server time.
+    pub stime: SystemTime,
+    /// KDC/server microseconds.
+    pub susec: u32,
     /// Kerberos error code.
     pub error_code: i32,
     /// Optional human-readable error text.
@@ -3744,21 +3751,9 @@ fn process_tgs_rep_inner(
 /// Decode a KRB-ERROR and any METHOD-DATA preauthentication hints.
 pub fn process_kdc_error(bytes: &[u8]) -> Result<KdcError, Error> {
     let krb_error = decode::<rasn_kerberos::KrbError>("KRB-ERROR", bytes)?;
-    validate_integer("pvno", &krb_error.pvno, KRB5_PVNO)?;
-    validate_integer("msg-type", &krb_error.msg_type, KRB_ERROR_MSG_TYPE)?;
-
-    let text = krb_error
-        .e_text
-        .as_ref()
-        .map(kerberos_string_to_string)
-        .transpose()?;
-    let client = match (&krb_error.crealm, &krb_error.cname) {
-        (Some(realm), Some(name)) => Some(principal_from_parts(realm, name)?),
-        _ => None,
-    };
-    let service = principal_from_parts(&krb_error.realm, &krb_error.sname)?;
-    let e_data = krb_error.e_data.as_ref().map(|data| data.as_ref().to_vec());
-    let method_data = if krb_error.error_code == KDC_ERR_PREAUTH_REQUIRED {
+    let info = crate::messages::KrbErrorInfo::from_rasn(&krb_error)?;
+    let e_data = info.e_data;
+    let method_data = if info.error_code == KDC_ERR_PREAUTH_REQUIRED {
         e_data
             .as_ref()
             .map(|data| decode::<rasn_kerberos::MethodData>("METHOD-DATA", data))
@@ -3770,10 +3765,14 @@ pub fn process_kdc_error(bytes: &[u8]) -> Result<KdcError, Error> {
     let preauth_key_info = preauth_key_info_from_method_data(&method_data)?;
 
     Ok(KdcError {
-        error_code: krb_error.error_code,
-        text,
-        client,
-        service,
+        ctime: info.ctime,
+        cusec: info.cusec,
+        stime: info.stime,
+        susec: info.susec,
+        error_code: info.error_code,
+        text: info.e_text,
+        client: info.client.map(principal_from_message_info),
+        service: principal_from_message_info(info.service),
         e_data,
         method_data,
         preauth_key_info,
@@ -4054,6 +4053,10 @@ pub enum Error {
     /// kadmin protocol processing failed.
     #[error("kadmin error: {0}")]
     Kadmin(#[from] crate::kadmin::Error),
+
+    /// Kerberos message helper failed.
+    #[error("message error: {0}")]
+    Message(#[from] crate::messages::Error),
 
     /// Random byte generation failed.
     #[error("random byte generation failed: {0}")]
@@ -4563,6 +4566,14 @@ fn principal_from_parts(
             .map(kerberos_string_to_string)
             .collect::<Result<Vec<_>, _>>()?,
     })
+}
+
+fn principal_from_message_info(value: crate::messages::PrincipalNameInfo) -> Principal {
+    Principal {
+        realm: value.realm,
+        name_type: value.name_type,
+        components: value.components,
+    }
 }
 
 fn principal_matches(left: &Principal, right: &Principal) -> bool {

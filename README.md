@@ -30,11 +30,11 @@ pure-Rust Kerberos library.
   AES128/AES256-CTS-HMAC-SHA1-96, RFC8009
   AES128/AES256-CTS-HMAC-SHA2, DES3-CBC-SHA1-KD, and RC4-HMAC string-to-key,
   KDF, checksums, and deterministic encrypted-message vectors; message helpers
-  preserve gokrb5 EncryptedData signed-kvno DER edge fixtures and expose KRB-ERROR diagnostics; kadmin covers
+  preserve gokrb5 EncryptedData signed-kvno DER edge fixtures and expose KRB-ERROR timing diagnostics; kadmin covers
   ChangePasswdData builders, DER decode, exact fixture round-trip, KRB-PRIV payload building, and kpasswd request
   and reply frame parsing plus reply result handling and result-code checks; client AS/TGS exchange primitives
   cover deterministic TGT AS-REQ construction, KRB-ERROR preauthentication
-  negotiation and surfacing, PA-ENC-TIMESTAMP encryption, assumed
+  negotiation and structured timing diagnostics, PA-ENC-TIMESTAMP encryption, assumed
   preauthentication, password/keytab TGT and explicit-service AS login helpers, PA-TGS-REQ
   service-ticket acquisition, a KDC transport boundary, Tokio TCP/UDP/auto
   KDC transport with response-too-big fallback and Docker auto-protocol AS/TGS
