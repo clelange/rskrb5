@@ -1,4 +1,5 @@
-use std::time::Duration;
+use std::path::PathBuf;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use pretty_assertions::assert_eq;
 use rskrb5::config::{Config, Error, parse_duration};
@@ -129,6 +130,76 @@ fn parses_gokrb5_integration_config_fixture() {
         config.resolve_realm("resdom.gokrb5."),
         Some("RESDOM.GOKRB5")
     );
+}
+
+#[test]
+fn loads_config_file() {
+    let path = temp_file("load");
+    std::fs::write(&path, KRB5_CONF).expect("config fixture writes");
+
+    let config = Config::load(&path).expect("config loads");
+    let _ = std::fs::remove_file(&path);
+
+    assert_eq!(config.libdefaults.default_realm, "TEST.GOKRB5");
+    assert_eq!(
+        config.configured_kdcs("TEST.GOKRB5").expect("KDCs exist"),
+        ["127.0.0.1:88", "127.0.0.2:88"]
+    );
+}
+
+#[test]
+fn loads_config_path_list_in_order() {
+    let first = temp_file("load-list-first");
+    let second = temp_file("load-list-second");
+    std::fs::write(
+        &first,
+        r#"
+[libdefaults]
+ default_realm = FIRST.GOKRB5
+
+[domain_realm]
+ .first.gokrb5 = FIRST.GOKRB5
+"#,
+    )
+    .expect("first config writes");
+    std::fs::write(
+        &second,
+        r#"
+[libdefaults]
+ default_realm = SECOND.GOKRB5
+
+[domain_realm]
+ .second.gokrb5 = SECOND.GOKRB5
+"#,
+    )
+    .expect("second config writes");
+
+    let config = Config::load_paths([first.clone(), PathBuf::new(), second.clone()])
+        .expect("config path list loads");
+    let _ = std::fs::remove_file(&first);
+    let _ = std::fs::remove_file(&second);
+
+    assert_eq!(config.libdefaults.default_realm, "SECOND.GOKRB5");
+    assert_eq!(
+        config.resolve_realm("host.first.gokrb5"),
+        Some("FIRST.GOKRB5")
+    );
+    assert_eq!(
+        config.resolve_realm("host.second.gokrb5"),
+        Some("SECOND.GOKRB5")
+    );
+}
+
+#[test]
+fn rejects_empty_config_path_list() {
+    assert!(matches!(
+        Config::load_paths(Vec::<PathBuf>::new()).expect_err("empty path list rejected"),
+        Error::EmptyConfigPathList
+    ));
+    assert!(matches!(
+        Config::load_paths([PathBuf::new()]).expect_err("empty path rejected"),
+        Error::EmptyConfigPathList
+    ));
 }
 
 #[test]
@@ -316,4 +387,15 @@ fn rejects_v4_realm_directives() {
     .expect_err("v4 directives are rejected");
 
     assert!(matches!(err, Error::UnsupportedDirective(_)));
+}
+
+fn temp_file(name: &str) -> PathBuf {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("current time is after unix epoch")
+        .as_nanos();
+    std::env::temp_dir().join(format!(
+        "rskrb5-config-{name}-{}-{nanos}",
+        std::process::id()
+    ))
 }

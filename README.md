@@ -20,8 +20,8 @@ pure-Rust Kerberos library.
   `client`, `kadmin`, `service`, and `pac`: keytabs parse, serialize, and select keys against
   gokrb5 fixtures and load/save file-backed `KRB5_KTNAME` and
   `default_keytab_name` values;
-  config parsing covers gokrb5-compatible libdefaults, realm host mappings, domain realm lookup,
-  duration parsing, and configured KDC/KPassword server lookup; ccache parsing
+  config parsing covers gokrb5-compatible libdefaults, `KRB5_CONFIG` path-list loading,
+  realm host mappings, domain realm lookup, duration parsing, and configured KDC/KPassword server lookup; ccache parsing
   covers MIT file caches, `KRB5CCNAME` file cache-name helpers, opaque ticket bytes,
   server entry lookup, and exact fixture round-trips; crypto covers RFC3961 n-fold, RFC3962
   AES128/AES256-CTS-HMAC-SHA1-96, RFC8009

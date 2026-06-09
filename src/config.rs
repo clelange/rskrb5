@@ -9,6 +9,8 @@ use std::net::IpAddr;
 use std::path::Path;
 use std::time::Duration;
 
+const KRB5_CONFIG_ENV: &str = "KRB5_CONFIG";
+
 const DEFAULT_ENCTYPES: &[&str] = &[
     "aes256-cts-hmac-sha1-96",
     "aes128-cts-hmac-sha1-96",
@@ -48,6 +50,44 @@ impl Config {
     /// Load and parse a `krb5.conf` file.
     pub fn load(path: impl AsRef<Path>) -> Result<Self, Error> {
         let input = std::fs::read_to_string(path.as_ref())?;
+        Self::parse(&input)
+    }
+
+    /// Load and parse the `krb5.conf` path list named by `KRB5_CONFIG`.
+    ///
+    /// The environment value is split with the platform path-list separator.
+    /// On Unix this matches the colon-separated list used by MIT Kerberos.
+    pub fn load_from_env() -> Result<Self, Error> {
+        let value = std::env::var_os(KRB5_CONFIG_ENV).ok_or(Error::DefaultConfigName)?;
+        Self::load_paths(std::env::split_paths(&value))
+    }
+
+    /// Load and parse one or more `krb5.conf` files.
+    ///
+    /// Files are concatenated in iterator order before parsing, preserving the
+    /// same section semantics as a single file with repeated sections.
+    pub fn load_paths<I, P>(paths: I) -> Result<Self, Error>
+    where
+        I: IntoIterator<Item = P>,
+        P: AsRef<Path>,
+    {
+        let mut input = String::new();
+        let mut loaded = 0usize;
+        for path in paths {
+            let path = path.as_ref();
+            if path.as_os_str().is_empty() {
+                continue;
+            }
+            if loaded > 0 {
+                input.push('\n');
+            }
+            input.push_str(&std::fs::read_to_string(path)?);
+            input.push('\n');
+            loaded += 1;
+        }
+        if loaded == 0 {
+            return Err(Error::EmptyConfigPathList);
+        }
         Self::parse(&input)
     }
 
@@ -433,6 +473,12 @@ pub enum Error {
     /// File loading failed.
     #[error("configuration file could not be read: {0}")]
     Io(#[from] std::io::Error),
+    /// The default config path list could not be read from `KRB5_CONFIG`.
+    #[error("default configuration path list is not set in KRB5_CONFIG")]
+    DefaultConfigName,
+    /// A config path list contained no usable paths.
+    #[error("configuration path list is empty")]
+    EmptyConfigPathList,
     /// A section line was syntactically invalid.
     #[error("invalid {section} section line {line}: {text}")]
     InvalidLine {
