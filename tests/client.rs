@@ -1975,6 +1975,27 @@ fn tokio_client_loads_from_ccache_name() {
 
 #[cfg(feature = "tokio")]
 #[test]
+fn tokio_client_loads_from_ccache_env() {
+    let tgt = sample_tgt_session();
+    let service_ticket = sample_service_ticket_session(&tgt);
+    let mut client = TokioClient::from_tgt_session(Config::new(), KdcProtocol::Tcp, tgt.clone());
+    client.cache_service_ticket(service_ticket);
+    let cache = client.to_ccache().expect("client exports ccache");
+    let path = temp_client_ccache_file("load-env");
+    let name = format!("FILE:{}", path.display());
+    let _env = common::EnvVarGuard::set_krb5ccname(&name);
+    cache.save_name(&name).expect("ccache saves by name");
+
+    let loaded = TokioClient::from_ccache_env(Config::new(), KdcProtocol::Tcp)
+        .expect("client loads ccache from env");
+    let _ = std::fs::remove_file(&path);
+
+    assert_eq!(loaded.tgt_session().expect("TGT reloads"), &tgt);
+    assert_eq!(loaded.cached_service_ticket_count(), 1);
+}
+
+#[cfg(feature = "tokio")]
+#[test]
 fn tokio_client_saves_and_loads_dir_collection_ccache_name() {
     let tgt = sample_tgt_session();
     let service_ticket = sample_service_ticket_session(&tgt);
@@ -2149,6 +2170,50 @@ fn tokio_client_loads_client_keytab_from_config_name() {
         Principal::user("TEST.GOKRB5", "testuser1"),
     )
     .expect("client loads keytab by config name");
+    let _ = std::fs::remove_file(&path);
+
+    let diagnostics = runtime().block_on(client.diagnostics());
+    assert_eq!(diagnostics.credential_source, "keytab");
+    assert_eq!(diagnostics.keytab_enctypes, [18]);
+}
+
+#[cfg(all(feature = "tokio", feature = "serde"))]
+#[test]
+fn tokio_client_loads_keytab_from_env() {
+    let keytab = keytab_with_reply_key(1);
+    let path = temp_client_keytab_file("load-keytab-env");
+    let name = format!("FILE:{}", path.display());
+    keytab.save_name(&name).expect("keytab saves by name");
+    let _env = common::EnvVarGuard::set_krb5_ktname(&name);
+
+    let client = TokioClient::with_keytab_from_env(
+        Config::new(),
+        KdcProtocol::Tcp,
+        Principal::user("TEST.GOKRB5", "testuser1"),
+    )
+    .expect("client loads keytab from env");
+    let _ = std::fs::remove_file(&path);
+
+    let diagnostics = runtime().block_on(client.diagnostics());
+    assert_eq!(diagnostics.credential_source, "keytab");
+    assert_eq!(diagnostics.keytab_enctypes, [18]);
+}
+
+#[cfg(all(feature = "tokio", feature = "serde"))]
+#[test]
+fn tokio_client_loads_client_keytab_from_env() {
+    let keytab = keytab_with_reply_key(1);
+    let path = temp_client_keytab_file("load-client-keytab-env");
+    let name = format!("FILE:{}", path.display());
+    keytab.save_name(&name).expect("keytab saves by name");
+    let _env = common::EnvVarGuard::set_krb5_client_ktname(&name);
+
+    let client = TokioClient::with_client_keytab_from_env(
+        Config::new(),
+        KdcProtocol::Tcp,
+        Principal::user("TEST.GOKRB5", "testuser1"),
+    )
+    .expect("client loads client keytab from env");
     let _ = std::fs::remove_file(&path);
 
     let diagnostics = runtime().block_on(client.diagnostics());
