@@ -93,6 +93,16 @@ fn resolves_file_cache_names() {
         PathBuf::from("relative-cache")
     );
     assert_eq!(
+        CCache::file_path_from_cache_name("DIR::/run/user/1000/krb5cc/tktABC")
+            .expect("DIR subsidiary path resolves"),
+        PathBuf::from("/run/user/1000/krb5cc/tktABC")
+    );
+    assert_eq!(
+        CCache::file_path_from_cache_name("dir::relative/tktABC")
+            .expect("lowercase DIR subsidiary path resolves"),
+        PathBuf::from("relative/tktABC")
+    );
+    assert_eq!(
         CCache::file_path_from_cache_name("C:\\temp\\krb5cc").expect("Windows path resolves"),
         PathBuf::from("C:\\temp\\krb5cc")
     );
@@ -108,6 +118,9 @@ fn parses_typed_file_cache_names() {
         .parse()
         .expect("WRFILE cache name parses through FromStr");
     assert_eq!(parsed.file_path(), PathBuf::from("relative-cache"));
+
+    let parsed = CacheName::parse("DIR::relative/tktABC").expect("DIR subsidiary name parses");
+    assert_eq!(parsed.file_path(), PathBuf::from("relative/tktABC"));
 
     let parsed = CacheName::parse("C:\\temp\\krb5cc").expect("Windows path parses");
     assert_eq!(parsed.file_path(), PathBuf::from("C:\\temp\\krb5cc"));
@@ -126,6 +139,10 @@ fn rejects_unsupported_cache_names() {
     assert!(matches!(
         CCache::file_path_from_cache_name("DIR:/tmp/krb5cc").expect_err("DIR cache rejected"),
         Error::UnsupportedCacheType { cache_type } if cache_type == "DIR"
+    ));
+    assert!(matches!(
+        CCache::file_path_from_cache_name("DIR::").expect_err("empty DIR subsidiary rejected"),
+        Error::InvalidCacheName
     ));
     assert!(matches!(
         CCache::file_path_from_cache_name("KCM:").expect_err("KCM cache rejected"),
@@ -183,6 +200,22 @@ fn saves_and_loads_file_cache_name() {
 
     cache.save_name(&name).expect("ccache saves by name");
     let loaded = CCache::load_name(&name).expect("ccache loads by name");
+    let _ = std::fs::remove_file(&path);
+
+    assert_eq!(loaded, cache);
+}
+
+#[test]
+fn saves_and_loads_dir_subsidiary_cache_name() {
+    let bytes = decode_hex(CCACHE_TEST);
+    let cache = CCache::parse(&bytes).expect("ccache fixture parses");
+    let path = temp_file("save-load-dir-subsidiary");
+    let name = format!("DIR::{}", path.display());
+
+    cache
+        .save_name(&name)
+        .expect("ccache saves by DIR subsidiary name");
+    let loaded = CCache::load_name(&name).expect("ccache loads by DIR subsidiary name");
     let _ = std::fs::remove_file(&path);
 
     assert_eq!(loaded, cache);

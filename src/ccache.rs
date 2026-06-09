@@ -18,9 +18,11 @@ const X_CACHECONF_COMPONENT: &str = "krb5_ccache_conf_data";
 
 /// Parsed MIT-style credential cache name.
 ///
-/// `rskrb5` currently supports file-backed caches only. Keeping the parsed
-/// name explicit gives callers a stable validation point and leaves room for
-/// cache collections and platform stores to grow into separate variants.
+/// `rskrb5` currently supports file-backed caches only, including subsidiary
+/// `DIR::path` cache names which point directly at a FILE-format cache in a
+/// DIR collection. Keeping the parsed name explicit gives callers a stable
+/// validation point and leaves room for cache collections and platform stores
+/// to grow into separate variants.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum CacheName {
@@ -45,9 +47,9 @@ pub struct ConfigEntry<'a> {
 impl CacheName {
     /// Parse a MIT-style credential cache name.
     ///
-    /// Bare paths, `FILE:path`, and `WRFILE:path` are supported. Cache
-    /// collections and platform stores such as `DIR:`, `KCM:`, `KEYRING:`,
-    /// and `API:` are rejected explicitly.
+    /// Bare paths, `FILE:path`, `WRFILE:path`, and subsidiary `DIR::path`
+    /// cache names are supported. Cache collections and platform stores such
+    /// as `DIR:`, `KCM:`, `KEYRING:`, and `API:` are rejected explicitly.
     pub fn parse(name: impl AsRef<str>) -> Result<Self, Error> {
         CCache::file_path_from_cache_name(name.as_ref()).map(Self::File)
     }
@@ -105,8 +107,9 @@ impl CCache {
     /// Load and parse the file credential cache named by `KRB5CCNAME`.
     ///
     /// Only file-backed cache names are supported: bare paths, `FILE:path`,
-    /// and `WRFILE:path`. Cache collections and platform stores such as
-    /// `DIR:`, `KCM:`, `KEYRING:`, and `API:` are rejected explicitly.
+    /// `WRFILE:path`, and subsidiary `DIR::path` cache names. Cache
+    /// collections and platform stores such as `DIR:`, `KCM:`, `KEYRING:`,
+    /// and `API:` are rejected explicitly.
     pub fn load_from_env() -> Result<Self, Error> {
         let name = std::env::var(KRB5CCNAME_ENV).map_err(Error::DefaultCacheName)?;
         Self::load_name(name)
@@ -114,7 +117,8 @@ impl CCache {
 
     /// Load and parse a credential cache by MIT-style cache name.
     ///
-    /// Bare paths, `FILE:path`, and `WRFILE:path` are supported.
+    /// Bare paths, `FILE:path`, `WRFILE:path`, and subsidiary `DIR::path`
+    /// cache names are supported.
     pub fn load_name(name: impl AsRef<str>) -> Result<Self, Error> {
         Self::load(CacheName::parse(name)?.into_file_path())
     }
@@ -133,7 +137,8 @@ impl CCache {
 
     /// Save this credential cache by MIT-style cache name.
     ///
-    /// Bare paths, `FILE:path`, and `WRFILE:path` are supported.
+    /// Bare paths, `FILE:path`, `WRFILE:path`, and subsidiary `DIR::path`
+    /// cache names are supported.
     pub fn save_name(&self, name: impl AsRef<str>) -> Result<(), Error> {
         self.save(CacheName::parse(name)?.into_file_path())
     }
@@ -143,6 +148,12 @@ impl CCache {
     /// This does not touch the filesystem; it only validates that the name
     /// denotes a cache format backed by this module.
     pub fn file_path_from_cache_name(name: &str) -> Result<PathBuf, Error> {
+        if let Some(path) = dir_subsidiary_path(name) {
+            if path.is_empty() {
+                return Err(Error::InvalidCacheName);
+            }
+            return Ok(PathBuf::from(path));
+        }
         file_name::file_path_from_name(name, &["FILE", "WRFILE"]).map_err(|error| match error {
             file_name::Error::Empty => Error::InvalidCacheName,
             file_name::Error::UnsupportedType { name_type } => Error::UnsupportedCacheType {
@@ -354,6 +365,15 @@ impl CCache {
 
 fn same_principal_identity(left: &Principal, right: &Principal) -> bool {
     left.realm == right.realm && left.components == right.components
+}
+
+fn dir_subsidiary_path(name: &str) -> Option<&str> {
+    let (prefix, residual) = name.split_once(':')?;
+    if prefix.eq_ignore_ascii_case("DIR") && residual.starts_with(':') {
+        Some(&residual[1..])
+    } else {
+        None
+    }
 }
 
 fn is_config_credential(credential: &Credential) -> bool {
