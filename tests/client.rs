@@ -22,7 +22,7 @@ use rskrb5::client::{
     login_as_service_with_password, login_tgt_with_keytab, login_tgt_with_password,
     pa_enc_timestamp_with_confounder, pa_for_user_padata, process_as_rep, process_kdc_error,
     process_tgs_rep, process_tgs_rep_with_referral, renew_tgt, renew_ticket, s4u_byte_array,
-    select_preauth_key_info, verify_kpasswd_ap_rep,
+    s4u2self, select_preauth_key_info, verify_kpasswd_ap_rep,
 };
 #[cfg(feature = "tokio")]
 use rskrb5::client::{KdcProtocol, PrunedSessions, TokioClient};
@@ -922,6 +922,31 @@ fn exchange_tgs_req_uses_transport_boundary() {
 
     assert!(transport.called);
     assert_eq!(session.service, sample_service_principal());
+}
+
+#[test]
+fn s4u2self_uses_transport_boundary() {
+    let mut service_tgt = sample_tgt_session();
+    service_tgt.client = sample_service_principal();
+    let user = Principal::user("TEST.GOKRB5", "delegated-user");
+    let mut transport = S4uTransport {
+        session_key: service_tgt.session_key.clone(),
+        expected_service: service_tgt.client.clone(),
+        expected_user: user.clone(),
+        calls: 0,
+    };
+
+    let session = s4u2self(
+        &mut transport,
+        &service_tgt,
+        user,
+        TgsReqOptions::new(timestamp(1_893_553_450), 0x6677_8899).with_etypes(vec![18]),
+    )
+    .expect("S4U2Self exchange succeeds");
+
+    assert_eq!(transport.calls, 1);
+    assert_eq!(session.client, service_tgt.client);
+    assert_eq!(session.service, service_tgt.client);
 }
 
 #[test]
@@ -3060,6 +3085,44 @@ impl KdcTransport for MockTransport {
         assert_eq!(request, self.expected_request.as_slice());
         self.called = true;
         Ok(self.response.clone())
+    }
+}
+
+struct S4uTransport {
+    session_key: EncryptionKey,
+    expected_service: Principal,
+    expected_user: Principal,
+    calls: usize,
+}
+
+impl KdcTransport for S4uTransport {
+    fn send(&mut self, realm: &str, request: &[u8]) -> Result<Vec<u8>, Error> {
+        assert_eq!(realm, "TEST.GOKRB5");
+        let decoded: rasn_kerberos::TgsReq = rasn::der::decode(request).expect("TGS-REQ decodes");
+        let body = &decoded.0.req_body;
+        assert_eq!(
+            principal_from_parts(&body.realm, body.sname.as_ref().expect("sname")),
+            self.expected_service
+        );
+
+        let padata = decoded.0.padata.as_ref().expect("S4U TGS-REQ padata");
+        assert_eq!(padata.len(), 2);
+        assert_eq!(padata[0].r#type, PA_TGS_REQ);
+        assert_eq!(padata[1].r#type, PA_FOR_USER);
+        let pa_for_user = rskrb5::messages::PaForUser::decode_der(padata[1].value.as_ref())
+            .expect("PA-FOR-USER decodes");
+        assert_eq!(
+            principal_from_parts(&pa_for_user.user_realm, &pa_for_user.user_name),
+            self.expected_user
+        );
+
+        self.calls += 1;
+        let built = built_tgs_request_from_der(decoded, request);
+        Ok(synthetic_tgs_rep(
+            &built,
+            built.nonce,
+            &self.session_key.clone(),
+        ))
     }
 }
 

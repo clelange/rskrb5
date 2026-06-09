@@ -34,7 +34,7 @@ pure-Rust Kerberos library.
   ChangePasswdData builders, DER decode, exact fixture round-trip, KRB-PRIV payload building, and kpasswd request
   and reply frame parsing plus reply result handling and result-code checks; client AS/TGS exchange primitives
   cover deterministic TGT AS-REQ construction, KRB-ERROR preauthentication
-  negotiation and structured timing diagnostics, PA-ENC-TIMESTAMP encryption, PA-FOR-USER and deterministic S4U2Self TGS-REQ construction, assumed
+  negotiation and structured timing diagnostics, PA-ENC-TIMESTAMP encryption, PA-FOR-USER and runtime-neutral S4U2Self exchange construction, assumed
   preauthentication, password/keytab TGT and explicit-service AS login helpers, PA-TGS-REQ
   service-ticket acquisition, a KDC transport boundary, Tokio TCP/UDP/auto
   KDC transport with response-too-big fallback and Docker auto-protocol AS/TGS

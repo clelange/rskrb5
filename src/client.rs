@@ -3563,6 +3563,20 @@ where
     process_tgs_rep(request, &response, tgs_session_key)
 }
 
+/// Perform S4U2Self through a runtime-neutral transport.
+pub fn s4u2self<T>(
+    transport: &mut T,
+    service_tgt: &AsRepSession,
+    user: Principal,
+    options: TgsReqOptions,
+) -> Result<TgsRepSession, Error>
+where
+    T: KdcTransport + ?Sized,
+{
+    let request = build_s4u2self_req(service_tgt, user, options)?;
+    exchange_tgs_req(transport, &request, &service_tgt.session_key)
+}
+
 /// Renew an existing TGT through a runtime-neutral transport.
 pub fn renew_tgt<T>(
     transport: &mut T,
