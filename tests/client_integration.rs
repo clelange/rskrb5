@@ -1247,6 +1247,41 @@ fn docker_mit_kdc_spnego_header_authenticates_to_docker_http() -> Result<(), Box
 
 #[cfg(feature = "spnego")]
 #[test]
+fn docker_mit_kdc_raw_krb5_header_authenticates_to_docker_http() -> Result<(), Box<dyn Error>> {
+    if std::env::var("INTEGRATION").as_deref() != Ok("1") {
+        eprintln!("skipping Docker KDC integration test; set INTEGRATION=1 to enable");
+        return Ok(());
+    }
+    let _guard = INTEGRATION_LOCK.lock().expect("integration test lock");
+
+    runtime().block_on(async {
+        let mut client = TokioClient::with_password(
+            configured_kdc_config()?,
+            KdcProtocol::Auto,
+            Principal::user(REALM, USER),
+            PASSWORD,
+        )
+        .with_transport(TokioKdcTransport::new().with_timeout(Duration::from_secs(10)));
+        let service_ticket = client.get_service_ticket(service_principal()).await?;
+        let context = rskrb5::spnego::init_sec_context(
+            &service_ticket,
+            rskrb5::spnego::InitiatorContextOptions::new(),
+        )?;
+        let header = format!("Negotiate {}", base64_encode(&context.krb5_token.encode()?));
+        let response = http_get_with_authorization("/modgssapi/index.html", &header)?;
+        let status = response.lines().next().unwrap_or_default();
+
+        assert!(
+            status.contains(" 200 "),
+            "unexpected Docker HTTP response status: {status}"
+        );
+
+        Ok::<_, Box<dyn Error>>(())
+    })
+}
+
+#[cfg(feature = "spnego")]
+#[test]
 fn docker_mit_kdc_rc4_hmac_spnego_header_round_trip_through_service_validator()
 -> Result<(), Box<dyn Error>> {
     if std::env::var("INTEGRATION").as_deref() != Ok("1") {
@@ -2114,4 +2149,10 @@ fn hex_value(byte: u8) -> u8 {
         b'A'..=b'F' => byte - b'A' + 10,
         _ => panic!("invalid hex byte: {byte}"),
     }
+}
+
+#[cfg(feature = "spnego")]
+fn base64_encode(bytes: &[u8]) -> String {
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD.encode(bytes)
 }
