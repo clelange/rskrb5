@@ -1235,6 +1235,9 @@ pub fn authorization_header(
 }
 
 /// Decode an HTTP `Negotiate` header into a SPNEGO token.
+///
+/// In addition to SPNEGO `NegTokenInit`/`NegTokenResp` values, this accepts
+/// raw KRB5 mech tokens and wraps them in the equivalent SPNEGO shape.
 pub fn parse_negotiate_header(header: &str) -> Result<SpnegoToken, Error> {
     let mut parts = header.splitn(2, char::is_whitespace);
     let scheme = parts.next().unwrap_or_default();
@@ -1246,6 +1249,7 @@ pub fn parse_negotiate_header(header: &str) -> Result<SpnegoToken, Error> {
         .decode(encoded.trim())
         .map_err(Error::Base64)?;
     SpnegoToken::decode(&bytes)
+        .or_else(|spnego_error| raw_krb5_negotiate_token(&bytes, spnego_error))
 }
 
 /// Encode a SPNEGO token as an HTTP `Negotiate` header value.
@@ -1254,6 +1258,21 @@ pub fn negotiate_header(token: &SpnegoToken) -> Result<String, Error> {
         "{HTTP_NEGOTIATE} {}",
         base64::engine::general_purpose::STANDARD.encode(token.encode()?)
     ))
+}
+
+fn raw_krb5_negotiate_token(bytes: &[u8], spnego_error: Error) -> Result<SpnegoToken, Error> {
+    let Ok(krb5) = Krb5MechToken::decode(bytes) else {
+        return Err(spnego_error);
+    };
+    match krb5.token_id {
+        Krb5TokenId::ApReq => Ok(SpnegoToken::Init(NegTokenInit::krb5(bytes.to_vec()))),
+        Krb5TokenId::ApRep => Ok(SpnegoToken::Resp(
+            NegTokenResp::accept_completed().with_response_token(bytes.to_vec()),
+        )),
+        Krb5TokenId::KrbError => Ok(SpnegoToken::Resp(
+            NegTokenResp::reject().with_response_token(bytes.to_vec()),
+        )),
+    }
 }
 
 /// Header value used to start SPNEGO negotiation.

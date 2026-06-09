@@ -97,6 +97,21 @@ fn accept_request_validates_spnego_header_and_adds_extension() {
     );
 }
 
+#[test]
+fn accept_request_validates_raw_krb5_header() {
+    let keytab = keytab();
+    let mut validator = ServiceValidator::new(&keytab).with_now(timestamp(1_893_553_447));
+    let mut request = Request::new(());
+    krb_http::set_authorization_header(&mut request, &raw_krb5_authorization_header())
+        .expect("authorization header sets");
+
+    let accepted =
+        krb_http::accept_request(&mut validator, &mut request).expect("request validates");
+
+    assert_eq!(accepted.ap_req.client.name(), "testuser1");
+    assert_eq!(accepted.ap_req.service.name(), "HTTP/host.test.gokrb5");
+}
+
 #[cfg(feature = "tower")]
 #[test]
 fn tower_layer_challenges_missing_authorization() {
@@ -180,8 +195,20 @@ fn valid_authorization_header() -> String {
     spnego::negotiate_header(&spnego_token).expect("Negotiate header encodes")
 }
 
+fn raw_krb5_authorization_header() -> String {
+    let ap_req_token = Krb5MechToken::ap_req(decode_hex(VALID_AP_REQ))
+        .encode()
+        .expect("KRB5 AP-REQ token encodes");
+    format!("Negotiate {}", base64_encode(&ap_req_token))
+}
+
 fn keytab() -> Keytab {
     Keytab::parse(&decode_hex(HTTP_KEYTAB)).expect("HTTP keytab parses")
+}
+
+fn base64_encode(bytes: &[u8]) -> String {
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD.encode(bytes)
 }
 
 fn timestamp(seconds: u64) -> std::time::SystemTime {

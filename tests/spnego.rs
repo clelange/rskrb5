@@ -222,6 +222,17 @@ fn http_negotiate_helpers_match_gokrb5_headers() {
 }
 
 #[test]
+fn http_negotiate_header_accepts_raw_krb5_ap_req_token() {
+    let raw = decode_hex(KRB5_TOKEN);
+    let header = format!("Negotiate {}", base64_encode(&raw));
+    let parsed = spnego::parse_negotiate_header(&header).expect("raw KRB5 header parses");
+    let krb5 = Krb5MechToken::decode(&raw).expect("raw KRB5 token decodes");
+
+    assert!(matches!(parsed, SpnegoToken::Init(_)));
+    assert_eq!(parsed.krb5_ap_req().expect("AP-REQ unwraps"), krb5.message);
+}
+
+#[test]
 fn validates_service_ap_req_from_spnego_header_and_builds_ap_rep_response() {
     let ap_req_token = Krb5MechToken::ap_req(decode_hex(VALID_AP_REQ))
         .encode()
