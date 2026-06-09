@@ -52,6 +52,15 @@ pass_filenames = false
 stages = ["manual"]
 
 [[repos.hooks]]
+id = "cargo-package"
+name = "cargo package"
+language = "system"
+entry = "cargo package --locked --allow-dirty"
+files = "\\.rs$|Cargo\\.(toml|lock)$|README\\.md$|LICENSE|NOTICE"
+pass_filenames = false
+stages = ["pre-push", "manual"]
+
+[[repos.hooks]]
 id = "compat-report"
 name = "compatibility report is current"
 language = "system"
