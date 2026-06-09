@@ -3,10 +3,11 @@
 //! This module covers the MIT keytab file format surface needed before client
 //! and service flows can consume long-term keys.
 
+use crate::crypto::KerberosEtype;
 use crate::file_name;
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, SystemTimeError, UNIX_EPOCH};
 
 const KEYTAB_FIRST_BYTE: u8 = 5;
 const KRB5_KTNAME_ENV: &str = "KRB5_KTNAME";
@@ -192,6 +193,38 @@ impl Keytab {
         &mut self.entries
     }
 
+    /// Add an entry by deriving key material from a password.
+    ///
+    /// This mirrors gokrb5's keytab entry generation: the default Kerberos
+    /// password salt is `realm + principal components`, and the selected
+    /// encryption type's default string-to-key parameters are used.
+    pub fn add_entry_from_password(
+        &mut self,
+        principal: Principal,
+        password: impl AsRef<[u8]>,
+        timestamp: SystemTime,
+        kvno: u8,
+        etype: i32,
+    ) -> Result<(), Error> {
+        let etype_impl =
+            KerberosEtype::from_etype_id(etype).ok_or(Error::UnsupportedEtype(etype))?;
+        let salt = principal.default_password_salt();
+        let key = etype_impl.string_to_key(
+            password.as_ref(),
+            salt.as_bytes(),
+            etype_impl.default_s2kparams(),
+        )?;
+        let timestamp = system_time_to_u32_seconds(timestamp)?;
+        self.entries.push(Entry {
+            principal,
+            timestamp,
+            kvno8: kvno,
+            key: EncryptionKey { etype, value: key },
+            kvno: kvno.into(),
+        });
+        Ok(())
+    }
+
     /// Find the newest key matching principal components, realm, kvno, and
     /// encryption type. A `kvno` of `0` matches any kvno, mirroring gokrb5.
     pub fn find_key(
@@ -272,6 +305,28 @@ pub struct Principal {
 }
 
 impl Principal {
+    /// Create a keytab principal.
+    pub fn new<I, S>(realm: impl Into<String>, name_type: i32, components: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        Self {
+            realm: realm.into(),
+            components: components.into_iter().map(Into::into).collect(),
+            name_type,
+        }
+    }
+
+    /// Return the default Kerberos password salt for this principal.
+    pub fn default_password_salt(&self) -> String {
+        let mut salt = self.realm.clone();
+        for component in &self.components {
+            salt.push_str(component);
+        }
+        salt
+    }
+
     fn parse(bytes: &[u8], offset: &mut usize, version: u8, endian: Endian) -> Result<Self, Error> {
         let mut component_count = read_i16(bytes, offset, endian)?;
         if version == 1 {
@@ -387,9 +442,21 @@ pub enum Error {
     /// A length cannot fit in the target integer type.
     #[error("keytab length overflow")]
     LengthOverflow,
+    /// A keytab entry timestamp was before the Unix epoch.
+    #[error("keytab timestamp is before the Unix epoch: {0}")]
+    TimestampBeforeUnixEpoch(#[from] SystemTimeError),
+    /// A keytab entry timestamp cannot fit in the file format.
+    #[error("keytab timestamp overflow")]
+    TimestampOverflow,
     /// Principal strings must be valid UTF-8.
     #[error("invalid keytab string: {0}")]
     InvalidString(#[from] std::str::Utf8Error),
+    /// The encrypted data etype is not implemented yet.
+    #[error("unsupported encryption type: {0}")]
+    UnsupportedEtype(i32),
+    /// Key derivation failed.
+    #[error("crypto error: {0}")]
+    Crypto(#[from] crate::crypto::Error),
     /// Key lookup did not find a matching entry.
     #[error("matching key not found in keytab for {principal}@{realm}, kvno {kvno}, etype {etype}")]
     NoMatchingKey {
@@ -430,6 +497,14 @@ fn checked_end(bytes: &[u8], offset: usize, len: usize) -> Result<usize, Error> 
         });
     }
     Ok(end)
+}
+
+fn system_time_to_u32_seconds(value: SystemTime) -> Result<u32, Error> {
+    value
+        .duration_since(UNIX_EPOCH)?
+        .as_secs()
+        .try_into()
+        .map_err(|_| Error::TimestampOverflow)
 }
 
 fn checked_advance(bytes: &[u8], offset: &mut usize, len: usize) -> Result<(), Error> {

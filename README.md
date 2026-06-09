@@ -17,7 +17,8 @@ pure-Rust Kerberos library.
   and exact DER round-trip expectations for rasn-backed rskrb5 wrappers and
   `picky-krb`.
 - The first real modules are `keytab`, `krb5.conf`, `ccache`, `crypto`,
-  `client`, `kadmin`, `service`, and `pac`: keytabs parse, serialize, and select keys against
+  `client`, `kadmin`, `service`, and `pac`: keytabs parse, serialize, select keys, and generate
+  password-derived ktutil-compatible entries against
   gokrb5 fixtures and load/save file-backed `KRB5_KTNAME` and
   `default_keytab_name` values;
   config parsing covers gokrb5-compatible libdefaults, `KRB5_CONFIG` path-list loading,
