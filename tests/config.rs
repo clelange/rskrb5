@@ -266,6 +266,113 @@ fn parses_complex_gokrb5_config_semantics() {
 }
 
 #[test]
+fn parses_gokrb5_config_without_blank_lines() {
+    let config = Config::parse(
+        r#"[logging]
+ default = FILE:/var/log/kerberos/krb5libs.log
+[libdefaults]
+ default_realm = TEST.GOKRB5
+ dns_lookup_realm = false
+ dns_lookup_kdc = false
+ ticket_lifetime = 10h
+ forwardable = yes
+ default_keytab_name = FILE:/etc/krb5.keytab
+ default_client_keytab_name = FILE:/home/gokrb5/client.keytab
+ default_tkt_enctypes = aes256-cts-hmac-sha1-96 aes128-cts-hmac-sha1-96
+[realms]
+ TEST.GOKRB5 = {
+  kdc = 10.80.88.88:88
+  kdc = assume.port.num
+  admin_server = 10.80.88.88:749
+  default_domain = test.gokrb5
+ }
+ EXAMPLE.COM = {
+  kdc = kerberos.example.com
+  admin_server = kerberos.example.com
+ }
+[domain_realm]
+ .test.gokrb5 = TEST.GOKRB5
+ test.gokrb5 = TEST.GOKRB5
+"#,
+    )
+    .expect("config parses");
+
+    assert_eq!(config.libdefaults.default_realm, "TEST.GOKRB5");
+    assert_eq!(
+        config.libdefaults.ticket_lifetime,
+        Duration::from_secs(10 * 60 * 60)
+    );
+    assert_eq!(config.libdefaults.default_tkt_enctype_ids, [18, 17]);
+    assert_eq!(config.realms.len(), 2);
+    assert_eq!(
+        config.realm("TEST.GOKRB5").expect("TEST realm exists").kdc,
+        ["10.80.88.88:88", "assume.port.num:88"]
+    );
+    assert_eq!(
+        config.resolve_realm("host.test.gokrb5"),
+        Some("TEST.GOKRB5")
+    );
+}
+
+#[test]
+fn parses_gokrb5_config_with_tabs_and_reordered_sections() {
+    let config = Config::parse(
+        r#"[logging]
+	default = FILE:/var/log/kerberos/krb5libs.log
+
+[libdefaults]
+	default_realm = TEST.GOKRB5
+	dns_lookup_realm = false
+	dns_lookup_kdc = false
+	ticket_lifetime = 10h
+	forwardable = yes
+	default_keytab_name = FILE:/etc/krb5.keytab
+	default_client_keytab_name = FILE:/home/gokrb5/client.keytab
+	default_tkt_enctypes = aes256-cts-hmac-sha1-96 aes128-cts-hmac-sha1-96
+
+[domain_realm]
+	.test.gokrb5 = TEST.GOKRB5
+	test.gokrb5 = TEST.GOKRB5
+	.example.com = EXAMPLE.COM
+	hostname1.example.com = EXAMPLE.COM
+
+[appdefaults]
+	pam = {
+	 debug = false
+	}
+
+[realms]
+	TEST.GOKRB5 = {
+		kdc = 10.80.88.88:88
+		kdc = assume.port.num
+		admin_server = 10.80.88.88:749
+		default_domain = test.gokrb5
+	}
+	EXAMPLE.COM = {
+		kdc = kerberos.example.com
+		kdc = kerberos-1.example.com
+		admin_server = kerberos.example.com
+	}
+"#,
+    )
+    .expect("config parses");
+
+    assert_eq!(config.libdefaults.default_realm, "TEST.GOKRB5");
+    assert_eq!(config.realms.len(), 2);
+    assert_eq!(
+        config
+            .realm("EXAMPLE.COM")
+            .expect("example realm exists")
+            .kdc,
+        ["kerberos.example.com:88", "kerberos-1.example.com:88"]
+    );
+    assert_eq!(
+        config.resolve_realm("hostname1.example.com"),
+        Some("EXAMPLE.COM")
+    );
+}
+
+#[test]
 fn duration_formats_match_gokrb5() {
     let cases = [
         ("100", Duration::from_secs(100)),

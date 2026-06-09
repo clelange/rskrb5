@@ -23,7 +23,7 @@ pure-Rust Kerberos library.
   `default_keytab_name` values;
   config parsing covers gokrb5-compatible libdefaults including `default_ccache_name`,
   `KRB5_CONFIG` path-list loading,
-  realm host mappings, domain realm lookup, duration parsing, and configured KDC/KPassword server lookup; ccache parsing
+  comment/tab/no-blank-line variants, realm host mappings, domain realm lookup, duration parsing, and configured KDC/KPassword server lookup; ccache parsing
   covers MIT file caches, `KRB5CCNAME` FILE/WRFILE/DIR cache-name helpers, opaque ticket bytes,
   server entry lookup, X-CACHECONF configuration entry read/write, redacted metadata JSON, and exact fixture round-trips; crypto covers RFC3961 n-fold, RFC3962
   AES128/AES256-CTS-HMAC-SHA1-96, RFC8009
