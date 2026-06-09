@@ -991,12 +991,15 @@ impl TokioClient {
         new_password: impl AsRef<[u8]>,
         options: KpasswdRequestOptions,
     ) -> Result<crate::kadmin::ChangePasswordResult, Error> {
+        let new_password = new_password.as_ref().to_vec();
         let target = self.client.clone();
         let service = Principal::new(
             target.realm.clone(),
             KRB_NT_PRINCIPAL,
             ["kadmin".to_owned(), "changepw".to_owned()],
         );
+        let update_password_credential =
+            matches!(self.credentials, Some(TokioClientCredentials::Password(_)));
         let ticket = match self.credentials.clone() {
             Some(TokioClientCredentials::Password(password)) => {
                 self.transport
@@ -1025,13 +1028,14 @@ impl TokioClient {
             None => self.get_service_ticket(service).await?,
         };
         let change_data = crate::kadmin::ChangePasswdData::for_target(
-            new_password,
+            &new_password,
             target.name_type,
             target.components.iter().map(String::as_str),
             &target.realm,
         )?;
         let request = build_kpasswd_request(&ticket, &change_data, options)?;
-        self.transport
+        let result = self
+            .transport
             .exchange_kpasswd_result_with_config(
                 &self.config,
                 self.protocol,
@@ -1039,7 +1043,15 @@ impl TokioClient {
                 &request.request,
                 &request.reply_key,
             )
-            .await
+            .await?;
+
+        if update_password_credential {
+            self.credentials = Some(TokioClientCredentials::Password(Zeroizing::new(
+                new_password,
+            )));
+        }
+
+        Ok(result)
     }
 
     async fn ensure_tgt(&mut self) -> Result<AsRepSession, Error> {

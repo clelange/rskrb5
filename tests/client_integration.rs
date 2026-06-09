@@ -306,10 +306,22 @@ fn docker_mit_kdc_tokio_client_change_password() -> Result<(), Box<dyn Error>> {
         }
 
         eprintln!("running high-level Tokio client kpasswd change over {protocol:?}");
-        let changed = change_password_once(&config, protocol, PASSWORD, TEMP_PASSWORD).await?;
+        let mut client = TokioClient::with_password(
+            config.clone(),
+            protocol,
+            Principal::user(REALM, USER),
+            PASSWORD.to_vec(),
+        )
+        .with_transport(TokioKdcTransport::new().with_timeout(Duration::from_secs(10)));
+
+        let changed = client
+            .change_password(TEMP_PASSWORD, kpasswd_sender_address()?)
+            .await?;
         assert_eq!(changed.code, KPASSWD_SUCCESS);
 
-        let restored = change_password_once(&config, protocol, TEMP_PASSWORD, PASSWORD).await?;
+        let restored = client
+            .change_password(PASSWORD, kpasswd_sender_address()?)
+            .await?;
         assert_eq!(restored.code, KPASSWD_SUCCESS);
 
         let session = password_login(&config, protocol, PASSWORD).await?;
