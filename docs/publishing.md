@@ -54,12 +54,13 @@ the release:
 
 ```sh
 INTEGRATION=1 cargo test --all-features --test client_integration
-TESTPRIVILEGED=1 cargo test --all-features --test client_integration
-TEST_KPASSWD=1 cargo test --all-features --test client_integration
+INTEGRATION=1 TESTPRIVILEGED=1 cargo test --all-features --test client_integration
+INTEGRATION=1 TESTPRIVILEGED=1 TEST_KPASSWD=1 cargo test --all-features --test client_integration
 ```
 
-`TESTAD=1` remains optional until Active Directory coverage is implemented and
-documented.
+`TESTPRIVILEGED=1` and `TEST_KPASSWD=1` are additive gates on top of
+`INTEGRATION=1`. `TESTAD=1` remains optional until Active Directory coverage is
+implemented and documented.
 
 ## crates.io Cutover
 
