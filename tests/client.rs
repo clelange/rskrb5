@@ -48,6 +48,10 @@ const TGS_REP_CONFOUNDER: &str = "303132333435363738393a3b3c3d3e3f";
 const TICKET_FLAGS: &[u8; 4] = &[0x40, 0x81, 0x00, 0x10];
 const TESTUSER_PASSWORD: &[u8] = b"passwordvalue";
 const TESTUSER_SALT: &str = "TEST.GOKRB5testuser1";
+#[cfg(feature = "tokio")]
+const KRB5_CLIENT_KTNAME_ENV: &str = "KRB5_CLIENT_KTNAME";
+#[cfg(feature = "tokio")]
+static CLIENT_KEYTAB_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[test]
 fn builds_tgt_as_req_with_expected_fields() {
@@ -2126,9 +2130,10 @@ fn tokio_client_loads_client_keytab_from_config_name() {
 #[cfg(all(feature = "tokio", feature = "serde"))]
 #[test]
 fn tokio_client_loads_default_client_keytab_when_env_is_absent() {
-    if std::env::var_os("KRB5_CLIENT_KTNAME").is_some() {
-        return;
-    }
+    let _guard = CLIENT_KEYTAB_ENV_LOCK
+        .lock()
+        .expect("client keytab env lock");
+    let _env = EnvVarGuard::remove(KRB5_CLIENT_KTNAME_ENV);
 
     let keytab = keytab_with_reply_key(1);
     let path = temp_client_keytab_file("load-default-client-keytab");
@@ -2148,12 +2153,43 @@ fn tokio_client_loads_default_client_keytab_when_env_is_absent() {
     assert_eq!(diagnostics.keytab_enctypes, [18]);
 }
 
+#[cfg(all(feature = "tokio", feature = "serde"))]
+#[test]
+fn tokio_client_prefers_env_client_keytab_over_config_name() {
+    let _guard = CLIENT_KEYTAB_ENV_LOCK
+        .lock()
+        .expect("client keytab env lock");
+
+    let keytab = keytab_with_reply_key(1);
+    let path = temp_client_keytab_file("load-env-client-keytab");
+    let env_name = format!("FILE:{}", path.display());
+    keytab.save_name(&env_name).expect("keytab saves by name");
+    let _env = EnvVarGuard::set(KRB5_CLIENT_KTNAME_ENV, &env_name);
+    let missing_config_name = format!(
+        "FILE:{}",
+        temp_client_keytab_file("missing-config-client-keytab").display()
+    );
+
+    let client = TokioClient::with_client_keytab_from_default(
+        config_with_client_keytab_name(missing_config_name),
+        KdcProtocol::Tcp,
+        Principal::user("TEST.GOKRB5", "testuser1"),
+    )
+    .expect("client loads env client keytab before config default");
+    let _ = std::fs::remove_file(&path);
+
+    let diagnostics = runtime().block_on(client.diagnostics());
+    assert_eq!(diagnostics.credential_source, "keytab");
+    assert_eq!(diagnostics.keytab_enctypes, [18]);
+}
+
 #[cfg(feature = "tokio")]
 #[test]
 fn tokio_client_reports_missing_client_keytab_env() {
-    if std::env::var_os("KRB5_CLIENT_KTNAME").is_some() {
-        return;
-    }
+    let _guard = CLIENT_KEYTAB_ENV_LOCK
+        .lock()
+        .expect("client keytab env lock");
+    let _env = EnvVarGuard::remove(KRB5_CLIENT_KTNAME_ENV);
 
     let error = TokioClient::with_client_keytab_from_env(
         Config::new(),
@@ -3492,6 +3528,47 @@ fn temp_client_keytab_file(name: &str) -> std::path::PathBuf {
         "rskrb5-client-keytab-{name}-{}-{nanos}",
         std::process::id()
     ))
+}
+
+#[cfg(feature = "tokio")]
+struct EnvVarGuard {
+    key: &'static str,
+    previous: Option<std::ffi::OsString>,
+}
+
+#[cfg(feature = "tokio")]
+impl EnvVarGuard {
+    fn set(key: &'static str, value: impl AsRef<std::ffi::OsStr>) -> Self {
+        let previous = std::env::var_os(key);
+        // SAFETY: tests that mutate this key hold CLIENT_KEYTAB_ENV_LOCK.
+        unsafe {
+            std::env::set_var(key, value);
+        }
+        Self { key, previous }
+    }
+
+    fn remove(key: &'static str) -> Self {
+        let previous = std::env::var_os(key);
+        // SAFETY: tests that mutate this key hold CLIENT_KEYTAB_ENV_LOCK.
+        unsafe {
+            std::env::remove_var(key);
+        }
+        Self { key, previous }
+    }
+}
+
+#[cfg(feature = "tokio")]
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        // SAFETY: tests that mutate this key hold CLIENT_KEYTAB_ENV_LOCK until
+        // after the guard is dropped.
+        unsafe {
+            match &self.previous {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
 }
 
 fn decode_hex(input: &str) -> Vec<u8> {
