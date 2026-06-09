@@ -143,6 +143,35 @@ fn tower_layer_validates_request_and_adds_ap_rep_response_header() {
     ));
 }
 
+#[cfg(feature = "tower")]
+#[test]
+fn tower_layer_rejects_replayed_request() {
+    let keytab = keytab();
+    let mut service = krb_http::NegotiateLayer::new(&keytab)
+        .with_now(timestamp(1_893_553_447))
+        .layer(AssertAcceptedService);
+    let header = valid_authorization_header();
+    let mut first = Request::new(());
+    krb_http::set_authorization_header(&mut first, &header).expect("authorization header sets");
+    let mut replay = Request::new(());
+    krb_http::set_authorization_header(&mut replay, &header).expect("authorization header sets");
+
+    let first_response = run_ready(service.call(first)).expect("first response succeeds");
+    let replay_response = run_ready(service.call(replay)).expect("replay returns reject response");
+
+    assert_eq!(first_response.status(), StatusCode::OK);
+    assert_eq!(replay_response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        replay_response
+            .headers()
+            .get(WWW_AUTHENTICATE)
+            .expect("reject header exists")
+            .to_str()
+            .expect("reject header is a string"),
+        spnego::reject_header().expect("reject header encodes")
+    );
+}
+
 fn valid_authorization_header() -> String {
     let ap_req_token = Krb5MechToken::ap_req(decode_hex(VALID_AP_REQ))
         .encode()
