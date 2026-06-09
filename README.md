@@ -37,8 +37,8 @@ pure-Rust Kerberos library.
   coverage, configured kpasswd transport, typed kpasswd request/reply/result exchanges, complete kpasswd request assembly with generated reply keys, and a high-level Tokio password-change helper with initial kadmin/changepw ticket acquisition, `krb5.conf` configured KDC
   discovery, DNS SRV KDC discovery, AS-REP and TGS-REP encrypted-part decryption and validation,
   generic AP-REQ construction, cross-realm TGS referral following, renewable AS/TGS request flags, explicit
-  TGT/service-ticket renewal helpers, Docker MIT KDC AS/TGS login and TGT
-  renewal coverage across AES-SHA1, AES-SHA2, DES3, and RC4-HMAC, per-enctype
+  TGT/service-ticket renewal helpers, Docker MIT KDC AS/TGS login, TGT
+  renewal, and gated kpasswd change/restore coverage across AES-SHA1, AES-SHA2, DES3, and RC4-HMAC, per-enctype
   keytab AS/TGS integration coverage, ccache credential export/write-back, and a high-level
   Tokio client with password/keytab/ccache credential sources,
   TGT/session renewal, service-ticket caching, and gokrb5-shaped JSON
@@ -100,6 +100,11 @@ The GitHub workflow includes a manual Docker-backed integration job. Run it from
 `workflow_dispatch` with the `integration` input to exercise the live MIT KDC AS
 login test; it preserves the gokrb5-style `INTEGRATION=1`, `TESTPRIVILEGED=1`,
 and optional `TESTAD=1` gates.
+
+The live kpasswd integration test also requires `TEST_KPASSWD=1` because it
+temporarily changes the Docker test principal password before restoring it. Use
+`TEST_KPASSWD_ADDR`, `TEST_KPASSWD_PORT`, and `TEST_KPASSWD_SADDR` when the
+password-change service or sender address differs from the localhost defaults.
 
 ## Distribution Direction
 

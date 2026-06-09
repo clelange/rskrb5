@@ -1,6 +1,7 @@
 #![cfg(feature = "tokio")]
 
 use std::error::Error;
+use std::net::Ipv4Addr;
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -11,6 +12,7 @@ use rskrb5::client::{
 };
 use rskrb5::config::Config;
 use rskrb5::crypto::{AesSha1Etype, Des3CbcSha1KdEtype};
+use rskrb5::kadmin::{KPASSWD_SUCCESS, ipv4_host_address};
 use rskrb5::keytab::{EncryptionKey, Entry as KeytabEntry, Keytab, Principal as KeytabPrincipal};
 
 const REALM: &str = "TEST.GOKRB5";
@@ -27,6 +29,7 @@ const TESTUSER1_KVNO: u32 = 2;
 const SERVICE_HOST: &str = "host.test.gokrb5";
 const RESDOM_REALM: &str = "RESDOM.GOKRB5";
 const RESDOM_SERVICE_HOST: &str = "host.resdom.gokrb5";
+const TEMP_PASSWORD: &[u8] = b"passwordvalue-rskrb5-temp";
 static INTEGRATION_LOCK: Mutex<()> = Mutex::new(());
 #[cfg(feature = "spnego")]
 const HTTP_KEYTAB: &str = concat!(
@@ -273,6 +276,44 @@ fn docker_mit_kdc_tokio_client_password_cache() -> Result<(), Box<dyn Error>> {
             assert_eq!(first.session_key.etype, AES256_ETYPE);
             assert!(!first.ticket.is_empty());
         }
+
+        Ok::<_, Box<dyn Error>>(())
+    })
+}
+
+#[test]
+fn docker_mit_kdc_tokio_client_change_password() -> Result<(), Box<dyn Error>> {
+    if std::env::var("INTEGRATION").as_deref() != Ok("1") {
+        eprintln!("skipping Docker KDC integration test; set INTEGRATION=1 to enable");
+        return Ok(());
+    }
+    if std::env::var("TEST_KPASSWD").as_deref() != Ok("1") {
+        eprintln!("skipping Docker KDC kpasswd test; set TEST_KPASSWD=1 to enable");
+        return Ok(());
+    }
+    let _guard = INTEGRATION_LOCK.lock().expect("integration test lock");
+
+    runtime().block_on(async {
+        let config = configured_kpasswd_config()?;
+        let protocol = KdcProtocol::Tcp;
+
+        if password_login(&config, protocol, PASSWORD).await.is_err() {
+            eprintln!(
+                "original Docker KDC password did not authenticate; attempting temp-password restore"
+            );
+            change_password_once(&config, protocol, TEMP_PASSWORD, PASSWORD).await?;
+            password_login(&config, protocol, PASSWORD).await?;
+        }
+
+        eprintln!("running high-level Tokio client kpasswd change over {protocol:?}");
+        let changed = change_password_once(&config, protocol, PASSWORD, TEMP_PASSWORD).await?;
+        assert_eq!(changed.code, KPASSWD_SUCCESS);
+
+        let restored = change_password_once(&config, protocol, TEMP_PASSWORD, PASSWORD).await?;
+        assert_eq!(restored.code, KPASSWD_SUCCESS);
+
+        let session = password_login(&config, protocol, PASSWORD).await?;
+        assert_login_session(session);
 
         Ok::<_, Box<dyn Error>>(())
     })
@@ -1115,6 +1156,50 @@ async fn assert_keytab_as_tgs_for_etypes(
     Ok(())
 }
 
+async fn change_password_once(
+    config: &Config,
+    protocol: KdcProtocol,
+    current_password: &[u8],
+    new_password: &[u8],
+) -> Result<rskrb5::kadmin::ChangePasswordResult, Box<dyn Error>> {
+    let mut client = TokioClient::with_password(
+        config.clone(),
+        protocol,
+        Principal::user(REALM, USER),
+        current_password.to_vec(),
+    )
+    .with_transport(TokioKdcTransport::new().with_timeout(Duration::from_secs(10)));
+
+    Ok(client
+        .change_password(new_password, kpasswd_sender_address()?)
+        .await?)
+}
+
+async fn password_login(
+    config: &Config,
+    protocol: KdcProtocol,
+    password: &[u8],
+) -> Result<rskrb5::client::AsRepSession, Box<dyn Error>> {
+    let mut client = TokioClient::with_password(
+        config.clone(),
+        protocol,
+        Principal::user(REALM, USER),
+        password.to_vec(),
+    )
+    .with_transport(TokioKdcTransport::new().with_timeout(Duration::from_secs(10)));
+
+    Ok(client.login().await?.clone())
+}
+
+fn kpasswd_sender_address() -> Result<rasn_kerberos::HostAddress, Box<dyn Error>> {
+    let address = match std::env::var("TEST_KPASSWD_SADDR") {
+        Ok(value) => value.parse::<Ipv4Addr>()?,
+        Err(std::env::VarError::NotPresent) => Ipv4Addr::new(127, 0, 0, 1),
+        Err(error) => return Err(error.into()),
+    };
+    Ok(ipv4_host_address(address.octets()))
+}
+
 fn testuser_reply_key() -> Result<EncryptionKey, Box<dyn Error>> {
     let etype = AesSha1Etype::Aes256;
     Ok(EncryptionKey {
@@ -1296,6 +1381,24 @@ fn short_kdc_config() -> Result<Config, Box<dyn Error>> {
     ))?)
 }
 
+fn configured_kpasswd_config() -> Result<Config, Box<dyn Error>> {
+    Ok(Config::parse(&format!(
+        r#"
+[libdefaults]
+ dns_lookup_kdc = false
+ udp_preference_limit = 1
+
+[realms]
+ {REALM} = {{
+  kdc = {}
+  kpasswd_server = {}
+ }}
+"#,
+        kdc_addr(),
+        kpasswd_addr()
+    ))?)
+}
+
 fn resdom_kdc_addr() -> String {
     let host = std::env::var("TEST_RESDOM_KDC_ADDR")
         .or_else(|_| std::env::var("TEST_KDC_ADDR"))
@@ -1308,6 +1411,19 @@ fn resdom_kdc_addr() -> String {
     }
 
     let port = std::env::var("TEST_RESDOM_KDC_PORT").unwrap_or_else(|_| "188".to_owned());
+    format!("{host}:{port}")
+}
+
+fn kpasswd_addr() -> String {
+    let host = std::env::var("TEST_KPASSWD_ADDR").unwrap_or_else(|_| "127.0.0.1".to_owned());
+    if host
+        .rsplit_once(':')
+        .is_some_and(|(_, port)| port.parse::<u16>().is_ok())
+    {
+        return host;
+    }
+
+    let port = std::env::var("TEST_KPASSWD_PORT").unwrap_or_else(|_| "464".to_owned());
     format!("{host}:{port}")
 }
 
