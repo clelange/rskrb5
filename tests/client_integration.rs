@@ -747,6 +747,23 @@ fn docker_mit_kdc_des3_tgs_service_ticket_through_tcp_and_udp() -> Result<(), Bo
 }
 
 #[test]
+fn docker_mit_old_kdc_password_and_keytab_as_tgs_through_tcp_and_udp() -> Result<(), Box<dyn Error>>
+{
+    if std::env::var("INTEGRATION").as_deref() != Ok("1") {
+        eprintln!("skipping Docker KDC integration test; set INTEGRATION=1 to enable");
+        return Ok(());
+    }
+    let _guard = INTEGRATION_LOCK.lock().expect("integration test lock");
+
+    runtime().block_on(async {
+        let addr = old_kdc_addr();
+        assert_password_as_tgs_for_etypes(&addr, &[AES256_ETYPE], 49).await?;
+        assert_keytab_as_tgs_for_etypes(&addr, &[AES256_ETYPE], 51).await?;
+        Ok::<_, Box<dyn Error>>(())
+    })
+}
+
+#[test]
 fn docker_mit_latest_kdc_aes_sha2_as_tgs_through_tcp_and_udp() -> Result<(), Box<dyn Error>> {
     if std::env::var("INTEGRATION").as_deref() != Ok("1") {
         eprintln!("skipping Docker KDC integration test; set INTEGRATION=1 to enable");
@@ -1544,6 +1561,54 @@ async fn assert_keytab_as_tgs_for_etypes(
     Ok(())
 }
 
+async fn assert_password_as_tgs_for_etypes(
+    addr: &str,
+    etypes: &[i32],
+    mut sequence: u32,
+) -> Result<(), Box<dyn Error>> {
+    let transport = TokioKdcTransport::new().with_timeout(Duration::from_secs(10));
+
+    for etype in etypes {
+        for protocol in [KdcProtocol::Udp, KdcProtocol::Tcp] {
+            eprintln!(
+                "running Docker KDC password etype {etype} AS/TGS exchange over {protocol:?} to {addr}"
+            );
+            let tgt = transport
+                .login_tgt_with_password(
+                    protocol,
+                    addr,
+                    Principal::user(REALM, USER),
+                    PASSWORD,
+                    login_options_with_etypes(protocol, sequence, vec![*etype])?,
+                )
+                .await?;
+            sequence += 1;
+            assert_eq!(tgt.session_key.etype, *etype);
+            assert!(!tgt.session_key.value.is_empty());
+
+            let service = service_principal();
+            let request = build_tgs_req(
+                &tgt,
+                service.clone(),
+                tgs_options_with_etypes(protocol, sequence, vec![*etype])?,
+            )?;
+            sequence += 1;
+            let ticket = transport
+                .exchange_tgs_req(protocol, addr, &request, &tgt.session_key)
+                .await?;
+
+            assert_eq!(ticket.client, Principal::user(REALM, USER));
+            assert_eq!(ticket.service, service);
+            assert_eq!(ticket.session_key.etype, *etype);
+            assert!(!ticket.session_key.value.is_empty());
+            assert!(!ticket.ticket.is_empty());
+            assert!(ticket.end_time > ticket.start_time);
+        }
+    }
+
+    Ok(())
+}
+
 async fn change_password_once(
     config: &Config,
     protocol: KdcProtocol,
@@ -1839,6 +1904,21 @@ fn short_kdc_addr() -> String {
     }
 
     let port = std::env::var("TEST_SHORT_KDC_PORT").unwrap_or_else(|_| "58".to_owned());
+    format!("{host}:{port}")
+}
+
+fn old_kdc_addr() -> String {
+    let host = std::env::var("TEST_OLD_KDC_ADDR")
+        .or_else(|_| std::env::var("TEST_KDC_ADDR"))
+        .unwrap_or_else(|_| "127.0.0.1".to_owned());
+    if host
+        .rsplit_once(':')
+        .is_some_and(|(_, port)| port.parse::<u16>().is_ok())
+    {
+        return host;
+    }
+
+    let port = std::env::var("TEST_OLD_KDC_PORT").unwrap_or_else(|_| "78".to_owned());
     format!("{host}:{port}")
 }
 

@@ -43,7 +43,7 @@ pure-Rust Kerberos library.
   generic AP-REQ construction, cross-realm TGS referral following with cached
   and renewable referral TGT sessions, renewable AS/TGS request flags, explicit
   TGT/service-ticket renewal helpers, Docker MIT KDC AS/TGS login, TGT
-  renewal, negative wrong-keytab and invalid-service KDC-error coverage,
+  renewal, old-KDC password/keytab AS/TGS coverage, negative wrong-keytab and invalid-service KDC-error coverage,
   configured-KDC TCP failover, and gated kpasswd change/restore coverage across AES-SHA1, AES-SHA2, DES3, and RC4-HMAC, per-enctype
   keytab AS/TGS integration coverage, gated external `kinit`/`kvno` ccache
   integration, keytab file-name helpers with `%{uid}`/`%{euid}` expansion, explicit env and environment-preferred client keytab loading, ccache credential export/write-back and
