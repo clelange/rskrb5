@@ -163,6 +163,30 @@ fn tower_layer_validates_request_and_adds_ap_rep_response_header() {
 
 #[cfg(feature = "tower")]
 #[test]
+fn tower_layer_forwards_authenticated_post_body() {
+    let keytab = keytab();
+    let payload = b"authenticated upload payload".to_vec();
+    let mut service = krb_http::NegotiateLayer::new(&keytab)
+        .with_now(timestamp(1_893_553_447))
+        .layer(AssertBodyService {
+            expected: payload.clone(),
+        });
+    let mut request = Request::builder()
+        .method("POST")
+        .uri("/upload")
+        .body(payload)
+        .expect("request builds");
+    krb_http::set_authorization_header(&mut request, &valid_authorization_header())
+        .expect("authorization header sets");
+
+    let response = run_ready(service.call(request)).expect("inner response succeeds");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(*response.body(), b"authenticated upload payload".len());
+}
+
+#[cfg(feature = "tower")]
+#[test]
 fn tower_layer_loads_owned_keytab_name() {
     let path = temp_file("http-keytab-name");
     let name = format!("FILE:{}", path.display());
@@ -446,6 +470,35 @@ impl Service<Request<()>> for AssertAcceptedService {
         assert_eq!(accepted.ap_req.client.name(), "testuser1");
         assert_eq!(accepted.ap_req.service.name(), "HTTP/host.test.gokrb5");
         std::future::ready(Ok(Response::new(())))
+    }
+}
+
+#[cfg(feature = "tower")]
+struct AssertBodyService {
+    expected: Vec<u8>,
+}
+
+#[cfg(feature = "tower")]
+impl Service<Request<Vec<u8>>> for AssertBodyService {
+    type Response = Response<usize>;
+    type Error = Infallible;
+    type Future = std::future::Ready<std::result::Result<Self::Response, Self::Error>>;
+
+    fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<std::result::Result<(), Self::Error>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn call(&mut self, request: Request<Vec<u8>>) -> Self::Future {
+        let accepted = request
+            .extensions()
+            .get::<AcceptedContext>()
+            .expect("accepted context exists");
+        assert_eq!(accepted.ap_req.client.name(), "testuser1");
+        assert_eq!(accepted.ap_req.service.name(), "HTTP/host.test.gokrb5");
+        assert_eq!(request.method().as_str(), "POST");
+        assert_eq!(request.uri().path(), "/upload");
+        assert_eq!(request.body(), &self.expected);
+        std::future::ready(Ok(Response::new(request.body().len())))
     }
 }
 
