@@ -11,8 +11,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rskrb5::ccache::CCache;
 use rskrb5::client::{
-    AsReqOptions, KdcProtocol, PreauthKeyInfo, Principal, TgsReqOptions, TokioClient,
-    TokioKdcTransport, build_tgs_req, build_tgt_as_req, derive_password_reply_key,
+    AsReqOptions, Error as ClientError, KdcProtocol, PreauthKeyInfo, Principal, TgsReqOptions,
+    TokioClient, TokioKdcTransport, build_tgs_req, build_tgt_as_req, derive_password_reply_key,
     pa_enc_timestamp_with_confounder,
 };
 use rskrb5::config::Config;
@@ -35,6 +35,8 @@ const SERVICE_HOST: &str = "host.test.gokrb5";
 const RESDOM_REALM: &str = "RESDOM.GOKRB5";
 const RESDOM_SERVICE_HOST: &str = "host.resdom.gokrb5";
 const TEMP_PASSWORD: &[u8] = b"passwordvalue-rskrb5-temp";
+const KEYTAB_TESTUSER2_TEST_GOKRB5: &str = "05020000003b0001000b544553542e474f4b52423500097465737475736572320000000159beb240010011001086824c55ff5de30386dd83dc62b44bb7000000010000004b0001000b544553542e474f4b52423500097465737475736572320000000159beb2400100120020d8ed27f96be76fd5b281ee9f8029db93cc5fb06c7eb3be9ee753106d3488fa92000000010000003b0001000b544553542e474f4b52423500097465737475736572320000000159beb240020011001086824c55ff5de30386dd83dc62b44bb7000000020000004b0001000b544553542e474f4b52423500097465737475736572320000000159beb2400200120020d8ed27f96be76fd5b281ee9f8029db93cc5fb06c7eb3be9ee753106d3488fa92000000020000003b0001000b544553542e474f4b52423500097465737475736572320000000159beb24001001300106ccff358aaa8a4a41c444e173b1463c2000000010000003b0001000b544553542e474f4b52423500097465737475736572320000000159beb24002001300106ccff358aaa8a4a41c444e173b1463c2000000020000004b0001000b544553542e474f4b52423500097465737475736572320000000159beb24001001400205cf3773dd920be800229ac1c6f9bf59c6706c583f82c2dea66c9a29152118cd7000000010000004b0001000b544553542e474f4b52423500097465737475736572320000000159beb24002001400205cf3773dd920be800229ac1c6f9bf59c6706c583f82c2dea66c9a29152118cd700000002000000430001000b544553542e474f4b52423500097465737475736572320000000159beb2400100100018bc025746e9e66bd6b62a918f6413d529803192a28aabf79200000001000000430001000b544553542e474f4b52423500097465737475736572320000000159beb2400200100018bc025746e9e66bd6b62a918f6413d529803192a28aabf792000000020000003b0001000b544553542e474f4b52423500097465737475736572320000000159beb2400100170010084768c373663b3bef1f6385883cf7ff000000010000003b0001000b544553542e474f4b52423500097465737475736572320000000159beb2400200170010084768c373663b3bef1f6385883cf7ff00000002";
+const KEYTAB_TESTUSER1_TEST_GOKRB5_WRONGPASSWD: &str = "0502000000370001000b544553542e474f4b52423500097465737475736572310000000158ef4bc5010011001039a9a382153105f8708e80f93382654e000000470001000b544553542e474f4b52423500097465737475736572310000000158ef4bc60100120020fc5bb940d6075214e0c6fc0456ce68c33306094198a927b4187d7cf3f4aea50d";
 static INTEGRATION_LOCK: Mutex<()> = Mutex::new(());
 #[cfg(feature = "spnego")]
 const HTTP_KEYTAB: &str = concat!(
@@ -242,6 +244,142 @@ fn docker_mit_kdc_configured_kdc_as_login() -> Result<(), Box<dyn Error>> {
                 .await?;
             assert_login_session(keytab_session);
         }
+
+        Ok::<_, Box<dyn Error>>(())
+    })
+}
+
+#[test]
+fn docker_mit_kdc_rejects_wrong_keytab_login() -> Result<(), Box<dyn Error>> {
+    if std::env::var("INTEGRATION").as_deref() != Ok("1") {
+        eprintln!("skipping Docker KDC integration test; set INTEGRATION=1 to enable");
+        return Ok(());
+    }
+    let _guard = INTEGRATION_LOCK.lock().expect("integration test lock");
+
+    runtime().block_on(async {
+        let mut client = TokioClient::with_keytab(
+            configured_kdc_config()?,
+            KdcProtocol::Auto,
+            Principal::user(REALM, USER),
+            keytab_from_hex(KEYTAB_TESTUSER1_TEST_GOKRB5_WRONGPASSWD)?,
+        )
+        .with_transport(TokioKdcTransport::new().with_timeout(Duration::from_secs(10)));
+
+        assert!(
+            client.login().await.is_err(),
+            "login with an incorrect keytab must fail"
+        );
+
+        Ok::<_, Box<dyn Error>>(())
+    })
+}
+
+#[test]
+fn docker_mit_kdc_keytab_login_for_preauth_user() -> Result<(), Box<dyn Error>> {
+    if std::env::var("INTEGRATION").as_deref() != Ok("1") {
+        eprintln!("skipping Docker KDC integration test; set INTEGRATION=1 to enable");
+        return Ok(());
+    }
+    let _guard = INTEGRATION_LOCK.lock().expect("integration test lock");
+
+    runtime().block_on(async {
+        let keytab = keytab_from_hex(KEYTAB_TESTUSER2_TEST_GOKRB5)?;
+        for protocol in [KdcProtocol::Auto, KdcProtocol::Tcp] {
+            let mut client = TokioClient::with_keytab(
+                configured_kdc_config()?,
+                protocol,
+                Principal::user(REALM, "testuser2"),
+                keytab.clone(),
+            )
+            .with_transport(TokioKdcTransport::new().with_timeout(Duration::from_secs(10)));
+            let session = client.login().await?;
+
+            assert_eq!(session.client, Principal::user(REALM, "testuser2"));
+            assert_eq!(session.service, Principal::tgt_service(REALM));
+            assert_eq!(session.session_key.etype, AES256_ETYPE);
+        }
+
+        Ok::<_, Box<dyn Error>>(())
+    })
+}
+
+#[test]
+fn docker_mit_kdc_invalid_service_principal_returns_kdc_error() -> Result<(), Box<dyn Error>> {
+    if std::env::var("INTEGRATION").as_deref() != Ok("1") {
+        eprintln!("skipping Docker KDC integration test; set INTEGRATION=1 to enable");
+        return Ok(());
+    }
+    let _guard = INTEGRATION_LOCK.lock().expect("integration test lock");
+
+    runtime().block_on(async {
+        let mut client = TokioClient::with_keytab(
+            configured_kdc_config()?,
+            KdcProtocol::Auto,
+            Principal::user(REALM, USER),
+            testuser_keytab()?,
+        )
+        .with_transport(TokioKdcTransport::new().with_timeout(Duration::from_secs(10)));
+        client.login().await?;
+        let error = client
+            .get_service_ticket(Principal::new(REALM, 2, ["host.test.gokrb5"]))
+            .await
+            .expect_err("invalid service principal must be rejected");
+
+        match error {
+            ClientError::Kdc(kdc_error) => assert_eq!(kdc_error.error_code, 7),
+            other => panic!("expected KDC service-principal error, got {other:?}"),
+        }
+
+        Ok::<_, Box<dyn Error>>(())
+    })
+}
+
+#[test]
+fn docker_mit_kdc_tcp_login_fails_for_unreachable_kdc() -> Result<(), Box<dyn Error>> {
+    if std::env::var("INTEGRATION").as_deref() != Ok("1") {
+        eprintln!("skipping Docker KDC integration test; set INTEGRATION=1 to enable");
+        return Ok(());
+    }
+    let _guard = INTEGRATION_LOCK.lock().expect("integration test lock");
+
+    runtime().block_on(async {
+        let mut client = TokioClient::with_keytab(
+            configured_kdc_config_with_primary_realm_kdcs(&[closed_tcp_kdc_addr()])?,
+            KdcProtocol::Tcp,
+            Principal::user(REALM, USER),
+            testuser_keytab()?,
+        )
+        .with_transport(TokioKdcTransport::new().with_timeout(Duration::from_secs(10)));
+
+        assert!(
+            client.login().await.is_err(),
+            "login through an unreachable KDC must fail"
+        );
+
+        Ok::<_, Box<dyn Error>>(())
+    })
+}
+
+#[test]
+fn docker_mit_kdc_tcp_login_tries_next_configured_kdc() -> Result<(), Box<dyn Error>> {
+    if std::env::var("INTEGRATION").as_deref() != Ok("1") {
+        eprintln!("skipping Docker KDC integration test; set INTEGRATION=1 to enable");
+        return Ok(());
+    }
+    let _guard = INTEGRATION_LOCK.lock().expect("integration test lock");
+
+    runtime().block_on(async {
+        let mut client = TokioClient::with_keytab(
+            configured_kdc_config_with_primary_realm_kdcs(&[closed_tcp_kdc_addr(), kdc_addr()])?,
+            KdcProtocol::Tcp,
+            Principal::user(REALM, USER),
+            testuser_keytab()?,
+        )
+        .with_transport(TokioKdcTransport::new().with_timeout(Duration::from_secs(10)));
+        let session = client.login().await?;
+
+        assert_login_session(session.clone());
 
         Ok::<_, Box<dyn Error>>(())
     })
@@ -1462,6 +1600,10 @@ fn testuser_keytab() -> Result<Keytab, Box<dyn Error>> {
     testuser_keytab_for_etypes(&[AES256_ETYPE])
 }
 
+fn keytab_from_hex(hex: &str) -> Result<Keytab, Box<dyn Error>> {
+    Ok(Keytab::parse(&decode_hex(hex))?)
+}
+
 fn testuser_keytab_for_etypes(etypes: &[i32]) -> Result<Keytab, Box<dyn Error>> {
     let mut keytab = Keytab::new();
     for etype in etypes {
@@ -1681,6 +1823,10 @@ fn kdc_addr() -> String {
     format!("{host}:{port}")
 }
 
+fn closed_tcp_kdc_addr() -> String {
+    std::env::var("TEST_BAD_KDC_ADDR").unwrap_or_else(|_| "127.0.0.1:9".to_owned())
+}
+
 fn short_kdc_addr() -> String {
     let host = std::env::var("TEST_SHORT_KDC_ADDR")
         .or_else(|_| std::env::var("TEST_KDC_ADDR"))
@@ -1712,6 +1858,17 @@ fn latest_kdc_addr() -> String {
 }
 
 fn configured_kdc_config() -> Result<Config, Box<dyn Error>> {
+    configured_kdc_config_with_primary_realm_kdcs(&[kdc_addr()])
+}
+
+fn configured_kdc_config_with_primary_realm_kdcs(
+    kdcs: &[String],
+) -> Result<Config, Box<dyn Error>> {
+    let primary_kdcs = kdcs
+        .iter()
+        .map(|kdc| format!("  kdc = {kdc}\n"))
+        .collect::<String>();
+
     Ok(Config::parse(&format!(
         r#"
 [libdefaults]
@@ -1719,7 +1876,7 @@ fn configured_kdc_config() -> Result<Config, Box<dyn Error>> {
 
 [realms]
  {REALM} = {{
-  kdc = {}
+{primary_kdcs}
  }}
  {RESDOM_REALM} = {{
   kdc = {}
@@ -1731,7 +1888,6 @@ fn configured_kdc_config() -> Result<Config, Box<dyn Error>> {
  .resdom.gokrb5 = {RESDOM_REALM}
  resdom.gokrb5 = {RESDOM_REALM}
 "#,
-        kdc_addr(),
         resdom_kdc_addr()
     ))?)
 }
@@ -1821,7 +1977,6 @@ fn http_keytab() -> Result<Keytab, Box<dyn Error>> {
     Ok(Keytab::parse(&decode_hex(HTTP_KEYTAB))?)
 }
 
-#[cfg(feature = "spnego")]
 fn decode_hex(input: &str) -> Vec<u8> {
     assert_eq!(input.len() % 2, 0, "hex input has even length");
     input
@@ -1831,7 +1986,6 @@ fn decode_hex(input: &str) -> Vec<u8> {
         .collect()
 }
 
-#[cfg(feature = "spnego")]
 fn hex_value(byte: u8) -> u8 {
     match byte {
         b'0'..=b'9' => byte - b'0',
