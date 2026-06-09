@@ -91,6 +91,26 @@ fn saves_and_loads_ccache_from_env() {
 }
 
 #[test]
+fn rejects_missing_ccache_env_name() {
+    let _env = common::EnvVarGuard::remove_krb5ccname();
+
+    assert!(matches!(
+        CCache::load_from_env().expect_err("missing KRB5CCNAME rejected on load"),
+        Error::DefaultCacheName(std::env::VarError::NotPresent)
+    ));
+    assert!(matches!(
+        CCache::new(Principal::new(
+            "TEST.GOKRB5",
+            1,
+            vec!["testuser1".to_owned()],
+        ))
+        .save_to_env()
+        .expect_err("missing KRB5CCNAME rejected on save"),
+        Error::DefaultCacheName(std::env::VarError::NotPresent)
+    ));
+}
+
+#[test]
 fn resolves_file_cache_names() {
     assert_eq!(
         CCache::file_path_from_cache_name("/tmp/krb5cc_1000").expect("bare path resolves"),

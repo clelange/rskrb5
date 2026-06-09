@@ -1,4 +1,4 @@
-use rskrb5::keytab::{EncryptionKey, Entry, Keytab, KeytabName, Principal};
+use rskrb5::keytab::{EncryptionKey, Entry, Error, Keytab, KeytabName, Principal};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -124,6 +124,22 @@ fn saves_and_loads_keytab_from_env() {
     let _ = std::fs::remove_file(&path);
 
     assert_eq!(loaded, keytab);
+}
+
+#[test]
+fn rejects_missing_keytab_env_name() {
+    let _env = common::EnvVarGuard::remove_krb5_ktname();
+
+    assert!(matches!(
+        Keytab::load_from_env().expect_err("missing KRB5_KTNAME rejected on load"),
+        Error::DefaultKeytabName(std::env::VarError::NotPresent)
+    ));
+    assert!(matches!(
+        Keytab::new()
+            .save_to_env()
+            .expect_err("missing KRB5_KTNAME rejected on save"),
+        Error::DefaultKeytabName(std::env::VarError::NotPresent)
+    ));
 }
 
 #[test]
