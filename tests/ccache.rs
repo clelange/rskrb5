@@ -3,6 +3,8 @@ use rskrb5::ccache::{CCache, CacheName, Credential, Error, Principal};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+mod common;
+
 const CCACHE_TEST: &str = concat!(
     "0504000c00010008000000060000000000000001000000010000000b544553542e474f4b524235000000097465737475",
     "7365723100000001000000010000000b544553542e474f4b524235000000097465737475736572310000000200000002",
@@ -68,6 +70,21 @@ fn saves_and_loads_ccache_file() {
 
     cache.save(&path).expect("ccache saves");
     let loaded = CCache::load(&path).expect("ccache loads");
+    let _ = std::fs::remove_file(&path);
+
+    assert_eq!(loaded, cache);
+}
+
+#[test]
+fn saves_and_loads_ccache_from_env() {
+    let bytes = decode_hex(CCACHE_TEST);
+    let cache = CCache::parse(&bytes).expect("ccache fixture parses");
+    let path = temp_file("save-load-env");
+    let name = format!("FILE:{}", path.display());
+    let _env = common::EnvVarGuard::set_krb5ccname(&name);
+
+    cache.save_to_env().expect("ccache saves to env name");
+    let loaded = CCache::load_from_env().expect("ccache loads from env name");
     let _ = std::fs::remove_file(&path);
 
     assert_eq!(loaded, cache);
