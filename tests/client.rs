@@ -2033,9 +2033,7 @@ fn tokio_client_loads_from_config_default_ccache_name() {
 #[cfg(feature = "tokio")]
 #[test]
 fn tokio_client_uses_config_default_ccache_when_env_is_absent() {
-    if std::env::var_os("KRB5CCNAME").is_some() {
-        return;
-    }
+    let _env = common::EnvVarGuard::remove_krb5ccname();
 
     let tgt = sample_tgt_session();
     let service_ticket = sample_service_ticket_session(&tgt);
@@ -2069,6 +2067,39 @@ fn tokio_client_uses_config_default_ccache_when_env_is_absent() {
 
 #[cfg(feature = "tokio")]
 #[test]
+fn tokio_client_prefers_env_default_ccache_over_config_name() {
+    let tgt = sample_tgt_session();
+    let service_ticket = sample_service_ticket_session(&tgt);
+    let path = temp_client_ccache_file("default-ccache-env-precedence");
+    let env_name = format!("FILE:{}", path.display());
+    let _env = common::EnvVarGuard::set_krb5ccname(&env_name);
+    let config_default = "MEMORY:config-default".to_owned();
+    let mut client = TokioClient::from_tgt_session(
+        config_with_default_ccache_name(config_default.clone()),
+        KdcProtocol::Tcp,
+        tgt.clone(),
+    );
+    client.cache_service_ticket(service_ticket);
+    client
+        .save_default_ccache()
+        .expect("client saves default ccache from env");
+
+    let loaded = TokioClient::from_default_ccache(
+        config_with_default_ccache_name(config_default),
+        KdcProtocol::Tcp,
+    )
+    .expect("client loads default ccache from env");
+    loaded
+        .update_default_ccache()
+        .expect("client updates default ccache from env");
+    let _ = std::fs::remove_file(&path);
+
+    assert_eq!(loaded.tgt_session().expect("TGT reloads"), &tgt);
+    assert_eq!(loaded.cached_service_ticket_count(), 1);
+}
+
+#[cfg(feature = "tokio")]
+#[test]
 fn tokio_client_rejects_missing_config_default_ccache_name() {
     let error = TokioClient::from_default_ccache_name(Config::new(), KdcProtocol::Tcp)
         .expect_err("missing default ccache name is rejected");
@@ -2087,21 +2118,21 @@ fn tokio_client_rejects_missing_config_default_ccache_name() {
         .expect_err("missing default ccache name is rejected");
     assert!(matches!(error, Error::NoDefaultCCacheName));
 
-    if std::env::var_os("KRB5CCNAME").is_none() {
-        let error = TokioClient::from_default_ccache(Config::new(), KdcProtocol::Tcp)
-            .expect_err("missing default ccache name is rejected");
-        assert!(matches!(error, Error::NoDefaultCCacheName));
+    let _env = common::EnvVarGuard::remove_krb5ccname();
 
-        let error = client
-            .save_default_ccache()
-            .expect_err("missing default ccache name is rejected");
-        assert!(matches!(error, Error::NoDefaultCCacheName));
+    let error = TokioClient::from_default_ccache(Config::new(), KdcProtocol::Tcp)
+        .expect_err("missing default ccache name is rejected");
+    assert!(matches!(error, Error::NoDefaultCCacheName));
 
-        let error = client
-            .update_default_ccache()
-            .expect_err("missing default ccache name is rejected");
-        assert!(matches!(error, Error::NoDefaultCCacheName));
-    }
+    let error = client
+        .save_default_ccache()
+        .expect_err("missing default ccache name is rejected");
+    assert!(matches!(error, Error::NoDefaultCCacheName));
+
+    let error = client
+        .update_default_ccache()
+        .expect_err("missing default ccache name is rejected");
+    assert!(matches!(error, Error::NoDefaultCCacheName));
 }
 
 #[cfg(all(feature = "tokio", feature = "serde"))]
