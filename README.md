@@ -115,3 +115,5 @@ from the localhost defaults.
 
 If the decision gate justifies a standalone crate, source, CI, and releases
 will live on GitHub, while public Rust distribution will use crates.io.
+The concrete release gate and crates.io cutover checklist are documented in
+[`docs/publishing.md`](docs/publishing.md).
