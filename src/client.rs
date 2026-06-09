@@ -793,6 +793,48 @@ impl TokioClient {
         )
     }
 
+    /// Create a keytab-backed client by loading a file-backed keytab name.
+    ///
+    /// Bare paths, `FILE:path`, and `WRFILE:path` are supported by the keytab
+    /// module. Other keytab stores are rejected explicitly.
+    pub fn with_keytab_name(
+        config: Config,
+        protocol: KdcProtocol,
+        client: Principal,
+        keytab_name: impl AsRef<str>,
+    ) -> Result<Self, Error> {
+        Ok(Self::with_keytab(
+            config,
+            protocol,
+            client,
+            Keytab::load_name(keytab_name)?,
+        ))
+    }
+
+    /// Create a keytab-backed client from `config.libdefaults.default_client_keytab_name`.
+    pub fn with_client_keytab_from_config(
+        config: Config,
+        protocol: KdcProtocol,
+        client: Principal,
+    ) -> Result<Self, Error> {
+        let keytab_name = config.libdefaults.default_client_keytab_name.clone();
+        Self::with_keytab_name(config, protocol, client, keytab_name)
+    }
+
+    /// Create a keytab-backed client by loading the file keytab named by `KRB5_KTNAME`.
+    pub fn with_keytab_from_env(
+        config: Config,
+        protocol: KdcProtocol,
+        client: Principal,
+    ) -> Result<Self, Error> {
+        Ok(Self::with_keytab(
+            config,
+            protocol,
+            client,
+            Keytab::load_from_env()?,
+        ))
+    }
+
     /// Attach or replace password credentials on an existing client.
     ///
     /// This is useful when starting from a ccache-loaded client and keeping
@@ -834,6 +876,25 @@ impl TokioClient {
             }
         }
         kerberos
+    }
+
+    /// Create a cache-only client by loading a file-backed ccache name.
+    ///
+    /// Bare paths, `FILE:path`, and `WRFILE:path` are supported by the ccache
+    /// module. Other credential cache stores are rejected explicitly.
+    pub fn from_ccache_name(
+        config: Config,
+        protocol: KdcProtocol,
+        cache_name: impl AsRef<str>,
+    ) -> Result<Self, Error> {
+        let cache = ccache::CCache::load_name(cache_name)?;
+        Ok(Self::from_ccache(config, protocol, &cache))
+    }
+
+    /// Create a cache-only client by loading the file ccache named by `KRB5CCNAME`.
+    pub fn from_ccache_env(config: Config, protocol: KdcProtocol) -> Result<Self, Error> {
+        let cache = ccache::CCache::load_from_env()?;
+        Ok(Self::from_ccache(config, protocol, &cache))
     }
 
     /// Create a cache-only client from a known TGT session.

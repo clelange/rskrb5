@@ -44,7 +44,7 @@ pure-Rust Kerberos library.
   keytab AS/TGS integration coverage, keytab file-name helpers, ccache credential export/write-back and
   file cache-name loading/saving, and a high-level
   Tokio client with password/keytab/ccache credential sources,
-  credential attachment, configuration validation, multi-realm TGT/session caching,
+  credential attachment, file-name constructors, configuration validation, multi-realm TGT/session caching,
   gokrb5-style refresh-window checks, explicit renewal, cancellable Tokio auto-renewal, affirm-login reuse,
   destroy semantics, service-ticket caching/lookup/removal, and gokrb5-shaped JSON
   session/cache snapshots plus structured diagnostics; service validation covers

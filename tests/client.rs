@@ -1530,6 +1530,47 @@ fn tokio_client_exports_and_saves_ccache() {
 
 #[cfg(feature = "tokio")]
 #[test]
+fn tokio_client_loads_from_ccache_name() {
+    let tgt = sample_tgt_session();
+    let service_ticket = sample_service_ticket_session(&tgt);
+    let mut client = TokioClient::from_tgt_session(Config::new(), KdcProtocol::Tcp, tgt.clone());
+    client.cache_service_ticket(service_ticket);
+    let cache = client.to_ccache().expect("client exports ccache");
+    let path = temp_client_ccache_file("load-name");
+    let name = format!("FILE:{}", path.display());
+    cache.save_name(&name).expect("ccache saves by name");
+
+    let loaded = TokioClient::from_ccache_name(Config::new(), KdcProtocol::Tcp, &name)
+        .expect("client loads ccache by name");
+    let _ = std::fs::remove_file(&path);
+
+    assert_eq!(loaded.tgt_session().expect("TGT reloads"), &tgt);
+    assert_eq!(loaded.cached_service_ticket_count(), 1);
+}
+
+#[cfg(all(feature = "tokio", feature = "serde"))]
+#[test]
+fn tokio_client_loads_client_keytab_from_config_name() {
+    let keytab = keytab_with_reply_key(1);
+    let path = temp_client_keytab_file("load-config-name");
+    let name = format!("FILE:{}", path.display());
+    keytab.save_name(&name).expect("keytab saves by name");
+
+    let client = TokioClient::with_client_keytab_from_config(
+        config_with_client_keytab_name(name),
+        KdcProtocol::Tcp,
+        Principal::user("TEST.GOKRB5", "testuser1"),
+    )
+    .expect("client loads keytab by config name");
+    let _ = std::fs::remove_file(&path);
+
+    let diagnostics = runtime().block_on(client.diagnostics());
+    assert_eq!(diagnostics.credential_source, "keytab");
+    assert_eq!(diagnostics.keytab_enctypes, [18]);
+}
+
+#[cfg(feature = "tokio")]
+#[test]
 fn tokio_client_tracks_multiple_tgt_sessions() {
     let primary_tgt = sample_tgt_session();
     let referral_tgt = sample_referral_tgt_session("RESDOM.GOKRB5");
@@ -2606,6 +2647,23 @@ fn config_with_kdc() -> Config {
 }
 
 #[cfg(feature = "tokio")]
+fn config_with_client_keytab_name(keytab_name: String) -> Config {
+    let input = format!(
+        r#"
+[libdefaults]
+ dns_lookup_kdc = false
+ default_client_keytab_name = {keytab_name}
+
+[realms]
+ TEST.GOKRB5 = {{
+  kdc = kdc.test.gokrb5
+ }}
+"#,
+    );
+    Config::parse(&input).expect("config parses")
+}
+
+#[cfg(feature = "tokio")]
 fn config_with_kpasswd_server(server: String) -> Config {
     let input = format!(
         r#"
@@ -2715,6 +2773,18 @@ fn temp_client_ccache_file(name: &str) -> std::path::PathBuf {
         .as_nanos();
     std::env::temp_dir().join(format!(
         "rskrb5-client-{name}-{}-{nanos}",
+        std::process::id()
+    ))
+}
+
+#[cfg(feature = "tokio")]
+fn temp_client_keytab_file(name: &str) -> std::path::PathBuf {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("current time is after unix epoch")
+        .as_nanos();
+    std::env::temp_dir().join(format!(
+        "rskrb5-client-keytab-{name}-{}-{nanos}",
         std::process::id()
     ))
 }
