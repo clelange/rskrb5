@@ -25,6 +25,8 @@ use tower_layer::Layer;
 #[cfg(feature = "tower")]
 use tower_service::Service;
 
+mod common;
+
 const HTTP_KEYTAB: &str = concat!(
     "0502000000440002000b544553542e474f4b5242350004485454500010686f73742e746573742e676f6b",
     "72623500000001590dc4dc010011001057a7754c70c4d85c155c718c2f1292b0000000540002000b",
@@ -35,11 +37,6 @@ const HTTP_KEYTAB: &str = concat!(
     "544553542e474f4b5242350004485454500010686f73742e746573742e676f6b72623500000001590d",
     "c4dc02001200209cad00bbc72d703258e911dc18e6d5487cf737bf67fd111f0c2463ad6033bf51",
 );
-#[cfg(feature = "tower")]
-const KRB5_KTNAME_ENV: &str = "KRB5_KTNAME";
-#[cfg(feature = "tower")]
-static HTTP_KEYTAB_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
 const VALID_AP_REQ: &str = concat!(
     "6e8201f8308201f4a003020105a10302010ea20703050000000000a382012f6182012b30820127a0",
     "03020105a10d1b0b544553542e474f4b524235a2233021a003020101a11a30181b04485454501b",
@@ -222,8 +219,7 @@ fn tower_layer_loads_config_default_keytab_name() {
 #[cfg(feature = "tower")]
 #[test]
 fn tower_layer_loads_default_keytab_when_env_is_absent() {
-    let _guard = HTTP_KEYTAB_ENV_LOCK.lock().expect("HTTP keytab env lock");
-    let _env = EnvVarGuard::remove(KRB5_KTNAME_ENV);
+    let _env = common::EnvVarGuard::remove_krb5_ktname();
 
     let path = temp_file("http-default-keytab-env-fallback");
     let name = format!("FILE:{}", path.display());
@@ -253,12 +249,10 @@ fn tower_layer_loads_default_keytab_when_env_is_absent() {
 #[cfg(feature = "tower")]
 #[test]
 fn tower_service_prefers_env_keytab_over_config_default() {
-    let _guard = HTTP_KEYTAB_ENV_LOCK.lock().expect("HTTP keytab env lock");
-
     let path = temp_file("http-env-keytab-precedence");
     let env_name = format!("FILE:{}", path.display());
     keytab().save(&path).expect("keytab saves");
-    let _env = EnvVarGuard::set(KRB5_KTNAME_ENV, &env_name);
+    let _env = common::EnvVarGuard::set_krb5_ktname(&env_name);
     let missing_config_name = format!(
         "FILE:{}",
         temp_file("missing-http-config-default").display()
@@ -358,47 +352,6 @@ fn temp_file(label: &str) -> std::path::PathBuf {
         .expect("system time after epoch")
         .as_nanos();
     std::env::temp_dir().join(format!("rskrb5-{label}-{nanos}.keytab"))
-}
-
-#[cfg(feature = "tower")]
-struct EnvVarGuard {
-    key: &'static str,
-    previous: Option<std::ffi::OsString>,
-}
-
-#[cfg(feature = "tower")]
-impl EnvVarGuard {
-    fn set(key: &'static str, value: impl AsRef<std::ffi::OsStr>) -> Self {
-        let previous = std::env::var_os(key);
-        // SAFETY: tests that mutate this key hold HTTP_KEYTAB_ENV_LOCK.
-        unsafe {
-            std::env::set_var(key, value);
-        }
-        Self { key, previous }
-    }
-
-    fn remove(key: &'static str) -> Self {
-        let previous = std::env::var_os(key);
-        // SAFETY: tests that mutate this key hold HTTP_KEYTAB_ENV_LOCK.
-        unsafe {
-            std::env::remove_var(key);
-        }
-        Self { key, previous }
-    }
-}
-
-#[cfg(feature = "tower")]
-impl Drop for EnvVarGuard {
-    fn drop(&mut self) {
-        // SAFETY: tests that mutate this key hold HTTP_KEYTAB_ENV_LOCK until
-        // after the guard is dropped.
-        unsafe {
-            match &self.previous {
-                Some(value) => std::env::set_var(self.key, value),
-                None => std::env::remove_var(self.key),
-            }
-        }
-    }
 }
 
 #[cfg(feature = "tower")]

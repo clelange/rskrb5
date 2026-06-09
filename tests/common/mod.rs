@@ -1,5 +1,80 @@
 #![allow(dead_code)]
 
+use std::sync::{Mutex, MutexGuard};
+
+const KRB5_KTNAME_ENV: &str = "KRB5_KTNAME";
+const KRB5_CLIENT_KTNAME_ENV: &str = "KRB5_CLIENT_KTNAME";
+static KRB5_KTNAME_LOCK: Mutex<()> = Mutex::new(());
+static KRB5_CLIENT_KTNAME_LOCK: Mutex<()> = Mutex::new(());
+
+pub struct EnvVarGuard {
+    key: &'static str,
+    previous: Option<std::ffi::OsString>,
+    _guard: MutexGuard<'static, ()>,
+}
+
+impl EnvVarGuard {
+    pub fn set_krb5_ktname(value: impl AsRef<std::ffi::OsStr>) -> Self {
+        Self::set(KRB5_KTNAME_ENV, &KRB5_KTNAME_LOCK, value)
+    }
+
+    pub fn remove_krb5_ktname() -> Self {
+        Self::remove(KRB5_KTNAME_ENV, &KRB5_KTNAME_LOCK)
+    }
+
+    pub fn set_krb5_client_ktname(value: impl AsRef<std::ffi::OsStr>) -> Self {
+        Self::set(KRB5_CLIENT_KTNAME_ENV, &KRB5_CLIENT_KTNAME_LOCK, value)
+    }
+
+    pub fn remove_krb5_client_ktname() -> Self {
+        Self::remove(KRB5_CLIENT_KTNAME_ENV, &KRB5_CLIENT_KTNAME_LOCK)
+    }
+
+    fn set(
+        key: &'static str,
+        lock: &'static Mutex<()>,
+        value: impl AsRef<std::ffi::OsStr>,
+    ) -> Self {
+        let guard = lock.lock().expect("environment variable lock");
+        let previous = std::env::var_os(key);
+        // SAFETY: this guard holds the per-key test mutex until Drop restores the variable.
+        unsafe {
+            std::env::set_var(key, value);
+        }
+        Self {
+            key,
+            previous,
+            _guard: guard,
+        }
+    }
+
+    fn remove(key: &'static str, lock: &'static Mutex<()>) -> Self {
+        let guard = lock.lock().expect("environment variable lock");
+        let previous = std::env::var_os(key);
+        // SAFETY: this guard holds the per-key test mutex until Drop restores the variable.
+        unsafe {
+            std::env::remove_var(key);
+        }
+        Self {
+            key,
+            previous,
+            _guard: guard,
+        }
+    }
+}
+
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        // SAFETY: the guard still holds the per-key test mutex while restoring.
+        unsafe {
+            match &self.previous {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+}
+
 pub const PAC_AD_WIN2K: &str = concat!(
     "0500000000000000010000002802000058000000000000000a0000001c00000080020000000000000c00000058000000",
     "a0020000000000000600000010000000f8020000000000000700000014000000080300000000000001100800cccccccc",
