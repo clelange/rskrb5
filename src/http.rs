@@ -295,6 +295,60 @@ impl<'a, S> NegotiateService<'a, S> {
     pub fn inner_mut(&mut self) -> &mut S {
         &mut self.inner
     }
+
+    /// Override the validation clock. Useful for deterministic tests.
+    pub fn with_now(mut self, now: SystemTime) -> Self {
+        self.validator = self.validator.with_now(now);
+        self
+    }
+
+    /// Override the maximum accepted clock skew.
+    pub fn with_max_clock_skew(mut self, max_clock_skew: Duration) -> Self {
+        self.validator = self.validator.with_max_clock_skew(max_clock_skew);
+        self
+    }
+
+    /// Override the principal used for keytab lookup.
+    pub fn with_keytab_principal<I, T>(mut self, components: I) -> Self
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<String>,
+    {
+        self.validator = self.validator.with_keytab_principal(components);
+        self
+    }
+
+    /// Provide the client address observed by the service.
+    pub fn with_client_address(mut self, client_address: HostAddress) -> Self {
+        self.validator = self.validator.with_client_address(client_address);
+        self
+    }
+
+    /// Require the ticket to contain client addresses.
+    pub fn require_client_address(mut self, require_client_address: bool) -> Self {
+        self.validator = self
+            .validator
+            .require_client_address(require_client_address);
+        self
+    }
+
+    /// Control whether successful requests receive a `WWW-Authenticate` AP-REP token.
+    pub fn with_ap_rep(mut self, emit_ap_rep: bool) -> Self {
+        self.response.emit_ap_rep = emit_ap_rep;
+        self
+    }
+
+    /// Override AP-REP response options.
+    pub fn with_ap_rep_options(mut self, ap_rep_options: ApRepOptions) -> Self {
+        self.response.ap_rep_options = ap_rep_options;
+        self
+    }
+
+    /// Control whether invalid tokens receive a SPNEGO reject token.
+    pub fn with_reject_invalid(mut self, reject_invalid: bool) -> Self {
+        self.response.reject_invalid = reject_invalid;
+        self
+    }
 }
 
 #[cfg(feature = "tower")]
