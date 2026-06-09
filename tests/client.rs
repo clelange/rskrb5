@@ -10,24 +10,24 @@ use rskrb5::client::{
     AP_REP_ENCPART_USAGE, AP_REQ_AUTHENTICATOR_USAGE, AS_REP_ENCPART_USAGE,
     AS_REQ_PA_ENC_TIMESTAMP_USAGE, ApReqOptions, AsReqOptions, BuiltAsReq, BuiltTgsReq, Error,
     KDC_ERR_PREAUTH_REQUIRED, KDC_OPTION_CANONICALIZE, KDC_OPTION_RENEW, KDC_OPTION_RENEWABLE,
-    KdcError, KdcTransport, PA_ENC_TIMESTAMP, PA_ETYPE_INFO2, PA_REQ_ENC_PA_REP, PA_TGS_REQ,
-    PreauthKeyInfo, Principal, TGS_REP_ENCPART_SESSION_KEY_USAGE,
-    TGS_REQ_AUTHENTICATOR_CHECKSUM_USAGE, TGS_REQ_AUTHENTICATOR_USAGE, TgsReqOptions,
-    build_ap_req_with_confounder, build_kpasswd_request, build_kpasswd_request_with_confounders,
-    build_preauthenticated_as_req, build_tgs_req_for_realm_with_confounder,
-    build_tgs_req_with_confounder, build_tgt_as_req, build_tgt_renewal_req_with_confounder,
-    build_ticket_renewal_req_with_confounder, default_password_salt, derive_password_reply_key,
-    exchange_as_req, exchange_tgs_req, login_as_service_with_keytab,
-    login_as_service_with_password, login_tgt_with_keytab, login_tgt_with_password,
-    pa_enc_timestamp_with_confounder, process_as_rep, process_kdc_error, process_tgs_rep,
-    process_tgs_rep_with_referral, renew_tgt, renew_ticket, select_preauth_key_info,
-    verify_kpasswd_ap_rep,
+    KdcError, KdcTransport, PA_ENC_TIMESTAMP, PA_ETYPE_INFO2, PA_FOR_USER,
+    PA_FOR_USER_CHECKSUM_USAGE, PA_REQ_ENC_PA_REP, PA_TGS_REQ, PreauthKeyInfo, Principal,
+    TGS_REP_ENCPART_SESSION_KEY_USAGE, TGS_REQ_AUTHENTICATOR_CHECKSUM_USAGE,
+    TGS_REQ_AUTHENTICATOR_USAGE, TgsReqOptions, build_ap_req_with_confounder,
+    build_kpasswd_request, build_kpasswd_request_with_confounders, build_preauthenticated_as_req,
+    build_tgs_req_for_realm_with_confounder, build_tgs_req_with_confounder, build_tgt_as_req,
+    build_tgt_renewal_req_with_confounder, build_ticket_renewal_req_with_confounder,
+    default_password_salt, derive_password_reply_key, exchange_as_req, exchange_tgs_req,
+    login_as_service_with_keytab, login_as_service_with_password, login_tgt_with_keytab,
+    login_tgt_with_password, pa_enc_timestamp_with_confounder, pa_for_user_padata, process_as_rep,
+    process_kdc_error, process_tgs_rep, process_tgs_rep_with_referral, renew_tgt, renew_ticket,
+    s4u_byte_array, select_preauth_key_info, verify_kpasswd_ap_rep,
 };
 #[cfg(feature = "tokio")]
 use rskrb5::client::{KdcProtocol, PrunedSessions, TokioClient};
 #[cfg(feature = "tokio")]
 use rskrb5::config::Config;
-use rskrb5::crypto::AesSha1Etype;
+use rskrb5::crypto::{AesSha1Etype, kerb_checksum_hmac_md5};
 use rskrb5::kadmin::{
     ChangePasswdData, KPASSWD_SUCCESS, KRB_PRIV_ENCPART_USAGE, Reply as KpasswdReply,
     Request as KpasswdRequest, ipv4_host_address,
@@ -200,6 +200,40 @@ fn builds_and_encrypts_pa_enc_timestamp() {
             .parse::<u32>()
             .expect("microseconds parse"),
         123_456
+    );
+}
+
+#[test]
+fn builds_pa_for_user_padata_with_s4u_checksum() {
+    let user = Principal::new("ATHENA.MIT.EDU", 1, ["hftsai", "extra"]);
+    let tgt_session_key = EncryptionKey {
+        etype: 18,
+        value: decode_hex(SESSION_KEY),
+    };
+
+    let padata = pa_for_user_padata(&user, &tgt_session_key).expect("PA-FOR-USER builds");
+
+    assert_eq!(padata.r#type, PA_FOR_USER);
+    let decoded =
+        rskrb5::messages::PaForUser::decode_der(padata.value.as_ref()).expect("value decodes");
+    assert_eq!(
+        principal_from_parts(&decoded.user_realm, &decoded.user_name),
+        user
+    );
+    assert_eq!(decoded.auth_package.as_bytes(), b"Kerberos");
+    assert_eq!(decoded.cksum.r#type, -138);
+    let s4u_bytes = s4u_byte_array(&user, "Kerberos");
+    assert_eq!(
+        hex_encode(&s4u_bytes),
+        "010000006866747361696578747261415448454e412e4d49542e4544554b65726265726f73"
+    );
+    assert_eq!(
+        decoded.cksum.checksum.as_ref(),
+        kerb_checksum_hmac_md5(
+            &tgt_session_key.value,
+            &s4u_bytes,
+            PA_FOR_USER_CHECKSUM_USAGE
+        )
     );
 }
 

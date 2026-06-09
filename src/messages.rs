@@ -25,6 +25,35 @@ pub struct EncryptedData {
     pub cipher: OctetString,
 }
 
+/// MS-SFU `PA-FOR-USER` padata value used by S4U2Self.
+#[derive(AsnType, Clone, Debug, Decode, Encode, Eq, PartialEq)]
+pub struct PaForUser {
+    /// User principal name.
+    #[rasn(tag(explicit(0)))]
+    pub user_name: rasn_kerberos::PrincipalName,
+    /// User realm.
+    #[rasn(tag(explicit(1)))]
+    pub user_realm: rasn_kerberos::Realm,
+    /// Checksum over the MS-SFU S4U byte array.
+    #[rasn(tag(explicit(2)))]
+    pub cksum: rasn_kerberos::Checksum,
+    /// Authentication package name, normally `Kerberos`.
+    #[rasn(tag(explicit(3)))]
+    pub auth_package: rasn_kerberos::KerberosString,
+}
+
+impl PaForUser {
+    /// Decode a DER-encoded `PA-FOR-USER` value.
+    pub fn decode_der(bytes: &[u8]) -> Result<Self, Error> {
+        decode_der("PA-FOR-USER", bytes)
+    }
+
+    /// Encode the value as DER.
+    pub fn encode_der(&self) -> Result<Vec<u8>, Error> {
+        encode_der("PA-FOR-USER", self)
+    }
+}
+
 impl EncryptedData {
     /// Build the preserving wrapper from the upstream rasn Kerberos type.
     pub fn from_rasn(value: rasn_kerberos::EncryptedData) -> Self {

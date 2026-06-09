@@ -133,6 +133,9 @@ fn fixture_hex(id: &str) -> &'static str {
         }
         "pa_enc_ts_enc" => "301AA011180F31393934303631303036303331375AA105020301E240",
         "pa_enc_ts_enc_no_usec" => "3013A011180F31393934303631303036303331375A",
+        "pa_for_user" => {
+            "304BA01A3018A003020101A111300F1B066866747361691B056578747261A1101B0E415448454E412E4D49542E454455A20F300DA003020101A106040431323334A30A1B086B72623564617461"
+        }
         "etype_info" => {
             "30333014A003020100A10D040B4D6F72746F6E27732023303005A0030201013014A003020102A10D040B4D6F72746F6E2773202332"
         }
@@ -266,6 +269,7 @@ fn rasn_decode(der_type: DerType, bytes: &[u8]) -> Probe {
         DerType::PaDataSequence => rasn_decode_type::<rasn_kerberos::MethodData>(bytes),
         DerType::TypedData => rasn_decode_type::<rasn_kerberos::TypedData>(bytes),
         DerType::PaEncTsEnc => rasn_decode_type::<rasn_kerberos::PaEncTsEnc>(bytes),
+        DerType::PaForUser => rasn_decode_type::<rskrb5::messages::PaForUser>(bytes),
         DerType::EtypeInfo => rasn_decode_type::<rasn_kerberos::EtypeInfo>(bytes),
         DerType::EtypeInfo2 => rasn_decode_type::<rasn_kerberos::EtypeInfo2>(bytes),
         DerType::EncryptedData => rasn_decode_type::<rskrb5::messages::EncryptedData>(bytes),
@@ -301,6 +305,7 @@ fn rasn_roundtrip(der_type: DerType, bytes: &[u8]) -> Probe {
         DerType::PaDataSequence => rasn_roundtrip_type::<rasn_kerberos::MethodData>(bytes),
         DerType::TypedData => rasn_roundtrip_type::<rasn_kerberos::TypedData>(bytes),
         DerType::PaEncTsEnc => rasn_roundtrip_type::<rasn_kerberos::PaEncTsEnc>(bytes),
+        DerType::PaForUser => rasn_roundtrip_type::<rskrb5::messages::PaForUser>(bytes),
         DerType::EtypeInfo => rasn_roundtrip_type::<rasn_kerberos::EtypeInfo>(bytes),
         DerType::EtypeInfo2 => rasn_roundtrip_type::<rasn_kerberos::EtypeInfo2>(bytes),
         DerType::EncryptedData => rasn_roundtrip_type::<rskrb5::messages::EncryptedData>(bytes),
@@ -369,6 +374,7 @@ fn picky_decode(der_type: DerType, bytes: &[u8]) -> Probe {
         | DerType::EncKrbCredPart
         | DerType::TypedData
         | DerType::AdKdcIssued
+        | DerType::PaForUser
         | DerType::EtypeInfo => Probe::Unsupported,
     }
 }
@@ -418,6 +424,7 @@ fn picky_roundtrip(der_type: DerType, bytes: &[u8]) -> Probe {
         | DerType::EncKrbCredPart
         | DerType::TypedData
         | DerType::AdKdcIssued
+        | DerType::PaForUser
         | DerType::EtypeInfo => Probe::Unsupported,
     }
 }

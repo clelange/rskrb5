@@ -20,7 +20,7 @@ use crate::ccache;
 #[cfg(feature = "tokio")]
 use crate::config::Config;
 use crate::config::LibDefaults;
-use crate::crypto::KerberosEtype;
+use crate::crypto::{KerberosEtype, Rc4HmacEtype, kerb_checksum_hmac_md5};
 use crate::keytab::{EncryptionKey, Keytab};
 #[cfg(feature = "tokio")]
 use hickory_resolver::{TokioResolver, proto::rr::RData};
@@ -73,6 +73,9 @@ pub const PA_ETYPE_INFO2: i32 = 19;
 /// PA-REQ-ENC-PA-REP marker used by modern gokrb5-compatible AS exchanges.
 pub const PA_REQ_ENC_PA_REP: i32 = 149;
 
+/// PA-FOR-USER padata type used by S4U2Self.
+pub const PA_FOR_USER: i32 = 129;
+
 /// KDC error code for additional preauthentication required.
 pub const KDC_ERR_PREAUTH_REQUIRED: i32 = 25;
 /// KDC error code indicating the client should retry over TCP.
@@ -98,6 +101,9 @@ pub const AP_REP_ENCPART_USAGE: u32 = 12;
 
 /// Key usage for TGS-REP encrypted parts when encrypted with the TGT session key.
 pub const TGS_REP_ENCPART_SESSION_KEY_USAGE: u32 = 8;
+
+/// Key usage/message type for PA-FOR-USER checksums.
+pub const PA_FOR_USER_CHECKSUM_USAGE: u32 = 17;
 
 /// Raw KDC option mask for `renewable` in RFC 4120 bit-string order.
 pub const KDC_OPTION_RENEWABLE: u32 = 0x0080_0000;
@@ -2972,6 +2978,58 @@ pub fn pa_enc_timestamp_with_confounder(
     Ok(rasn_kerberos::PaData {
         r#type: PA_ENC_TIMESTAMP,
         value: encode("PA-ENC-TIMESTAMP", &encrypted)?.into(),
+    })
+}
+
+/// Build the MS-SFU byte array signed by PA-FOR-USER.
+pub fn s4u_byte_array(user: &Principal, auth_package: &str) -> Vec<u8> {
+    let mut out = Vec::with_capacity(
+        4 + user.components.iter().map(String::len).sum::<usize>()
+            + user.realm.len()
+            + auth_package.len(),
+    );
+    out.extend_from_slice(&user.name_type.to_le_bytes());
+    for component in &user.components {
+        out.extend_from_slice(component.as_bytes());
+    }
+    out.extend_from_slice(user.realm.as_bytes());
+    out.extend_from_slice(auth_package.as_bytes());
+    out
+}
+
+/// Build PA-FOR-USER padata using the default `Kerberos` auth package.
+pub fn pa_for_user_padata(
+    user: &Principal,
+    tgt_session_key: &EncryptionKey,
+) -> Result<rasn_kerberos::PaData, Error> {
+    pa_for_user_padata_with_auth_package(user, tgt_session_key, "Kerberos")
+}
+
+/// Build PA-FOR-USER padata for S4U2Self.
+pub fn pa_for_user_padata_with_auth_package(
+    user: &Principal,
+    tgt_session_key: &EncryptionKey,
+    auth_package: &str,
+) -> Result<rasn_kerberos::PaData, Error> {
+    let s4u_bytes = s4u_byte_array(user, auth_package);
+    let checksum = kerb_checksum_hmac_md5(
+        &tgt_session_key.value,
+        &s4u_bytes,
+        PA_FOR_USER_CHECKSUM_USAGE,
+    );
+    let value = crate::messages::PaForUser {
+        user_name: principal_to_rasn(user)?,
+        user_realm: kerberos_string(&user.realm)?,
+        cksum: rasn_kerberos::Checksum {
+            r#type: Rc4HmacEtype.checksum_type_id(),
+            checksum: checksum.into(),
+        },
+        auth_package: kerberos_string(auth_package)?,
+    };
+
+    Ok(rasn_kerberos::PaData {
+        r#type: PA_FOR_USER,
+        value: value.encode_der()?.into(),
     })
 }
 

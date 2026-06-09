@@ -2,7 +2,7 @@
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use rskrb5::messages::{EncryptedData, Error, KrbErrorInfo, decode_der, encode_der};
+use rskrb5::messages::{EncryptedData, Error, KrbErrorInfo, PaForUser, decode_der, encode_der};
 
 const ENCRYPTED_DATA: &str =
     "3023A003020100A103020105A21704156B726241534E2E312074657374206D657373616765";
@@ -22,6 +22,11 @@ const KRB_ERROR_OPTIONALS_NULL: &str = concat!(
     "7E60305EA003020105A10302011EA305020301E240A411180F3139393430363130303630",
     "3331375AA505020301E240A60302013CA9101B0E415448454E412E4D49542E454455AA1A",
     "3018A003020101A111300F1B066866747361691B056578747261",
+);
+const PA_FOR_USER: &str = concat!(
+    "304BA01A3018A003020101A111300F1B066866747361691B056578747261A1101B0E",
+    "415448454E412E4D49542E454455A20F300DA003020101A106040431323334A30A1B",
+    "086B72623564617461",
 );
 const TEST_CIPHER: &[u8] = b"krbASN.1 test message";
 const TEST_TIME_SECONDS: u64 = 771_228_197;
@@ -124,6 +129,22 @@ fn krb_error_optional_nulls_decode_and_roundtrip() {
         encode_der("KRB-ERROR", &decoded).expect("KRB-ERROR encodes"),
         bytes
     );
+}
+
+#[test]
+fn pa_for_user_decodes_and_roundtrips_gokrb5_fixture() {
+    let bytes = decode_hex(PA_FOR_USER);
+    let decoded = PaForUser::decode_der(&bytes).expect("PA-FOR-USER decodes");
+
+    assert_eq!(decoded.user_name.r#type, 1);
+    assert_eq!(decoded.user_name.string.len(), 2);
+    assert_eq!(decoded.user_name.string[0].as_bytes(), b"hftsai");
+    assert_eq!(decoded.user_name.string[1].as_bytes(), b"extra");
+    assert_eq!(decoded.user_realm.as_bytes(), b"ATHENA.MIT.EDU");
+    assert_eq!(decoded.cksum.r#type, 1);
+    assert_eq!(decoded.cksum.checksum.as_ref(), b"1234");
+    assert_eq!(decoded.auth_package.as_bytes(), b"krb5data");
+    assert_eq!(decoded.encode_der().expect("PA-FOR-USER encodes"), bytes);
 }
 
 fn decode_encrypted_data(fixture: &str) -> EncryptedData {

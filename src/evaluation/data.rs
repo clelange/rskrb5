@@ -146,6 +146,8 @@ pub enum DerType {
     TypedData,
     /// PA-ENC-TS-ENC.
     PaEncTsEnc,
+    /// MS-SFU PA-FOR-USER.
+    PaForUser,
     /// ETYPE-INFO.
     EtypeInfo,
     /// ETYPE-INFO2.
@@ -184,6 +186,7 @@ impl DerType {
             Self::PaDataSequence => "PA-DATA sequence",
             Self::TypedData => "TypedData",
             Self::PaEncTsEnc => "PA-ENC-TS-ENC",
+            Self::PaForUser => "PA-FOR-USER",
             Self::EtypeInfo => "ETYPE-INFO",
             Self::EtypeInfo2 => "ETYPE-INFO2",
             Self::EncryptedData => "EncryptedData",
@@ -768,6 +771,16 @@ pub const ASN1_FIXTURES: &[Asn1Fixture] = &[
         rasn_kerberos_roundtrip: Support::Yes,
         picky_krb: Support::Yes,
         picky_krb_roundtrip: Support::Yes,
+    },
+    Asn1Fixture {
+        id: "pa_for_user",
+        gokrb5_constant: "MarshaledKRB5pa_for_user",
+        gokrb5_test: "types/PAData_test.go",
+        der_type: DerType::PaForUser,
+        rasn_kerberos: Support::Yes,
+        rasn_kerberos_roundtrip: Support::Yes,
+        picky_krb: Support::No,
+        picky_krb_roundtrip: Support::No,
     },
     Asn1Fixture {
         id: "etype_info",

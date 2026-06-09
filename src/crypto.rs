@@ -849,13 +849,7 @@ impl Rc4HmacEtype {
     /// Calculate the RFC4757 keyed checksum for message bytes and a key usage.
     pub fn checksum(self, protocol_key: &[u8], data: &[u8], usage: u32) -> Result<Vec<u8>, Error> {
         self.validate_key(protocol_key)?;
-        let signing_key = hmac_md5(protocol_key, RC4_HMAC_SIGNATURE_KEY);
-        let msg_type = rc4_hmac_usage_to_ms_msg_type(usage);
-        let mut md5_input = Vec::with_capacity(msg_type.len() + data.len());
-        md5_input.extend_from_slice(&msg_type);
-        md5_input.extend_from_slice(data);
-        let digest = Md5::digest(&md5_input);
-        Ok(hmac_md5(&signing_key, &digest))
+        Ok(kerb_checksum_hmac_md5(protocol_key, data, usage))
     }
 
     /// Verify an RFC4757 keyed checksum.
@@ -1164,6 +1158,21 @@ pub fn s2kparams_to_iterations(s2kparams: &str) -> Result<u32, Error> {
         return Err(Error::UnsupportedIterationCountZero);
     }
     Ok(iterations)
+}
+
+/// Calculate the RFC4757 `KERB_CHECKSUM_HMAC_MD5` checksum.
+///
+/// This checksum is used by RC4-HMAC and by Microsoft S4U PA-FOR-USER data.
+/// Unlike [`Rc4HmacEtype::checksum`], this accepts arbitrary Kerberos session
+/// key lengths because PA-FOR-USER signs with the TGT session key directly.
+pub fn kerb_checksum_hmac_md5(protocol_key: &[u8], data: &[u8], usage: u32) -> Vec<u8> {
+    let signing_key = hmac_md5(protocol_key, RC4_HMAC_SIGNATURE_KEY);
+    let msg_type = rc4_hmac_usage_to_ms_msg_type(usage);
+    let mut md5_input = Vec::with_capacity(msg_type.len() + data.len());
+    md5_input.extend_from_slice(&msg_type);
+    md5_input.extend_from_slice(data);
+    let digest = Md5::digest(&md5_input);
+    hmac_md5(&signing_key, &digest)
 }
 
 /// RFC3961 n-fold operation.
