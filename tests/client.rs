@@ -1231,6 +1231,37 @@ fn tokio_client_reports_tgt_refresh_due_window() {
 
 #[cfg(feature = "tokio")]
 #[test]
+fn tokio_client_refresh_tgt_if_needed_reuses_fresh_cache_only_tgt() {
+    let tgt = current_tgt_session(10, 50);
+    let mut client = TokioClient::from_tgt_session(Config::new(), KdcProtocol::Tcp, tgt.clone());
+
+    let refreshed = runtime()
+        .block_on(client.refresh_tgt_if_needed())
+        .expect("fresh cache-only TGT is reused");
+
+    assert_eq!(refreshed.session_key, tgt.session_key);
+    assert_eq!(refreshed.ticket, tgt.ticket);
+}
+
+#[cfg(feature = "tokio")]
+#[test]
+fn tokio_client_auto_renewal_handle_aborts() {
+    runtime().block_on(async {
+        let client = std::sync::Arc::new(tokio::sync::Mutex::new(TokioClient::from_tgt_session(
+            Config::new(),
+            KdcProtocol::Tcp,
+            current_tgt_session(10, 50),
+        )));
+        let renewal = TokioClient::spawn_auto_renewal_with_retry(client, Duration::from_millis(10));
+
+        assert!(!renewal.is_finished());
+        renewal.abort();
+        tokio::task::yield_now().await;
+    });
+}
+
+#[cfg(feature = "tokio")]
+#[test]
 fn tokio_client_validates_configuration() {
     let mut dns_config = Config::new();
     dns_config.libdefaults.dns_lookup_kdc = true;

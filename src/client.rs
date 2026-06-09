@@ -700,6 +700,33 @@ impl TokioClientDiagnostics {
     }
 }
 
+/// Handle for a background Tokio TGT auto-renewal task.
+#[cfg(feature = "tokio")]
+#[derive(Debug)]
+pub struct TokioClientAutoRenewal {
+    handle: tokio::task::JoinHandle<()>,
+}
+
+#[cfg(feature = "tokio")]
+impl TokioClientAutoRenewal {
+    /// Request cancellation of the background renewal task.
+    pub fn abort(&self) {
+        self.handle.abort();
+    }
+
+    /// Whether the background task has finished.
+    pub fn is_finished(&self) -> bool {
+        self.handle.is_finished()
+    }
+}
+
+#[cfg(feature = "tokio")]
+impl Drop for TokioClientAutoRenewal {
+    fn drop(&mut self) {
+        self.handle.abort();
+    }
+}
+
 /// High-level Tokio Kerberos client with TGT and service-ticket caching.
 #[cfg(feature = "tokio")]
 #[derive(Clone, Eq, PartialEq)]
@@ -892,6 +919,49 @@ impl TokioClient {
     pub fn with_assume_preauthentication(mut self, assume_preauthentication: bool) -> Self {
         self.assume_preauthentication = assume_preauthentication;
         self
+    }
+
+    /// Spawn a background task that refreshes the primary TGT before expiry.
+    ///
+    /// Dropping or aborting the returned handle cancels the task. The client is
+    /// shared explicitly so callers control the synchronization boundary.
+    pub fn spawn_auto_renewal(
+        client: std::sync::Arc<tokio::sync::Mutex<Self>>,
+    ) -> TokioClientAutoRenewal {
+        Self::spawn_auto_renewal_with_retry(client, Duration::from_secs(60))
+    }
+
+    /// Spawn a background TGT refresh task with a custom retry delay for errors.
+    pub fn spawn_auto_renewal_with_retry(
+        client: std::sync::Arc<tokio::sync::Mutex<Self>>,
+        retry_delay: Duration,
+    ) -> TokioClientAutoRenewal {
+        let retry_delay = retry_delay.max(Duration::from_millis(1));
+        let handle = tokio::spawn(async move {
+            loop {
+                let delay = {
+                    let client = client.lock().await;
+                    client
+                        .tgt
+                        .as_ref()
+                        .map(|tgt| session_refresh_delay_at(tgt, SystemTime::now()))
+                        .unwrap_or(Duration::ZERO)
+                };
+                if !delay.is_zero() {
+                    tokio::time::sleep(delay).await;
+                }
+
+                let mut client = client.lock().await;
+                if client.credentials.is_none() && client.tgt.is_none() {
+                    return;
+                }
+                if client.refresh_tgt_if_needed().await.is_err() {
+                    drop(client);
+                    tokio::time::sleep(retry_delay).await;
+                }
+            }
+        });
+        TokioClientAutoRenewal { handle }
     }
 
     /// Parsed Kerberos configuration.
@@ -1186,6 +1256,12 @@ impl TokioClient {
         self.cache_tgt_session(renewed)?;
         self.service_tickets.clear();
         Ok(self.tgt.as_ref().expect("TGT was just inserted"))
+    }
+
+    /// Refresh the primary TGT if it is missing, expired, or inside the refresh window.
+    pub async fn refresh_tgt_if_needed(&mut self) -> Result<&AsRepSession, Error> {
+        let _ = self.ensure_tgt().await?;
+        self.tgt.as_ref().ok_or(Error::NoTgtSession)
     }
 
     /// Return a service ticket from cache or acquire one from a KDC.
@@ -4417,6 +4493,23 @@ fn session_refresh_due_at(session: &AsRepSession, now: SystemTime) -> bool {
         .duration_since(now)
         .unwrap_or(Duration::ZERO);
     remaining <= lifetime / SESSION_REFRESH_DIVISOR
+}
+
+#[cfg(feature = "tokio")]
+fn session_refresh_delay_at(session: &AsRepSession, now: SystemTime) -> Duration {
+    if session_refresh_due_at(session, now) {
+        return Duration::ZERO;
+    }
+    let Ok(lifetime) = session.end_time.duration_since(session.auth_time) else {
+        return Duration::ZERO;
+    };
+    let Some(refresh_at) = session
+        .end_time
+        .checked_sub(lifetime / SESSION_REFRESH_DIVISOR)
+    else {
+        return Duration::ZERO;
+    };
+    refresh_at.duration_since(now).unwrap_or(Duration::ZERO)
 }
 
 #[cfg(feature = "tokio")]
