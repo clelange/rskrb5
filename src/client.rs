@@ -1380,13 +1380,33 @@ impl TokioKdcTransport {
         }
     }
 
-    /// Discover configured kpasswd endpoints for a realm.
+    /// Discover kpasswd endpoints for a realm.
+    ///
+    /// Configured `[realms]` kpasswd servers are preferred. DNS SRV lookup is
+    /// attempted only when no password-change servers are configured and
+    /// `dns_lookup_kdc = true`.
     pub async fn discover_kpasswd_servers(
         &self,
         config: &Config,
         realm: &str,
         protocol: KdcProtocol,
     ) -> Result<Vec<KdcEndpoint>, Error> {
+        if let Some(realm_entry) = config.realm(realm)
+            && !realm_entry.kpasswd_server.is_empty()
+        {
+            return realm_entry
+                .kpasswd_server
+                .iter()
+                .map(|value| KdcEndpoint::configured_with_default_port(protocol, value, 464))
+                .collect();
+        }
+
+        if config.libdefaults.dns_lookup_kdc {
+            return self
+                .discover_kpasswd_servers_with_dns(realm, protocol)
+                .await;
+        }
+
         config
             .configured_kpasswd_servers(realm)?
             .iter()
@@ -1971,6 +1991,92 @@ impl TokioKdcTransport {
         } else {
             Ok(endpoints)
         }
+    }
+
+    async fn discover_kpasswd_servers_with_dns(
+        &self,
+        realm: &str,
+        protocol: KdcProtocol,
+    ) -> Result<Vec<KdcEndpoint>, Error> {
+        match self
+            .discover_srv_endpoints("_kpasswd", realm, protocol)
+            .await
+        {
+            Ok(endpoints) if !endpoints.is_empty() => return Ok(endpoints),
+            Ok(_) | Err(_) => {}
+        }
+
+        let endpoints = self
+            .discover_srv_endpoints("_kerberos-adm", realm, protocol)
+            .await?;
+        if endpoints.is_empty() {
+            Err(Error::NoKdcEndpoints {
+                realm: realm.to_owned(),
+                protocol,
+            })
+        } else {
+            Ok(endpoints)
+        }
+    }
+
+    async fn discover_srv_endpoints(
+        &self,
+        service: &str,
+        realm: &str,
+        protocol: KdcProtocol,
+    ) -> Result<Vec<KdcEndpoint>, Error> {
+        let transport = match protocol {
+            KdcProtocol::Udp | KdcProtocol::Auto => "_udp",
+            KdcProtocol::Tcp => "_tcp",
+        };
+        let query = format!("{service}.{transport}.{realm}.");
+        let resolver = TokioResolver::builder_tokio()
+            .map_err(|source| Error::DnsResolverConfig(source.to_string()))?
+            .build()
+            .map_err(|source| Error::DnsResolverConfig(source.to_string()))?;
+        let lookup = resolver
+            .srv_lookup(query.as_str())
+            .await
+            .map_err(|source| Error::DnsSrvLookup {
+                realm: realm.to_owned(),
+                protocol,
+                message: source.to_string(),
+            })?;
+
+        let mut records = lookup
+            .answers()
+            .iter()
+            .filter_map(|record| match &record.data {
+                RData::SRV(srv) => Some(srv),
+                _ => None,
+            })
+            .map(|srv| {
+                (
+                    srv.priority,
+                    srv.weight,
+                    srv.target.to_utf8().trim_end_matches('.').to_owned(),
+                    srv.port,
+                )
+            })
+            .filter(|(_, _, target, _)| !target.is_empty() && target != ".")
+            .collect::<Vec<_>>();
+        records.sort_by(|left, right| {
+            left.0
+                .cmp(&right.0)
+                .then_with(|| right.1.cmp(&left.1))
+                .then_with(|| left.2.cmp(&right.2))
+                .then_with(|| left.3.cmp(&right.3))
+        });
+
+        Ok(records
+            .into_iter()
+            .map(|(_, _, host, port)| KdcEndpoint {
+                protocol,
+                host,
+                port,
+                source: KdcEndpointSource::DnsSrv,
+            })
+            .collect())
     }
 
     async fn send_to_endpoints(

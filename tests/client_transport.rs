@@ -218,6 +218,26 @@ fn tokio_transport_discovers_configured_kpasswd_servers() -> Result<(), Box<dyn 
 }
 
 #[test]
+fn tokio_transport_prefers_configured_kpasswd_servers_when_dns_enabled()
+-> Result<(), Box<dyn Error>> {
+    runtime().block_on(async {
+        let mut config = config_with_kpasswd_servers(["kpasswd.test.gokrb5".to_owned()], 1465);
+        config.libdefaults.dns_lookup_kdc = true;
+
+        let endpoints = TokioKdcTransport::new()
+            .discover_kpasswd_servers(&config, "TEST.GOKRB5", KdcProtocol::Udp)
+            .await?;
+
+        assert_eq!(endpoints.len(), 1);
+        assert_eq!(endpoints[0].protocol, KdcProtocol::Udp);
+        assert_eq!(endpoints[0].host, "kpasswd.test.gokrb5");
+        assert_eq!(endpoints[0].port, 464);
+        assert_eq!(endpoints[0].source, KdcEndpointSource::Config);
+        Ok::<_, Box<dyn Error>>(())
+    })
+}
+
+#[test]
 fn tokio_transport_sends_tcp_to_configured_kpasswd_server() -> Result<(), Box<dyn Error>> {
     runtime().block_on(async {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
