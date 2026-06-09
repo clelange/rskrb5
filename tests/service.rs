@@ -46,6 +46,8 @@ const PAC_TICKET_CONFOUNDER: &str = "101112131415161718191a1b1c1d1e1f";
 const PAC_AUTHENTICATOR_CONFOUNDER: &str = "202122232425262728292a2b2c2d2e2f";
 const KDC_REP_TICKET_USAGE_FOR_TEST: u32 = 2;
 const AP_REQ_AUTHENTICATOR_USAGE_FOR_TEST: u32 = 11;
+const KRB5_KTNAME_ENV: &str = "KRB5_KTNAME";
+static SERVICE_KEYTAB_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 const AP_REP_SERVER_SUBKEY: &str =
     "00112233445566778899aabbccddeeff102132435465768798a9babbdcddfeff";
 const AP_REP_WITH_SUBKEY: &str = concat!(
@@ -175,9 +177,10 @@ fn validates_ap_req_from_default_keytab_name() {
 
 #[test]
 fn validates_ap_req_from_default_keytab_when_env_is_absent() {
-    if std::env::var_os("KRB5_KTNAME").is_some() {
-        return;
-    }
+    let _guard = SERVICE_KEYTAB_ENV_LOCK
+        .lock()
+        .expect("service keytab env lock");
+    let _env = EnvVarGuard::remove(KRB5_KTNAME_ENV);
 
     let keytab = http_keytab();
     let path = temp_service_keytab_file("validate-default-env-fallback");
@@ -186,6 +189,36 @@ fn validates_ap_req_from_default_keytab_when_env_is_absent() {
     let config = config_with_default_keytab_name(&name);
     let mut validator = ServiceValidator::from_default_keytab(&config)
         .expect("validator loads default keytab")
+        .with_now(timestamp(1_893_553_447));
+    let _ = std::fs::remove_file(&path);
+
+    let validated = validator
+        .validate_ap_req(&decode_hex(VALID_AP_REQ))
+        .expect("AP-REQ validates");
+
+    assert_eq!(validated.client.name(), "testuser1");
+    assert_eq!(validated.service.name(), "HTTP/host.test.gokrb5");
+    assert_eq!(validated.session_key.etype, 18);
+}
+
+#[test]
+fn validates_ap_req_prefers_env_keytab_over_config_default() {
+    let _guard = SERVICE_KEYTAB_ENV_LOCK
+        .lock()
+        .expect("service keytab env lock");
+
+    let keytab = http_keytab();
+    let path = temp_service_keytab_file("validate-env-precedence");
+    let env_name = format!("FILE:{}", path.display());
+    keytab.save_name(&env_name).expect("keytab saves by name");
+    let _env = EnvVarGuard::set(KRB5_KTNAME_ENV, &env_name);
+    let missing_config_name = format!(
+        "FILE:{}",
+        temp_service_keytab_file("missing-config-default").display()
+    );
+    let config = config_with_default_keytab_name(&missing_config_name);
+    let mut validator = ServiceValidator::from_default_keytab(&config)
+        .expect("validator loads env keytab before config default")
         .with_now(timestamp(1_893_553_447));
     let _ = std::fs::remove_file(&path);
 
@@ -623,6 +656,44 @@ fn temp_service_keytab_file(name: &str) -> PathBuf {
         "rskrb5-service-keytab-{name}-{}-{nanos}",
         std::process::id()
     ))
+}
+
+struct EnvVarGuard {
+    key: &'static str,
+    previous: Option<std::ffi::OsString>,
+}
+
+impl EnvVarGuard {
+    fn set(key: &'static str, value: impl AsRef<std::ffi::OsStr>) -> Self {
+        let previous = std::env::var_os(key);
+        // SAFETY: tests that mutate this key hold SERVICE_KEYTAB_ENV_LOCK.
+        unsafe {
+            std::env::set_var(key, value);
+        }
+        Self { key, previous }
+    }
+
+    fn remove(key: &'static str) -> Self {
+        let previous = std::env::var_os(key);
+        // SAFETY: tests that mutate this key hold SERVICE_KEYTAB_ENV_LOCK.
+        unsafe {
+            std::env::remove_var(key);
+        }
+        Self { key, previous }
+    }
+}
+
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        // SAFETY: tests that mutate this key hold SERVICE_KEYTAB_ENV_LOCK until
+        // after the guard is dropped.
+        unsafe {
+            match &self.previous {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
 }
 
 fn decode_hex(input: &str) -> Vec<u8> {
