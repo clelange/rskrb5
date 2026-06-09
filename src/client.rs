@@ -916,10 +916,7 @@ impl TokioClient {
 
     /// Create a cache-only client from `config.libdefaults.default_ccache_name`.
     pub fn from_default_ccache_name(config: Config, protocol: KdcProtocol) -> Result<Self, Error> {
-        let cache_name = config.libdefaults.default_ccache_name.clone();
-        if cache_name.is_empty() {
-            return Err(Error::NoDefaultCCacheName);
-        }
+        let cache_name = configured_default_ccache_name(&config)?;
         Self::from_ccache_name(config, protocol, cache_name)
     }
 
@@ -971,6 +968,11 @@ impl TokioClient {
         Ok(())
     }
 
+    /// Save current TGT and service-ticket state to `config.libdefaults.default_ccache_name`.
+    pub fn save_default_ccache_name(&self) -> Result<(), Error> {
+        self.save_ccache_name(configured_default_ccache_name(&self.config)?)
+    }
+
     /// Load an existing ccache when present, update this client's entries, and save it.
     ///
     /// Missing files are created. Existing X-CACHECONF metadata and entries for
@@ -996,6 +998,11 @@ impl TokioClient {
     pub fn update_ccache_name(&self, cache_name: impl AsRef<str>) -> Result<(), Error> {
         let path = ccache::CCache::file_path_from_cache_name(cache_name.as_ref())?;
         self.update_ccache_file(path)
+    }
+
+    /// Update the ccache named by `config.libdefaults.default_ccache_name`.
+    pub fn update_default_ccache_name(&self) -> Result<(), Error> {
+        self.update_ccache_name(configured_default_ccache_name(&self.config)?)
     }
 
     fn new(
@@ -4597,6 +4604,15 @@ fn ccache_principal(value: &Principal) -> ccache::Principal {
         value.name_type,
         value.components.clone(),
     )
+}
+
+#[cfg(feature = "tokio")]
+fn configured_default_ccache_name(config: &Config) -> Result<String, Error> {
+    let cache_name = config.libdefaults.default_ccache_name.clone();
+    if cache_name.is_empty() {
+        return Err(Error::NoDefaultCCacheName);
+    }
+    Ok(cache_name)
 }
 
 #[cfg(feature = "tokio")]

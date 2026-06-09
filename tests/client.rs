@@ -2001,13 +2001,17 @@ fn tokio_client_saves_and_loads_dir_collection_ccache_name() {
 fn tokio_client_loads_from_config_default_ccache_name() {
     let tgt = sample_tgt_session();
     let service_ticket = sample_service_ticket_session(&tgt);
-    let mut client = TokioClient::from_tgt_session(Config::new(), KdcProtocol::Tcp, tgt.clone());
-    client.cache_service_ticket(service_ticket);
     let directory = temp_client_ccache_dir("default-ccache-name");
     std::fs::create_dir(&directory).expect("temp DIR collection is created");
     let name = format!("DIR:{}", directory.display());
+    let mut client = TokioClient::from_tgt_session(
+        config_with_default_ccache_name(name.clone()),
+        KdcProtocol::Tcp,
+        tgt.clone(),
+    );
+    client.cache_service_ticket(service_ticket);
     client
-        .save_ccache_name(&name)
+        .save_default_ccache_name()
         .expect("client saves configured ccache");
 
     let loaded = TokioClient::from_default_ccache_name(
@@ -2030,6 +2034,18 @@ fn tokio_client_rejects_missing_config_default_ccache_name() {
     let error = TokioClient::from_default_ccache_name(Config::new(), KdcProtocol::Tcp)
         .expect_err("missing default ccache name is rejected");
 
+    assert!(matches!(error, Error::NoDefaultCCacheName));
+
+    let client =
+        TokioClient::from_tgt_session(Config::new(), KdcProtocol::Tcp, sample_tgt_session());
+    let error = client
+        .save_default_ccache_name()
+        .expect_err("missing default ccache name is rejected");
+    assert!(matches!(error, Error::NoDefaultCCacheName));
+
+    let error = client
+        .update_default_ccache_name()
+        .expect_err("missing default ccache name is rejected");
     assert!(matches!(error, Error::NoDefaultCCacheName));
 }
 
