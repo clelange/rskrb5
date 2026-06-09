@@ -16,6 +16,8 @@ use crate::keytab::Keytab;
 #[cfg(feature = "tower")]
 use crate::service::{ApRepOptions, HostAddress};
 #[cfg(feature = "tower")]
+use std::borrow::Cow;
+#[cfg(feature = "tower")]
 use std::future::Future;
 #[cfg(feature = "tower")]
 use std::pin::Pin;
@@ -54,6 +56,11 @@ pub enum Error {
     #[cfg(feature = "tokio")]
     #[error("client error: {0}")]
     Client(#[from] crate::client::Error),
+
+    /// Keytab loading failed while constructing HTTP middleware.
+    #[cfg(feature = "tower")]
+    #[error("keytab error: {0}")]
+    Keytab(#[from] crate::keytab::Error),
 }
 
 /// Tower Negotiate middleware error.
@@ -139,7 +146,7 @@ fn response_with_www_authenticate<B: Default>(
 #[cfg(feature = "tower")]
 #[derive(Clone, Debug)]
 pub struct NegotiateLayer<'a> {
-    keytab: &'a Keytab,
+    keytab: Cow<'a, Keytab>,
     validator: ValidatorOptions,
     response: NegotiateResponseOptions,
 }
@@ -149,7 +156,7 @@ impl<'a> NegotiateLayer<'a> {
     /// Create a Negotiate layer backed by a service keytab.
     pub fn new(keytab: &'a Keytab) -> Self {
         Self {
-            keytab,
+            keytab: Cow::Borrowed(keytab),
             validator: ValidatorOptions::default(),
             response: NegotiateResponseOptions::default(),
         }
@@ -209,13 +216,38 @@ impl<'a> NegotiateLayer<'a> {
 }
 
 #[cfg(feature = "tower")]
-impl<'a, S> Layer<S> for NegotiateLayer<'a> {
-    type Service = NegotiateService<'a, S>;
+impl NegotiateLayer<'static> {
+    /// Create a Negotiate layer from an owned service keytab.
+    pub fn from_keytab(keytab: Keytab) -> Self {
+        Self {
+            keytab: Cow::Owned(keytab),
+            validator: ValidatorOptions::default(),
+            response: NegotiateResponseOptions::default(),
+        }
+    }
+
+    /// Create a Negotiate layer by loading a file-backed keytab name.
+    ///
+    /// Bare paths, `FILE:path`, and `WRFILE:path` are supported by the keytab
+    /// module. Other keytab stores are rejected explicitly.
+    pub fn from_keytab_name(keytab_name: impl AsRef<str>) -> Result<Self> {
+        Ok(Self::from_keytab(Keytab::load_name(keytab_name)?))
+    }
+
+    /// Create a Negotiate layer by loading the file keytab named by `KRB5_KTNAME`.
+    pub fn from_keytab_env() -> Result<Self> {
+        Ok(Self::from_keytab(Keytab::load_from_env()?))
+    }
+}
+
+#[cfg(feature = "tower")]
+impl<'layer, S> Layer<S> for NegotiateLayer<'layer> {
+    type Service = NegotiateService<'layer, S>;
 
     fn layer(&self, inner: S) -> Self::Service {
         NegotiateService {
             inner,
-            validator: self.validator.build(self.keytab),
+            validator: self.validator.build(self.keytab.clone()),
             response: self.response.clone(),
         }
     }
@@ -245,6 +277,27 @@ impl<'a, S> NegotiateService<'a, S> {
     /// Return a mutable reference to the wrapped service.
     pub fn inner_mut(&mut self) -> &mut S {
         &mut self.inner
+    }
+}
+
+#[cfg(feature = "tower")]
+impl<S> NegotiateService<'static, S> {
+    /// Wrap an inner service with an owned keytab.
+    pub fn from_keytab(inner: S, keytab: Keytab) -> Self {
+        NegotiateLayer::from_keytab(keytab).layer(inner)
+    }
+
+    /// Wrap an inner service by loading a file-backed keytab name.
+    ///
+    /// Bare paths, `FILE:path`, and `WRFILE:path` are supported by the keytab
+    /// module. Other keytab stores are rejected explicitly.
+    pub fn from_keytab_name(inner: S, keytab_name: impl AsRef<str>) -> Result<Self> {
+        Ok(NegotiateLayer::from_keytab_name(keytab_name)?.layer(inner))
+    }
+
+    /// Wrap an inner service by loading the file keytab named by `KRB5_KTNAME`.
+    pub fn from_keytab_env(inner: S) -> Result<Self> {
+        Ok(NegotiateLayer::from_keytab_env()?.layer(inner))
     }
 }
 
@@ -320,8 +373,8 @@ struct ValidatorOptions {
 
 #[cfg(feature = "tower")]
 impl ValidatorOptions {
-    fn build<'a>(&self, keytab: &'a Keytab) -> ServiceValidator<'a> {
-        let mut validator = ServiceValidator::new(keytab);
+    fn build<'a>(&self, keytab: Cow<'a, Keytab>) -> ServiceValidator<'a> {
+        let mut validator = ServiceValidator::from_keytab_cow(keytab);
         if let Some(now) = self.now {
             validator = validator.with_now(now);
         }

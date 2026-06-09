@@ -259,8 +259,12 @@ pub struct ServiceValidator<'a> {
 impl<'a> ServiceValidator<'a> {
     /// Create a validator with gokrb5-compatible defaults.
     pub fn new(keytab: &'a Keytab) -> Self {
+        Self::from_keytab_cow(Cow::Borrowed(keytab))
+    }
+
+    pub(crate) fn from_keytab_cow(keytab: Cow<'a, Keytab>) -> Self {
         Self {
-            keytab: Cow::Borrowed(keytab),
+            keytab,
             max_clock_skew: DEFAULT_MAX_CLOCK_SKEW,
             now: None,
             keytab_principal: None,
@@ -485,15 +489,7 @@ impl<'a> ServiceValidator<'a> {
 impl ServiceValidator<'static> {
     /// Create a validator from an owned keytab.
     pub fn from_keytab(keytab: Keytab) -> Self {
-        Self {
-            keytab: Cow::Owned(keytab),
-            max_clock_skew: DEFAULT_MAX_CLOCK_SKEW,
-            now: None,
-            keytab_principal: None,
-            client_address: None,
-            require_client_address: false,
-            replay_cache: ReplayCache::new(),
-        }
+        Self::from_keytab_cow(Cow::Owned(keytab))
     }
 
     /// Create a validator by loading a file-backed keytab name.

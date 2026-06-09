@@ -59,8 +59,8 @@ pure-Rust Kerberos library.
   response flow;
   HTTP/Tower adapters cover
   generic `http` request helpers and service-side Tower middleware that
-  challenges, validates, attaches accepted contexts, and emits AP-REP response
-  headers, with a compileable Axum Negotiate example; PAC
+  challenges, validates, attaches accepted contexts, emits AP-REP response
+  headers, and supports borrowed, owned, and file-name keytab layers, with a compileable Axum Negotiate example; PAC
   parsing covers the PAC container, KERB_VALIDATION_INFO NDR, client info,
   UPN/DNS info, credentials info with AS-key decrypt helpers, S4U delegation
   info, device info, compressed and uncompressed client/device claims info,

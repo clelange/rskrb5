@@ -160,6 +160,33 @@ fn tower_layer_validates_request_and_adds_ap_rep_response_header() {
 
 #[cfg(feature = "tower")]
 #[test]
+fn tower_layer_loads_owned_keytab_name() {
+    let path = temp_file("http-keytab-name");
+    let name = format!("FILE:{}", path.display());
+    keytab().save(&path).expect("keytab saves");
+
+    let layer = krb_http::NegotiateLayer::from_keytab_name(&name)
+        .expect("layer loads keytab name")
+        .with_now(timestamp(1_893_553_447))
+        .with_ap_rep(false);
+    let _ = std::fs::remove_file(&path);
+
+    let mut service = layer.layer(AssertAcceptedService);
+    let mut request = Request::new(());
+    krb_http::set_authorization_header(&mut request, &valid_authorization_header())
+        .expect("authorization header sets");
+
+    let response = run_ready(service.call(request)).expect("inner response succeeds");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        response.headers().get(WWW_AUTHENTICATE).is_none(),
+        "AP-REP header is disabled"
+    );
+}
+
+#[cfg(feature = "tower")]
+#[test]
 fn tower_layer_rejects_replayed_request() {
     let keytab = keytab();
     let mut service = krb_http::NegotiateLayer::new(&keytab)
@@ -213,6 +240,15 @@ fn base64_encode(bytes: &[u8]) -> String {
 
 fn timestamp(seconds: u64) -> std::time::SystemTime {
     UNIX_EPOCH + Duration::from_secs(seconds)
+}
+
+#[cfg(feature = "tower")]
+fn temp_file(label: &str) -> std::path::PathBuf {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system time after epoch")
+        .as_nanos();
+    std::env::temp_dir().join(format!("rskrb5-{label}-{nanos}.keytab"))
 }
 
 #[cfg(feature = "tower")]
