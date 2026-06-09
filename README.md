@@ -18,7 +18,8 @@ pure-Rust Kerberos library.
   `picky-krb`.
 - The first real modules are `keytab`, `krb5.conf`, `ccache`, `crypto`,
   `client`, `kadmin`, `service`, and `pac`: keytabs parse, serialize, and select keys against
-  gokrb5 fixtures;
+  gokrb5 fixtures and load/save file-backed `KRB5_KTNAME` and
+  `default_keytab_name` values;
   config parsing covers gokrb5-compatible libdefaults, realm host mappings, domain realm lookup,
   duration parsing, and configured KDC/KPassword server lookup; ccache parsing
   covers MIT file caches, `KRB5CCNAME` file cache-name helpers, opaque ticket bytes,
@@ -40,7 +41,7 @@ pure-Rust Kerberos library.
   referral TGT sessions, renewable AS/TGS request flags, explicit
   TGT/service-ticket renewal helpers, Docker MIT KDC AS/TGS login, TGT
   renewal, and gated kpasswd change/restore coverage across AES-SHA1, AES-SHA2, DES3, and RC4-HMAC, per-enctype
-  keytab AS/TGS integration coverage, ccache credential export/write-back and
+  keytab AS/TGS integration coverage, keytab file-name helpers, ccache credential export/write-back and
   file cache-name loading/saving, and a high-level
   Tokio client with password/keytab/ccache credential sources,
   credential attachment, configuration validation, multi-realm TGT/session caching,

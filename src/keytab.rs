@@ -3,9 +3,11 @@
 //! This module covers the MIT keytab file format surface needed before client
 //! and service flows can consume long-term keys.
 
+use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const KEYTAB_FIRST_BYTE: u8 = 5;
+const KRB5_KTNAME_ENV: &str = "KRB5_KTNAME";
 
 /// Parsed keytab file.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -21,6 +23,29 @@ impl Keytab {
             version: 2,
             entries: Vec::new(),
         }
+    }
+
+    /// Load and parse a keytab file.
+    pub fn load(path: impl AsRef<Path>) -> Result<Self, Error> {
+        let bytes = std::fs::read(path.as_ref())?;
+        Self::parse(&bytes)
+    }
+
+    /// Load and parse the file keytab named by `KRB5_KTNAME`.
+    ///
+    /// Only file-backed keytab names are supported: bare paths, `FILE:path`,
+    /// and `WRFILE:path`. Collection and platform stores such as `DIR:`,
+    /// `KEYRING:`, and `MEMORY:` are rejected explicitly.
+    pub fn load_from_env() -> Result<Self, Error> {
+        let name = std::env::var(KRB5_KTNAME_ENV).map_err(Error::DefaultKeytabName)?;
+        Self::load_name(name)
+    }
+
+    /// Load and parse a keytab by MIT-style keytab name.
+    ///
+    /// Bare paths, `FILE:path`, and `WRFILE:path` are supported.
+    pub fn load_name(name: impl AsRef<str>) -> Result<Self, Error> {
+        Self::load(Self::file_path_from_keytab_name(name.as_ref())?)
     }
 
     /// Parse keytab bytes.
@@ -95,6 +120,54 @@ impl Keytab {
         }
 
         Ok(Self { version, entries })
+    }
+
+    /// Save this keytab to a file.
+    pub fn save(&self, path: impl AsRef<Path>) -> Result<(), Error> {
+        std::fs::write(path.as_ref(), self.to_bytes()?)?;
+        Ok(())
+    }
+
+    /// Save this keytab to the file keytab named by `KRB5_KTNAME`.
+    pub fn save_to_env(&self) -> Result<(), Error> {
+        let name = std::env::var(KRB5_KTNAME_ENV).map_err(Error::DefaultKeytabName)?;
+        self.save_name(name)
+    }
+
+    /// Save this keytab by MIT-style keytab name.
+    ///
+    /// Bare paths, `FILE:path`, and `WRFILE:path` are supported.
+    pub fn save_name(&self, name: impl AsRef<str>) -> Result<(), Error> {
+        self.save(Self::file_path_from_keytab_name(name.as_ref())?)
+    }
+
+    /// Resolve a MIT-style keytab name to a file path.
+    ///
+    /// This does not touch the filesystem; it only validates that the name
+    /// denotes a keytab format backed by this module.
+    pub fn file_path_from_keytab_name(name: &str) -> Result<PathBuf, Error> {
+        if name.is_empty() {
+            return Err(Error::InvalidKeytabName);
+        }
+
+        let Some((prefix, path)) = name.split_once(':') else {
+            return Ok(PathBuf::from(name));
+        };
+
+        if is_windows_drive_path(prefix, path) {
+            return Ok(PathBuf::from(name));
+        }
+
+        if prefix.eq_ignore_ascii_case("FILE") || prefix.eq_ignore_ascii_case("WRFILE") {
+            if path.is_empty() {
+                return Err(Error::InvalidKeytabName);
+            }
+            Ok(PathBuf::from(path))
+        } else {
+            Err(Error::UnsupportedKeytabType {
+                keytab_type: prefix.to_owned(),
+            })
+        }
     }
 
     /// Serialize the keytab to bytes.
@@ -276,6 +349,21 @@ pub struct EncryptionKey {
 /// Keytab parsing and serialization error.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    /// File loading or saving failed.
+    #[error("keytab file could not be read or written: {0}")]
+    Io(#[from] std::io::Error),
+    /// The default keytab name could not be read from `KRB5_KTNAME`.
+    #[error("default keytab name could not be read from KRB5_KTNAME: {0}")]
+    DefaultKeytabName(std::env::VarError),
+    /// A keytab name was empty or did not include a path.
+    #[error("invalid keytab name")]
+    InvalidKeytabName,
+    /// The keytab name uses a keytab type this module cannot parse.
+    #[error("unsupported keytab type: {keytab_type}")]
+    UnsupportedKeytabType {
+        /// Keytab type prefix before the first colon.
+        keytab_type: String,
+    },
     /// Input is too short to contain the keytab header.
     #[error("keytab is too short: {actual} bytes")]
     TooShort {
@@ -319,6 +407,12 @@ pub enum Error {
         /// Requested encryption type.
         etype: i32,
     },
+}
+
+fn is_windows_drive_path(prefix: &str, path: &str) -> bool {
+    prefix.len() == 1
+        && prefix.as_bytes()[0].is_ascii_alphabetic()
+        && (path.starts_with('\\') || path.starts_with('/'))
 }
 
 #[derive(Clone, Copy, Debug)]

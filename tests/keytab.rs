@@ -1,4 +1,6 @@
 use rskrb5::keytab::{EncryptionKey, Entry, Keytab, Principal};
+use std::path::PathBuf;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const KEYTAB_TESTUSER1_TEST_GOKRB5: &str = "05020000003b0001000b544553542e474f4b52423500097465737475736572310000000159beb1d80100110010698c4df8e9f60e7eea5a21bf4526ad25000000010000004b0001000b544553542e474f4b52423500097465737475736572310000000159beb1d80100120020bbdc430aab7e2d4622a0b6951481453b0962e9db8e2f168942ad175cda6d9de9000000010000003b0001000b544553542e474f4b52423500097465737475736572310000000159beb1d80200110010698c4df8e9f60e7eea5a21bf4526ad25000000020000004b0001000b544553542e474f4b52423500097465737475736572310000000159beb1d80200120020bbdc430aab7e2d4622a0b6951481453b0962e9db8e2f168942ad175cda6d9de9000000020000003b0001000b544553542e474f4b52423500097465737475736572310000000159beb1d801001300102eb8501967a7886e1f0c63ac9be8c4a0000000010000003b0001000b544553542e474f4b52423500097465737475736572310000000159beb1d802001300102eb8501967a7886e1f0c63ac9be8c4a0000000020000004b0001000b544553542e474f4b52423500097465737475736572310000000159beb1d801001400208ad66f209bb07daa186f8a229830f5ba06a3a2a33638f4ec66e1d29324e417ee000000010000004b0001000b544553542e474f4b52423500097465737475736572310000000159beb1d802001400208ad66f209bb07daa186f8a229830f5ba06a3a2a33638f4ec66e1d29324e417ee00000002000000430001000b544553542e474f4b52423500097465737475736572310000000159beb1d801001000184580fb91760dabe6f808c22c26494f644cb35d61d32c79e300000001000000430001000b544553542e474f4b52423500097465737475736572310000000159beb1d802001000184580fb91760dabe6f808c22c26494f644cb35d61d32c79e3000000020000003b0001000b544553542e474f4b52423500097465737475736572310000000159beb1d80100170010084768c373663b3bef1f6385883cf7ff000000010000003b0001000b544553542e474f4b52423500097465737475736572310000000159beb1d80200170010084768c373663b3bef1f6385883cf7ff00000002";
 
@@ -29,6 +31,74 @@ fn roundtrips_gokrb5_keytab_fixture() {
     let bytes = decode_hex(KEYTAB_TESTUSER1_TEST_GOKRB5);
     let keytab = Keytab::parse(&bytes).expect("keytab fixture parses");
     assert_eq!(keytab.to_bytes().expect("keytab serializes"), bytes);
+}
+
+#[test]
+fn saves_and_loads_keytab_file() {
+    let bytes = decode_hex(KEYTAB_TESTUSER1_TEST_GOKRB5);
+    let keytab = Keytab::parse(&bytes).expect("keytab fixture parses");
+    let path = temp_file("save-load");
+
+    keytab.save(&path).expect("keytab saves");
+    let loaded = Keytab::load(&path).expect("keytab loads");
+    let _ = std::fs::remove_file(&path);
+
+    assert_eq!(loaded, keytab);
+}
+
+#[test]
+fn resolves_file_keytab_names() {
+    assert_eq!(
+        Keytab::file_path_from_keytab_name("/etc/krb5.keytab").expect("bare path resolves"),
+        PathBuf::from("/etc/krb5.keytab")
+    );
+    assert_eq!(
+        Keytab::file_path_from_keytab_name("FILE:/etc/krb5.keytab").expect("FILE path resolves"),
+        PathBuf::from("/etc/krb5.keytab")
+    );
+    assert_eq!(
+        Keytab::file_path_from_keytab_name("WRFILE:relative.keytab").expect("WRFILE path resolves"),
+        PathBuf::from("relative.keytab")
+    );
+    assert_eq!(
+        Keytab::file_path_from_keytab_name("C:\\temp\\krb5.keytab").expect("Windows path resolves"),
+        PathBuf::from("C:\\temp\\krb5.keytab")
+    );
+}
+
+#[test]
+fn rejects_unsupported_keytab_names() {
+    assert!(matches!(
+        Keytab::file_path_from_keytab_name("").expect_err("empty name rejected"),
+        rskrb5::keytab::Error::InvalidKeytabName
+    ));
+    assert!(matches!(
+        Keytab::file_path_from_keytab_name("FILE:").expect_err("empty FILE path rejected"),
+        rskrb5::keytab::Error::InvalidKeytabName
+    ));
+    assert!(matches!(
+        Keytab::file_path_from_keytab_name("DIR:/tmp/krb5.keytab")
+            .expect_err("DIR keytab rejected"),
+        rskrb5::keytab::Error::UnsupportedKeytabType { keytab_type } if keytab_type == "DIR"
+    ));
+    assert!(matches!(
+        Keytab::file_path_from_keytab_name("MEMORY:test").expect_err("MEMORY keytab rejected"),
+        rskrb5::keytab::Error::UnsupportedKeytabType { keytab_type } if keytab_type == "MEMORY"
+    ));
+}
+
+#[test]
+fn saves_and_loads_file_keytab_name() {
+    let bytes = decode_hex(KEYTAB_TESTUSER1_TEST_GOKRB5);
+    let keytab = Keytab::parse(&bytes).expect("keytab fixture parses");
+    let path = temp_file("save-load-name");
+    let name = format!("FILE:{}", path.display());
+
+    keytab.save_name(&name).expect("keytab saves by name");
+    let loaded = Keytab::load_name(&name).expect("keytab loads by name");
+    let _ = std::fs::remove_file(&path);
+
+    assert_eq!(loaded, keytab);
 }
 
 #[test]
@@ -151,4 +221,15 @@ fn hex_value(byte: u8) -> u8 {
         b'A'..=b'F' => byte - b'A' + 10,
         _ => panic!("invalid hex byte: {byte}"),
     }
+}
+
+fn temp_file(name: &str) -> PathBuf {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("current time is after unix epoch")
+        .as_nanos();
+    std::env::temp_dir().join(format!(
+        "rskrb5-keytab-{name}-{}-{nanos}",
+        std::process::id()
+    ))
 }
