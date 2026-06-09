@@ -905,6 +905,52 @@ fn tokio_client_exposes_and_removes_cached_service_ticket() {
 
 #[cfg(feature = "tokio")]
 #[test]
+fn tokio_client_prefers_freshest_cached_service_ticket() {
+    let tgt = current_tgt_session(5, 180);
+    let service_session = |remaining_minutes: u64, ticket: &[u8]| {
+        let now = SystemTime::now();
+        let mut service_ticket = sample_service_ticket_session(&tgt);
+        service_ticket.ticket = ticket.to_vec();
+        service_ticket.auth_time = now
+            .checked_sub(Duration::from_secs(5 * 60))
+            .expect("auth time");
+        service_ticket.start_time = service_ticket.auth_time;
+        service_ticket.end_time = now
+            .checked_add(Duration::from_secs(remaining_minutes * 60))
+            .expect("end time");
+        service_ticket.renew_till = Some(
+            now.checked_add(Duration::from_secs(24 * 60 * 60))
+                .expect("renew time"),
+        );
+        service_ticket
+    };
+    let mut client = TokioClient::from_tgt_session(Config::new(), KdcProtocol::Tcp, tgt.clone());
+
+    client.cache_service_ticket(service_session(120, b"service-long"));
+    client.cache_service_ticket(service_session(30, b"service-short"));
+    assert_eq!(
+        client
+            .cached_service_ticket(sample_service_principal())
+            .expect("longer service ticket remains")
+            .ticket
+            .as_slice(),
+        b"service-long"
+    );
+
+    client.cache_service_ticket(service_session(180, b"service-longer"));
+    assert_eq!(
+        client
+            .cached_service_ticket(sample_service_principal())
+            .expect("longer service ticket is selected")
+            .ticket
+            .as_slice(),
+        b"service-longer"
+    );
+    assert_eq!(client.cached_service_ticket_count(), 1);
+}
+
+#[cfg(feature = "tokio")]
+#[test]
 fn tokio_client_clears_service_ticket_cache_without_dropping_tgt() {
     let tgt = sample_tgt_session();
     let service_ticket = sample_service_ticket_session(&tgt);
