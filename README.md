@@ -1,13 +1,12 @@
 # rskrb5
 
-`rskrb5` is currently a compatibility spike for a future Rust port of
-`gokrb5` v8.
+`rskrb5` is a pure-Rust Kerberos v5 client/service library grown from a
+`gokrb5` v8 compatibility effort.
 
-The first milestone is not to duplicate existing permissively licensed ASN.1
-or Kerberos crates. Instead, this repository evaluates whether existing crates
-such as `rasn-kerberos`, `picky-krb`, and `sspi-rs` can satisfy the `gokrb5`
-contract. If they cannot, this crate will become the missing high-level,
-pure-Rust Kerberos library.
+The `0.1.x` preview is intentionally narrow: it is useful for client-side
+Kerberos login, file-backed keytab and credential-cache handling, and HTTP
+Negotiate/SPNEGO header generation, while broader `gokrb5` parity work
+continues in the lower-level modules and tests.
 
 ## Current Status
 
@@ -82,20 +81,56 @@ pure-Rust Kerberos library.
   currently pre-release and placeholder-sized.
 - AGPL/LGPL Kerberos crates are excluded from the default/core implementation
   unless they are explicitly isolated behind non-default optional features.
-- The crate is marked `publish = false` until the decision gate is complete.
+- The first publishable API surface is the narrow `0.1.x` client preview
+  described below.
 
-## Supported Scope During The Spike
+## Supported 0.1.x Scope
 
-The implemented preview scope is a pure-Rust Kerberos v5 client/service core
-with file-backed keytab and ccache support, krb5.conf parsing, AES-SHA1,
-AES-SHA2, DES3, and RC4-HMAC crypto, AS/TGS and kpasswd exchanges, AP-REQ
-service validation, SPNEGO/GSSAPI HTTP helpers, Tower adapters, and PAC parsing
-for the translated gokrb5 fixtures and Docker MIT KDC tests in this repository.
+The supported public preview surface is:
 
-Known gaps before a public crates.io preview include credential cache platform
-stores such as API, KCM, KEYRING, and MSLSA; FAST, PKINIT,
-S4U2Self/S4U2Proxy client flows; maintained Active Directory lab coverage in
-CI; system GSSAPI/SSPI facade integration; and a declared stable API surface.
+- password-backed client login;
+- file keytab-backed client login;
+- FILE, WRFILE, and MIT DIR credential-cache loading/saving;
+- default config loading from `KRB5_CONFIG` or platform defaults;
+- HTTP Negotiate/SPNEGO `Authorization` header generation through
+  `NegotiateClient` and `BlockingNegotiateClient`;
+- explicit typed rejection of unsupported credential stores.
+
+Unsupported in `0.1.x`: API, KCM, KEYRING, and MSLSA credential stores; FAST;
+PKINIT; system GSSAPI/SSPI facades; and full maintained Active Directory CI.
+
+## Client API Examples
+
+Async HTTP Negotiate from a FILE ccache:
+
+```rust
+let config = rskrb5::Config::load_default()?;
+let mut client = rskrb5::NegotiateClient::from_ccache_name(
+    config,
+    "FILE:/tmp/krb5cc",
+)?;
+let header = client
+    .authorization_header_for_host("HTTP", "auth.cern.ch")
+    .await?;
+```
+
+Blocking CLI-style use:
+
+```rust
+let config = rskrb5::Config::load_default_or_parse(include_str!("krb5.conf"))?;
+let mut client = rskrb5::BlockingNegotiateClient::from_default_ccache(config)?;
+let header = client.authorization_header_for_host("HTTP", "auth.cern.ch")?;
+```
+
+Unsupported credential stores remain typed:
+
+```rust
+let error = rskrb5::NegotiateClient::from_ccache_name(
+    rskrb5::Config::new(),
+    "API:",
+)
+.expect_err("API caches are not implemented");
+```
 
 Generate the compatibility report:
 

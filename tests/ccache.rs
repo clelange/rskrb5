@@ -214,10 +214,17 @@ fn rejects_unsupported_cache_names() {
             .expect_err("DIR subsidiary filename rejected"),
         Error::InvalidCacheName
     ));
-    assert!(matches!(
-        CCache::file_path_from_cache_name("KCM:").expect_err("KCM cache rejected"),
-        Error::UnsupportedCacheType { cache_type } if cache_type == "KCM"
-    ));
+    for cache_name in ["API:", "KCM:", "KEYRING:", "MSLSA:"] {
+        let expected_type = cache_name.trim_end_matches(':');
+        assert!(
+            matches!(
+                CCache::file_path_from_cache_name(cache_name)
+                    .expect_err("unsupported cache rejected"),
+                Error::UnsupportedCacheType { cache_type } if cache_type == expected_type
+            ),
+            "{cache_name}"
+        );
+    }
 }
 
 #[test]

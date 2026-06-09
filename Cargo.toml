@@ -1,15 +1,14 @@
 [package]
 name = "rskrb5"
-version = "0.0.0"
+version = "0.1.0"
 edition = "2024"
 rust-version = "1.88"
 license = "Apache-2.0"
-description = "Rust compatibility spike for a gokrb5-equivalent Kerberos library."
+description = "Pure-Rust Kerberos v5 client/service library with HTTP Negotiate support."
 repository = "https://github.com/clelange/rskrb5"
 readme = "README.md"
 keywords = ["kerberos", "krb5", "spnego", "gssapi", "authentication"]
 categories = ["authentication", "cryptography", "network-programming"]
-publish = false
 exclude = [".github/"]
 
 [features]

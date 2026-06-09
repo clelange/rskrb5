@@ -1,9 +1,9 @@
 # Publishing And Release Plan
 
-`rskrb5` is intentionally not publishable yet. The crate remains
-`publish = false` and `version = "0.0.0"` while the repository is still proving
-that a standalone Rust implementation adds value beyond existing ASN.1, SSPI,
-and Kerberos crates.
+`rskrb5` is prepared for a narrow `0.1.x` crates.io preview. The first
+publishable surface is intentionally limited to client-side login,
+file-backed keytab and credential-cache handling, default config loading, and
+HTTP Negotiate/SPNEGO header generation.
 
 ## Distribution Model
 
@@ -13,18 +13,19 @@ and Kerberos crates.
   gate is complete. A Kerberos client/service library needs normal Cargo
   dependency resolution, docs.rs rendering, semver metadata, and discoverability
   in the Rust ecosystem.
-- GitHub-only distribution is acceptable during the spike because callers should
-  not depend on a stable API yet.
+- GitHub-only distribution remains acceptable for unreleased development
+  branches, but the `0.1.x` preview is intended for normal Cargo dependency
+  resolution through crates.io.
 
-## Cutover Gate
+## Release Gate
 
-Before removing `publish = false`, the crate should have:
+Before publishing a release, the crate should have:
 
 - A positive decision-gate result in `docs/compatibility-report.md`.
 - A first supported scope stated in the README, with unsupported gokrb5 features
   called out plainly.
 - A semver version greater than `0.0.0`; use `0.1.0` for the first public API
-  preview unless the API is intentionally narrower.
+  preview.
 - No AGPL or LGPL dependency in default/core features. Any such dependency must
   be isolated behind a clearly named, non-default feature.
 - A clean package manifest with repository, license, README, keywords,
@@ -63,29 +64,29 @@ INTEGRATION=1 TESTAD=1 cargo test --all-features --test client_ad_integration
 `INTEGRATION=1`. `TESTAD=1` uses the Active Directory lab endpoints documented
 in the README and remains optional until that lab is maintained in CI.
 
-## crates.io Cutover
+## crates.io Release
 
 When the gate is met:
 
-1. Change `version = "0.0.0"` to the intended semver version.
-2. Remove `publish = false`.
-3. Regenerate `Cargo.lock` if dependency resolution changes.
-4. Run the release preflight and at least the default Docker MIT KDC
+1. Confirm `Cargo.toml` has the intended semver version and is not marked
+   `publish = false`.
+2. Regenerate `Cargo.lock` if dependency resolution changes.
+3. Run the release preflight and at least the default Docker MIT KDC
    integration job.
-5. Inspect the packaged contents:
+4. Inspect the packaged contents:
 
    ```sh
    cargo package --locked --list
    ```
 
-6. Publish only after a successful dry run:
+5. Publish only after a successful dry run:
 
    ```sh
    cargo publish --locked --dry-run
    cargo publish --locked
    ```
 
-7. Tag the published revision as `vX.Y.Z` and create a GitHub release that
+6. Tag the published revision as `vX.Y.Z` and create a GitHub release that
    summarizes supported features, known gaps, and the matching compatibility
    report revision.
 

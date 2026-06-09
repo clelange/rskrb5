@@ -24,6 +24,8 @@ use rskrb5::client::{
     process_tgs_rep, process_tgs_rep_with_referral, renew_tgt, renew_ticket, s4u_byte_array,
     s4u2self, select_preauth_key_info, verify_kpasswd_ap_rep,
 };
+#[cfg(all(feature = "tokio", feature = "spnego"))]
+use rskrb5::client::{BlockingNegotiateClient, NegotiateClient};
 #[cfg(feature = "tokio")]
 use rskrb5::client::{KdcProtocol, PrunedSessions, TokioClient};
 #[cfg(feature = "tokio")]
@@ -52,6 +54,93 @@ const TGS_REP_CONFOUNDER: &str = "303132333435363738393a3b3c3d3e3f";
 const TICKET_FLAGS: &[u8; 4] = &[0x40, 0x81, 0x00, 0x10];
 const TESTUSER_PASSWORD: &[u8] = b"passwordvalue";
 const TESTUSER_SALT: &str = "TEST.GOKRB5testuser1";
+
+#[test]
+fn principal_helpers_parse_user_and_service_names() {
+    assert_eq!(
+        Principal::parse_user("testuser1@TEST.GOKRB5").expect("user parses"),
+        Principal::user("TEST.GOKRB5", "testuser1")
+    );
+    assert_eq!(
+        Principal::parse_user(r"user\@name@TEST.GOKRB5").expect("escaped user parses"),
+        Principal::user("TEST.GOKRB5", "user@name")
+    );
+    assert_eq!(
+        Principal::parse_user(r"user\/name@TEST.GOKRB5").expect("escaped slash parses"),
+        Principal::user("TEST.GOKRB5", "user/name")
+    );
+    assert_eq!(
+        Principal::parse_service("HTTP/host.test.gokrb5@TEST.GOKRB5").expect("service parses"),
+        Principal::new("TEST.GOKRB5", 2, ["HTTP", "host.test.gokrb5"])
+    );
+    assert_eq!(
+        Principal::parse_service(r"HTTP/host\@name@TEST.GOKRB5").expect("escaped service parses"),
+        Principal::new("TEST.GOKRB5", 2, ["HTTP", "host@name"])
+    );
+}
+
+#[test]
+fn principal_helpers_reject_malformed_names() {
+    for value in [
+        "",
+        "testuser1",
+        "@TEST.GOKRB5",
+        "testuser1@",
+        "testuser1@TEST.GOKRB5@EXTRA",
+        r"testuser1\",
+        "testuser1/extra@TEST.GOKRB5",
+    ] {
+        assert!(
+            matches!(
+                Principal::parse_user(value).expect_err("malformed user rejected"),
+                Error::InvalidPrincipalName { .. }
+            ),
+            "{value:?}"
+        );
+    }
+
+    for value in [
+        "HTTP@TEST.GOKRB5",
+        "HTTP/@TEST.GOKRB5",
+        "HTTP/host.test.gokrb5@",
+        "HTTP/host.test.gokrb5@TEST.GOKRB5@EXTRA",
+        r"HTTP/host.test.gokrb5\",
+    ] {
+        assert!(
+            matches!(
+                Principal::parse_service(value).expect_err("malformed service rejected"),
+                Error::InvalidPrincipalName { .. }
+            ),
+            "{value:?}"
+        );
+    }
+}
+
+#[test]
+fn principal_helpers_create_host_based_services() {
+    assert_eq!(
+        Principal::host_based_service("HTTP", "auth.cern.ch").expect("host service builds"),
+        Principal::new("", 2, ["HTTP", "auth.cern.ch"])
+    );
+    assert_eq!(
+        Principal::host_based_service_in_realm("HTTP", "auth.cern.ch", "CERN.CH")
+            .expect("realm service builds"),
+        Principal::new("CERN.CH", 2, ["HTTP", "auth.cern.ch"])
+    );
+    assert!(matches!(
+        Principal::host_based_service("", "auth.cern.ch").expect_err("empty service rejected"),
+        Error::InvalidPrincipalName { .. }
+    ));
+    assert!(matches!(
+        Principal::host_based_service("HTTP", "").expect_err("empty host rejected"),
+        Error::InvalidPrincipalName { .. }
+    ));
+    assert!(matches!(
+        Principal::host_based_service_in_realm("HTTP", "auth.cern.ch", "")
+            .expect_err("empty realm rejected"),
+        Error::InvalidPrincipalName { .. }
+    ));
+}
 
 #[test]
 fn builds_tgt_as_req_with_expected_fields() {
@@ -1045,7 +1134,12 @@ fn tokio_client_returns_cached_service_ticket_from_ccache() {
 fn tokio_client_exposes_and_removes_cached_service_ticket() {
     let tgt = sample_tgt_session();
     let mut service_ticket = sample_service_ticket_session(&tgt);
-    let now = SystemTime::now();
+    let now = timestamp(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("current time is after unix epoch")
+            .as_secs(),
+    );
     service_ticket.start_time = now
         .checked_sub(Duration::from_secs(60))
         .expect("start time");
@@ -1139,7 +1233,12 @@ fn tokio_client_clears_service_ticket_cache_without_dropping_tgt() {
 fn tokio_client_cached_service_ticket_resolves_empty_realm_and_ignores_expired_entries() {
     let tgt = sample_tgt_session();
     let mut service_ticket = sample_service_ticket_session(&tgt);
-    let now = SystemTime::now();
+    let now = timestamp(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("current time is after unix epoch")
+            .as_secs(),
+    );
     service_ticket.start_time = now
         .checked_sub(Duration::from_secs(10 * 60))
         .expect("start time");
@@ -2202,6 +2301,52 @@ fn tokio_client_loads_from_ccache_name() {
 
     assert_eq!(loaded.tgt_session().expect("TGT reloads"), &tgt);
     assert_eq!(loaded.cached_service_ticket_count(), 1);
+}
+
+#[cfg(all(feature = "tokio", feature = "spnego"))]
+#[test]
+fn negotiate_client_builds_authorization_header_for_host_from_ccache_name() {
+    let (path, name) = save_sample_negotiate_ccache("negotiate-load-name");
+
+    let mut client =
+        NegotiateClient::from_ccache_name(Config::new(), &name).expect("negotiate client loads");
+    assert_eq!(client.inner().protocol(), KdcProtocol::Auto);
+    let header = runtime()
+        .block_on(client.authorization_header_for_host("HTTP", "host.test.gokrb5"))
+        .expect("authorization header builds");
+    let _ = std::fs::remove_file(&path);
+
+    assert!(header.starts_with("Negotiate "));
+    rskrb5::spnego::parse_negotiate_header(&header).expect("SPNEGO header parses");
+}
+
+#[cfg(all(feature = "tokio", feature = "spnego"))]
+#[test]
+fn blocking_negotiate_client_builds_authorization_header_for_host_from_ccache_name() {
+    let (path, name) = save_sample_negotiate_ccache("blocking-negotiate-load-name");
+
+    let mut client = BlockingNegotiateClient::from_ccache_name(Config::new(), &name)
+        .expect("blocking negotiate client loads");
+    let header = client
+        .authorization_header_for_host("HTTP", "host.test.gokrb5")
+        .expect("blocking authorization header builds");
+    let _ = std::fs::remove_file(&path);
+
+    assert!(header.starts_with("Negotiate "));
+    rskrb5::spnego::parse_negotiate_header(&header).expect("SPNEGO header parses");
+}
+
+#[cfg(all(feature = "tokio", feature = "spnego"))]
+#[test]
+fn negotiate_client_preserves_unsupported_cache_type_error() {
+    let error = NegotiateClient::from_ccache_name(Config::new(), "API:")
+        .expect_err("unsupported cache type rejected");
+
+    assert!(matches!(
+        error,
+        Error::CCache(ccache::Error::UnsupportedCacheType { cache_type })
+            if cache_type == "API"
+    ));
 }
 
 #[cfg(feature = "tokio")]
@@ -3973,6 +4118,42 @@ fn temp_client_ccache_file(name: &str) -> std::path::PathBuf {
         "rskrb5-client-{name}-{}-{nanos}",
         std::process::id()
     ))
+}
+
+#[cfg(all(feature = "tokio", feature = "spnego"))]
+fn save_sample_negotiate_ccache(name: &str) -> (std::path::PathBuf, String) {
+    let tgt = sample_tgt_session();
+    let mut service_ticket = sample_service_ticket_session(&tgt);
+    let now = timestamp(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("current time is after unix epoch")
+            .as_secs(),
+    );
+    service_ticket.auth_time = now.checked_sub(Duration::from_secs(60)).expect("auth time");
+    service_ticket.start_time = service_ticket.auth_time;
+    service_ticket.end_time = now
+        .checked_add(Duration::from_secs(60 * 60))
+        .expect("end time");
+    service_ticket.renew_till = Some(
+        now.checked_add(Duration::from_secs(2 * 60 * 60))
+            .expect("renew time"),
+    );
+    service_ticket.key_expiration = Some(service_ticket.end_time);
+    let mut cache = ccache::CCache::new(ccache::Principal::new(
+        tgt.client.realm,
+        tgt.client.name_type,
+        tgt.client.components,
+    ));
+    cache.upsert_credential(
+        service_ticket
+            .to_ccache_credential()
+            .expect("service ticket exports ccache credential"),
+    );
+    let path = temp_client_ccache_file(name);
+    let name = format!("FILE:{}", path.display());
+    cache.save_name(&name).expect("ccache saves by name");
+    (path, name)
 }
 
 #[cfg(feature = "tokio")]

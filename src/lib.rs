@@ -1,13 +1,18 @@
-//! Pure-Rust Kerberos v5 client/service compatibility spike.
+//! Pure-Rust Kerberos v5 client/service library.
 //!
-//! This crate is intentionally not a production Kerberos implementation yet.
-//! The first milestone is a decision gate: measure whether existing
-//! permissively licensed Rust crates can satisfy the `gokrb5` v8 contract.
+//! The `0.1.x` line exposes a narrow, client-oriented preview surface for
+//! projects that need Kerberos password or keytab login, FILE/WRFILE/DIR
+//! credential-cache loading, and HTTP Negotiate/SPNEGO header generation.
+//! Broader `gokrb5` parity work continues behind the same lower-level modules.
 //!
-//! The implemented preview surface currently includes file-backed keytab and
-//! ccache handling, `krb5.conf` parsing, Kerberos crypto vectors, AS/TGS client
-//! exchanges, AP-REQ/AP-REP service validation, SPNEGO/GSSAPI tokens, HTTP and
-//! Tower Negotiate adapters, kpasswd helpers, and PAC parsing.
+//! ```ignore
+//! let config = rskrb5::Config::load_default()?;
+//! let mut client =
+//!     rskrb5::NegotiateClient::from_ccache_name(config, "FILE:/tmp/krb5cc")?;
+//! let header = client
+//!     .authorization_header_for_host("HTTP", "auth.cern.ch")
+//!     .await?;
+//! ```
 //!
 //! # Feature Flags
 //!
@@ -21,9 +26,11 @@
 //!
 //! # Current Limits
 //!
-//! `rskrb5` remains a `0.0.0` unpublished spike. Platform credential stores,
-//! FAST, PKINIT, S4U client flows, system GSSAPI/SSPI facades, and maintained
-//! Active Directory CI are still outside the supported preview scope.
+//! Platform credential stores (`API`, `KCM`, `KEYRING`, `MSLSA`), FAST,
+//! PKINIT, system GSSAPI/SSPI facades, and full maintained Active Directory
+//! CI are outside the supported `0.1.x` preview scope. Unsupported credential
+//! cache stores are reported as
+//! [`ccache::Error::UnsupportedCacheType`].
 
 #![forbid(unsafe_code)]
 
@@ -51,10 +58,16 @@ pub mod service;
 #[cfg(feature = "spnego")]
 pub mod spnego;
 
+#[cfg(feature = "messages")]
+pub use client::Principal;
+#[cfg(all(feature = "tokio", feature = "spnego"))]
+pub use client::{BlockingNegotiateClient, NegotiateClient};
+pub use config::Config;
+
 /// Current crate-level result type.
 pub type Result<T> = std::result::Result<T, Error>;
 
-/// Errors produced by the compatibility spike utilities.
+/// Crate-level error type.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// Hex fixture data failed to decode.

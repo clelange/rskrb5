@@ -6,10 +6,16 @@
 
 use std::collections::BTreeMap;
 use std::net::IpAddr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 const KRB5_CONFIG_ENV: &str = "KRB5_CONFIG";
+#[cfg(target_family = "unix")]
+const PLATFORM_DEFAULT_CONFIG_PATHS: &[&str] = &["/etc/krb5.conf"];
+#[cfg(target_family = "windows")]
+const PLATFORM_DEFAULT_CONFIG_PATHS: &[&str] = &["C:\\ProgramData\\MIT\\Kerberos5\\krb5.ini"];
+#[cfg(not(any(target_family = "unix", target_family = "windows")))]
+const PLATFORM_DEFAULT_CONFIG_PATHS: &[&str] = &[];
 
 const DEFAULT_ENCTYPES: &[&str] = &[
     "aes256-cts-hmac-sha1-96",
@@ -62,6 +68,32 @@ impl Config {
         Self::load_paths(std::env::split_paths(&value))
     }
 
+    /// Load the default Kerberos configuration.
+    ///
+    /// `KRB5_CONFIG` takes precedence when set. Otherwise this tries platform
+    /// defaults such as `/etc/krb5.conf` on Unix.
+    pub fn load_default() -> Result<Self, Error> {
+        if std::env::var_os(KRB5_CONFIG_ENV).is_some() {
+            return Self::load_from_env();
+        }
+        Self::load_default_paths(PLATFORM_DEFAULT_CONFIG_PATHS.iter().copied())
+    }
+
+    /// Load the default Kerberos configuration or parse an embedded fallback.
+    ///
+    /// The embedded config is used only when no environment or platform
+    /// default config source exists. If a configured file exists but cannot be
+    /// read or parsed, that error is returned.
+    pub fn load_default_or_parse(embedded_krb5_conf: &str) -> Result<Self, Error> {
+        if std::env::var_os(KRB5_CONFIG_ENV).is_some() {
+            return Self::load_from_env();
+        }
+        Self::load_default_or_parse_paths(
+            embedded_krb5_conf,
+            PLATFORM_DEFAULT_CONFIG_PATHS.iter().copied(),
+        )
+    }
+
     /// Load and parse one or more `krb5.conf` files.
     ///
     /// Files are concatenated in iterator order before parsing, preserving the
@@ -89,6 +121,30 @@ impl Config {
             return Err(Error::EmptyConfigPathList);
         }
         Self::parse(&input)
+    }
+
+    fn load_default_paths<I, P>(paths: I) -> Result<Self, Error>
+    where
+        I: IntoIterator<Item = P>,
+        P: AsRef<Path>,
+    {
+        let paths = existing_default_config_paths(paths);
+        if paths.is_empty() {
+            return Err(Error::NoDefaultConfig);
+        }
+        Self::load_paths(paths)
+    }
+
+    fn load_default_or_parse_paths<I, P>(embedded_krb5_conf: &str, paths: I) -> Result<Self, Error>
+    where
+        I: IntoIterator<Item = P>,
+        P: AsRef<Path>,
+    {
+        match Self::load_default_paths(paths) {
+            Ok(config) => Ok(config),
+            Err(Error::NoDefaultConfig) => Self::parse(embedded_krb5_conf),
+            Err(error) => Err(error),
+        }
     }
 
     /// Parse a `krb5.conf` string.
@@ -185,6 +241,18 @@ impl Default for Config {
     fn default() -> Self {
         Self::new()
     }
+}
+
+fn existing_default_config_paths<I, P>(paths: I) -> Vec<PathBuf>
+where
+    I: IntoIterator<Item = P>,
+    P: AsRef<Path>,
+{
+    paths
+        .into_iter()
+        .map(|path| path.as_ref().to_path_buf())
+        .filter(|path| path.is_file())
+        .collect()
 }
 
 /// `[libdefaults]` configuration values.
@@ -489,6 +557,9 @@ pub enum Error {
     /// A config path list contained no usable paths.
     #[error("configuration path list is empty")]
     EmptyConfigPathList,
+    /// No environment or platform-default config file exists.
+    #[error("no default Kerberos configuration file found")]
+    NoDefaultConfig,
     /// A section line was syntactically invalid.
     #[error("invalid {section} section line {line}: {text}")]
     InvalidLine {
@@ -1142,4 +1213,81 @@ fn is_weak_enctype(value: &str) -> bool {
             | "arcfour-hmac-md5-exp"
             | "des"
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Config, Error};
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn load_default_paths_loads_existing_platform_candidate() {
+        let path = temp_file("load-default-paths");
+        std::fs::write(
+            &path,
+            r#"
+[libdefaults]
+ default_realm = DEFAULT.GOKRB5
+"#,
+        )
+        .expect("default config writes");
+
+        let config =
+            Config::load_default_paths([PathBuf::from("/missing/krb5.conf"), path.clone()])
+                .expect("existing default path loads");
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(config.libdefaults.default_realm, "DEFAULT.GOKRB5");
+    }
+
+    #[test]
+    fn load_default_or_parse_paths_uses_embedded_when_no_default_exists() {
+        let config = Config::load_default_or_parse_paths(
+            r#"
+[libdefaults]
+ default_realm = EMBEDDED.GOKRB5
+"#,
+            [PathBuf::from("/missing/krb5.conf")],
+        )
+        .expect("embedded config parses");
+
+        assert_eq!(config.libdefaults.default_realm, "EMBEDDED.GOKRB5");
+    }
+
+    #[test]
+    fn load_default_or_parse_paths_does_not_fallback_when_default_is_invalid() {
+        let path = temp_file("load-default-invalid");
+        std::fs::write(
+            &path,
+            r#"
+[libdefaults]
+ dns_lookup_kdc = maybe
+"#,
+        )
+        .expect("invalid default config writes");
+
+        let error = Config::load_default_or_parse_paths(
+            r#"
+[libdefaults]
+ default_realm = EMBEDDED.GOKRB5
+"#,
+            [path.clone()],
+        )
+        .expect_err("invalid existing default is returned");
+        let _ = std::fs::remove_file(&path);
+
+        assert!(matches!(error, Error::InvalidBoolean(value) if value == "maybe"));
+    }
+
+    fn temp_file(name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "rskrb5-config-unit-{name}-{}-{nanos}",
+            std::process::id()
+        ))
+    }
 }

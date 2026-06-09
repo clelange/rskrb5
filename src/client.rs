@@ -144,6 +144,70 @@ impl Principal {
         Self::new(realm, KRB_NT_PRINCIPAL, [name.into()])
     }
 
+    /// Parse a single-component user principal in `user@REALM` form.
+    ///
+    /// Separator characters may be escaped with `\`, for example
+    /// `user\@name@REALM` parses as user component `user@name`.
+    pub fn parse_user(value: impl AsRef<str>) -> Result<Self, Error> {
+        let value = value.as_ref();
+        let (name, realm) = parse_name_and_realm(value)?;
+        let components = parse_principal_components(value, name)?;
+        if components.len() != 1 {
+            return Err(invalid_principal_name(
+                value,
+                "user principal must contain exactly one name component",
+            ));
+        }
+        Ok(Self::user(realm, components.into_iter().next().unwrap()))
+    }
+
+    /// Parse a host service principal in `service/host@REALM` form.
+    ///
+    /// This creates a name type 2 service principal with components
+    /// `[service, host]`, matching the host-based service shape used by
+    /// native GSSAPI.
+    pub fn parse_service(value: impl AsRef<str>) -> Result<Self, Error> {
+        let value = value.as_ref();
+        let (name, realm) = parse_name_and_realm(value)?;
+        let components = parse_principal_components(value, name)?;
+        if components.len() != 2 {
+            return Err(invalid_principal_name(
+                value,
+                "service principal must contain service and host components",
+            ));
+        }
+        Ok(Self::new(realm, KRB_NT_SRV_INST, components))
+    }
+
+    /// Create a host-based service principal with an empty realm.
+    ///
+    /// High-level clients resolve the empty service realm from
+    /// `[domain_realm]` and then from the client realm.
+    pub fn host_based_service(
+        service: impl AsRef<str>,
+        host: impl AsRef<str>,
+    ) -> Result<Self, Error> {
+        host_based_service_principal(service.as_ref(), host.as_ref(), "")
+    }
+
+    /// Create a host-based service principal in a specific realm.
+    pub fn host_based_service_in_realm(
+        service: impl AsRef<str>,
+        host: impl AsRef<str>,
+        realm: impl AsRef<str>,
+    ) -> Result<Self, Error> {
+        let service = service.as_ref();
+        let host = host.as_ref();
+        let realm = realm.as_ref();
+        if realm.is_empty() {
+            return Err(invalid_principal_name(
+                realm,
+                "host-based service realm is empty",
+            ));
+        }
+        host_based_service_principal(service, host, realm)
+    }
+
     /// Create the TGT service principal for a realm.
     pub fn tgt_service(realm: impl Into<String>) -> Self {
         let realm = realm.into();
@@ -153,6 +217,124 @@ impl Principal {
     /// Principal components joined by `/`.
     pub fn name(&self) -> String {
         self.components.join("/")
+    }
+}
+
+fn host_based_service_principal(
+    service: &str,
+    host: &str,
+    realm: &str,
+) -> Result<Principal, Error> {
+    if service.is_empty() {
+        return Err(invalid_principal_name(
+            service,
+            "host-based service name is empty",
+        ));
+    }
+    if host.is_empty() {
+        return Err(invalid_principal_name(
+            host,
+            "host-based service host is empty",
+        ));
+    }
+    Ok(Principal::new(
+        realm,
+        KRB_NT_SRV_INST,
+        [service.to_owned(), host.to_owned()],
+    ))
+}
+
+fn parse_name_and_realm(value: &str) -> Result<(&str, String), Error> {
+    if value.is_empty() {
+        return Err(invalid_principal_name(value, "principal name is empty"));
+    }
+    let separators = unescaped_separator_indices(value, '@');
+    let [separator] = separators.as_slice() else {
+        return Err(invalid_principal_name(
+            value,
+            if separators.is_empty() {
+                "principal realm separator is missing"
+            } else {
+                "principal contains more than one unescaped realm separator"
+            },
+        ));
+    };
+    let (name, realm) = value.split_at(*separator);
+    let realm = &realm['@'.len_utf8()..];
+    if name.is_empty() {
+        return Err(invalid_principal_name(
+            value,
+            "principal name component is empty",
+        ));
+    }
+    let realm = unescape_principal_component(value, realm)?;
+    if realm.is_empty() {
+        return Err(invalid_principal_name(value, "principal realm is empty"));
+    }
+    Ok((name, realm))
+}
+
+fn parse_principal_components(value: &str, name: &str) -> Result<Vec<String>, Error> {
+    let mut components = Vec::new();
+    let mut start = 0usize;
+    for separator in unescaped_separator_indices(name, '/') {
+        components.push(unescape_principal_component(
+            value,
+            &name[start..separator],
+        )?);
+        start = separator + '/'.len_utf8();
+    }
+    components.push(unescape_principal_component(value, &name[start..])?);
+    if components.iter().any(String::is_empty) {
+        return Err(invalid_principal_name(
+            value,
+            "principal contains an empty name component",
+        ));
+    }
+    Ok(components)
+}
+
+fn unescaped_separator_indices(value: &str, separator: char) -> Vec<usize> {
+    let mut escaped = false;
+    let mut positions = Vec::new();
+    for (index, ch) in value.char_indices() {
+        if escaped {
+            escaped = false;
+        } else if ch == '\\' {
+            escaped = true;
+        } else if ch == separator {
+            positions.push(index);
+        }
+    }
+    positions
+}
+
+fn unescape_principal_component(value: &str, component: &str) -> Result<String, Error> {
+    let mut escaped = false;
+    let mut out = String::with_capacity(component.len());
+    for ch in component.chars() {
+        if escaped {
+            out.push(ch);
+            escaped = false;
+        } else if ch == '\\' {
+            escaped = true;
+        } else {
+            out.push(ch);
+        }
+    }
+    if escaped {
+        return Err(invalid_principal_name(
+            value,
+            "principal contains a trailing escape character",
+        ));
+    }
+    Ok(out)
+}
+
+fn invalid_principal_name(value: &str, reason: &'static str) -> Error {
+    Error::InvalidPrincipalName {
+        value: value.to_owned(),
+        reason,
     }
 }
 
@@ -1804,6 +1986,227 @@ impl TokioClient {
             }
         }
     }
+}
+
+/// Small client API for HTTP Negotiate/SPNEGO initiator headers.
+///
+/// This wrapper keeps the stable HTTP-Negotiate surface narrow while reusing
+/// [`TokioClient`] for ticket acquisition, cache reuse, and SPNEGO token
+/// construction. Advanced Kerberos flows remain available on `TokioClient`.
+#[cfg(all(feature = "tokio", feature = "spnego"))]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NegotiateClient {
+    inner: TokioClient,
+}
+
+#[cfg(all(feature = "tokio", feature = "spnego"))]
+impl NegotiateClient {
+    /// Wrap an existing high-level Tokio client.
+    pub fn from_tokio_client(client: TokioClient) -> Self {
+        Self { inner: client }
+    }
+
+    /// Create a password-backed Negotiate client using automatic UDP/TCP KDC transport.
+    pub fn with_password(config: Config, client: Principal, password: impl Into<Vec<u8>>) -> Self {
+        Self::from_tokio_client(TokioClient::with_password(
+            config,
+            KdcProtocol::Auto,
+            client,
+            password,
+        ))
+    }
+
+    /// Create a keytab-backed Negotiate client using automatic UDP/TCP KDC transport.
+    pub fn with_keytab(config: Config, client: Principal, keytab: Keytab) -> Self {
+        Self::from_tokio_client(TokioClient::with_keytab(
+            config,
+            KdcProtocol::Auto,
+            client,
+            keytab,
+        ))
+    }
+
+    /// Create a keytab-backed Negotiate client by loading a file-backed keytab name.
+    pub fn with_keytab_name(
+        config: Config,
+        client: Principal,
+        keytab_name: impl AsRef<str>,
+    ) -> Result<Self, Error> {
+        Ok(Self::from_tokio_client(TokioClient::with_keytab_name(
+            config,
+            KdcProtocol::Auto,
+            client,
+            keytab_name,
+        )?))
+    }
+
+    /// Create a cache-only Negotiate client by loading a ccache name.
+    pub fn from_ccache_name(config: Config, cache_name: impl AsRef<str>) -> Result<Self, Error> {
+        Ok(Self::from_tokio_client(TokioClient::from_ccache_name(
+            config,
+            KdcProtocol::Auto,
+            cache_name,
+        )?))
+    }
+
+    /// Create a cache-only Negotiate client from the default credential cache.
+    ///
+    /// `KRB5CCNAME` takes precedence when set. Otherwise this falls back to
+    /// `config.libdefaults.default_ccache_name`.
+    pub fn from_default_ccache(config: Config) -> Result<Self, Error> {
+        Ok(Self::from_tokio_client(TokioClient::from_default_ccache(
+            config,
+            KdcProtocol::Auto,
+        )?))
+    }
+
+    /// Create a cache-only Negotiate client by loading the cache named by `KRB5CCNAME`.
+    pub fn from_ccache_env(config: Config) -> Result<Self, Error> {
+        Ok(Self::from_tokio_client(TokioClient::from_ccache_env(
+            config,
+            KdcProtocol::Auto,
+        )?))
+    }
+
+    /// Borrow the wrapped `TokioClient`.
+    pub fn inner(&self) -> &TokioClient {
+        &self.inner
+    }
+
+    /// Mutably borrow the wrapped `TokioClient`.
+    pub fn inner_mut(&mut self) -> &mut TokioClient {
+        &mut self.inner
+    }
+
+    /// Consume this wrapper and return the wrapped `TokioClient`.
+    pub fn into_inner(self) -> TokioClient {
+        self.inner
+    }
+
+    /// Build an HTTP `Authorization` header for a Kerberos service principal.
+    pub async fn authorization_header(&mut self, service: Principal) -> Result<String, Error> {
+        self.inner.spnego_header(service).await
+    }
+
+    /// Build an HTTP `Authorization` header for a host-based service.
+    ///
+    /// The service realm is left empty so `TokioClient` can resolve it from
+    /// `[domain_realm]` or fall back to the client realm.
+    pub async fn authorization_header_for_host(
+        &mut self,
+        service: impl AsRef<str>,
+        host: impl AsRef<str>,
+    ) -> Result<String, Error> {
+        self.authorization_header(Principal::host_based_service(service, host)?)
+            .await
+    }
+}
+
+/// Blocking wrapper for synchronous CLI consumers of HTTP Negotiate.
+///
+/// Async applications should use [`NegotiateClient`] directly. This type owns a
+/// small current-thread Tokio runtime so callers can generate headers without
+/// managing a runtime.
+#[cfg(all(feature = "tokio", feature = "spnego"))]
+pub struct BlockingNegotiateClient {
+    runtime: tokio::runtime::Runtime,
+    client: NegotiateClient,
+}
+
+#[cfg(all(feature = "tokio", feature = "spnego"))]
+impl fmt::Debug for BlockingNegotiateClient {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("BlockingNegotiateClient")
+            .field("client", &self.client)
+            .finish_non_exhaustive()
+    }
+}
+
+#[cfg(all(feature = "tokio", feature = "spnego"))]
+impl BlockingNegotiateClient {
+    /// Wrap an existing Negotiate client.
+    pub fn new(client: NegotiateClient) -> Result<Self, Error> {
+        Ok(Self {
+            runtime: blocking_runtime()?,
+            client,
+        })
+    }
+
+    /// Create a password-backed blocking Negotiate client.
+    pub fn with_password(
+        config: Config,
+        client: Principal,
+        password: impl Into<Vec<u8>>,
+    ) -> Result<Self, Error> {
+        Self::new(NegotiateClient::with_password(config, client, password))
+    }
+
+    /// Create a keytab-backed blocking Negotiate client.
+    pub fn with_keytab(config: Config, client: Principal, keytab: Keytab) -> Result<Self, Error> {
+        Self::new(NegotiateClient::with_keytab(config, client, keytab))
+    }
+
+    /// Create a keytab-backed blocking Negotiate client by loading a file-backed keytab name.
+    pub fn with_keytab_name(
+        config: Config,
+        client: Principal,
+        keytab_name: impl AsRef<str>,
+    ) -> Result<Self, Error> {
+        Self::new(NegotiateClient::with_keytab_name(
+            config,
+            client,
+            keytab_name,
+        )?)
+    }
+
+    /// Create a cache-only blocking Negotiate client by loading a ccache name.
+    pub fn from_ccache_name(config: Config, cache_name: impl AsRef<str>) -> Result<Self, Error> {
+        Self::new(NegotiateClient::from_ccache_name(config, cache_name)?)
+    }
+
+    /// Create a cache-only blocking Negotiate client from the default credential cache.
+    pub fn from_default_ccache(config: Config) -> Result<Self, Error> {
+        Self::new(NegotiateClient::from_default_ccache(config)?)
+    }
+
+    /// Create a cache-only blocking Negotiate client by loading the cache named by `KRB5CCNAME`.
+    pub fn from_ccache_env(config: Config) -> Result<Self, Error> {
+        Self::new(NegotiateClient::from_ccache_env(config)?)
+    }
+
+    /// Borrow the wrapped async client.
+    pub fn client(&self) -> &NegotiateClient {
+        &self.client
+    }
+
+    /// Mutably borrow the wrapped async client.
+    pub fn client_mut(&mut self) -> &mut NegotiateClient {
+        &mut self.client
+    }
+
+    /// Build an HTTP `Authorization` header for a Kerberos service principal.
+    pub fn authorization_header(&mut self, service: Principal) -> Result<String, Error> {
+        self.runtime
+            .block_on(self.client.authorization_header(service))
+    }
+
+    /// Build an HTTP `Authorization` header for a host-based service.
+    pub fn authorization_header_for_host(
+        &mut self,
+        service: impl AsRef<str>,
+        host: impl AsRef<str>,
+    ) -> Result<String, Error> {
+        self.runtime
+            .block_on(self.client.authorization_header_for_host(service, host))
+    }
+}
+
+#[cfg(all(feature = "tokio", feature = "spnego"))]
+fn blocking_runtime() -> Result<tokio::runtime::Runtime, Error> {
+    Ok(tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .enable_time()
+        .build()?)
 }
 
 #[cfg(all(feature = "tokio", feature = "serde"))]
@@ -4021,6 +4424,15 @@ pub enum Error {
     /// A Kerberos string value could not be constructed.
     #[error("invalid Kerberos string value: {0}")]
     InvalidKerberosString(String),
+
+    /// A human-readable Kerberos principal name was invalid.
+    #[error("invalid Kerberos principal name {value:?}: {reason}")]
+    InvalidPrincipalName {
+        /// Input principal string.
+        value: String,
+        /// Validation failure.
+        reason: &'static str,
+    },
 
     /// Message field did not contain the expected value.
     #[error("invalid {field}: expected {expected}, got {actual}")]

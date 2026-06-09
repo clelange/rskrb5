@@ -225,6 +225,33 @@ fn loads_config_path_list_from_env() {
 }
 
 #[test]
+fn load_default_prefers_krb5_config_env() {
+    let path = temp_file("load-default-env");
+    std::fs::write(
+        &path,
+        r#"
+[libdefaults]
+ default_realm = ENV.GOKRB5
+"#,
+    )
+    .expect("env config writes");
+    let _env = common::EnvVarGuard::set_krb5_config(&path);
+
+    let config = Config::load_default().expect("default config loads from env");
+    let fallback = Config::load_default_or_parse(
+        r#"
+[libdefaults]
+ default_realm = EMBEDDED.GOKRB5
+"#,
+    )
+    .expect("default-or-embedded config loads from env");
+    let _ = std::fs::remove_file(&path);
+
+    assert_eq!(config.libdefaults.default_realm, "ENV.GOKRB5");
+    assert_eq!(fallback.libdefaults.default_realm, "ENV.GOKRB5");
+}
+
+#[test]
 fn rejects_empty_config_path_list() {
     assert!(matches!(
         Config::load_paths(Vec::<PathBuf>::new()).expect_err("empty path list rejected"),
