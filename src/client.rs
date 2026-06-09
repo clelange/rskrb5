@@ -546,6 +546,15 @@ impl AsRepSession {
 /// be written to the existing ccache credential representation.
 pub type TgsRepSession = AsRepSession;
 
+/// Result of a referral-following TGS exchange.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReferralTgsResult {
+    /// Final service ticket.
+    pub ticket: TgsRepSession,
+    /// Intermediate referral TGTs acquired while reaching the service realm.
+    pub referral_tgts: Vec<AsRepSession>,
+}
+
 /// Runtime-neutral boundary for KDC request/response transport.
 pub trait KdcTransport {
     /// Send an encoded KDC request and return the encoded KDC response.
@@ -661,6 +670,8 @@ pub struct TokioClientDiagnostics {
     pub credential_source: String,
     /// Whether the client currently holds a TGT session.
     pub has_tgt: bool,
+    /// Number of cached TGT sessions.
+    pub tgt_session_count: usize,
     /// Number of cached service tickets.
     pub service_ticket_cache_count: usize,
     /// Configured default ticket enctype IDs.
@@ -697,6 +708,7 @@ pub struct TokioClient {
     client: Principal,
     credentials: Option<TokioClientCredentials>,
     tgt: Option<AsRepSession>,
+    tgt_sessions: BTreeMap<String, AsRepSession>,
     service_tickets: BTreeMap<String, TgsRepSession>,
     assume_preauthentication: bool,
 }
@@ -711,6 +723,7 @@ impl fmt::Debug for TokioClient {
             .field("client", &self.client)
             .field("credentials", &self.credentials)
             .field("has_tgt", &self.tgt.is_some())
+            .field("tgt_sessions", &self.tgt_sessions.len())
             .field("cached_service_tickets", &self.service_tickets.len())
             .field("assume_preauthentication", &self.assume_preauthentication)
             .finish()
@@ -786,7 +799,7 @@ impl TokioClient {
             }
             let session = ccache_credential_session(credential);
             if is_tgt_principal(&session.service) {
-                kerberos.tgt = Some(preferred_session_at(kerberos.tgt.take(), session, now));
+                let _ = kerberos.cache_tgt_session_at(session, now);
             } else {
                 kerberos.cache_service_ticket(session);
             }
@@ -797,7 +810,7 @@ impl TokioClient {
     /// Create a cache-only client from a known TGT session.
     pub fn from_tgt_session(config: Config, protocol: KdcProtocol, tgt: AsRepSession) -> Self {
         let mut kerberos = Self::new(config, protocol, tgt.client.clone(), None);
-        kerberos.tgt = Some(tgt);
+        let _ = kerberos.cache_tgt_session(tgt);
         kerberos
     }
 
@@ -861,6 +874,7 @@ impl TokioClient {
             client,
             credentials,
             tgt: None,
+            tgt_sessions: BTreeMap::new(),
             service_tickets: BTreeMap::new(),
             assume_preauthentication: false,
         }
@@ -971,6 +985,7 @@ impl TokioClient {
             protocol: protocol_label(self.protocol).to_owned(),
             credential_source: credential_source(self.credentials.as_ref()).to_owned(),
             has_tgt: self.tgt.is_some(),
+            tgt_session_count: self.tgt_sessions.len(),
             service_ticket_cache_count: self.service_tickets.len(),
             default_tkt_enctypes: self.config.libdefaults.default_tkt_enctype_ids.clone(),
             preferred_preauth_types: self.config.libdefaults.preferred_preauth_types.clone(),
@@ -995,6 +1010,16 @@ impl TokioClient {
     /// Current TGT session, when logged in or loaded from cache.
     pub fn tgt_session(&self) -> Option<&AsRepSession> {
         self.tgt.as_ref()
+    }
+
+    /// Number of cached TGT sessions keyed by target realm.
+    pub fn tgt_session_count(&self) -> usize {
+        self.tgt_sessions.len()
+    }
+
+    /// Cached TGT session for a target realm, when present.
+    pub fn tgt_session_for_realm(&self, realm: &str) -> Option<&AsRepSession> {
+        self.tgt_sessions.get(realm)
     }
 
     /// Number of cached service tickets.
@@ -1026,13 +1051,18 @@ impl TokioClient {
     pub fn destroy(&mut self) {
         self.credentials = None;
         self.tgt = None;
+        self.tgt_sessions.clear();
         self.service_tickets.clear();
     }
 
     /// Return public TGT session metadata as pretty-printed JSON.
     #[cfg(feature = "serde")]
     pub fn sessions_json(&self) -> Result<String, serde_json::Error> {
-        let sessions = self.tgt.iter().map(session_json_entry).collect::<Vec<_>>();
+        let sessions = self
+            .tgt_sessions
+            .values()
+            .map(session_json_entry)
+            .collect::<Vec<_>>();
         serde_json::to_string_pretty(&sessions)
     }
 
@@ -1053,6 +1083,26 @@ impl TokioClient {
         let ticket =
             preferred_session_at(self.service_tickets.remove(&key), ticket, SystemTime::now());
         self.service_tickets.insert(key, ticket);
+    }
+
+    /// Insert or replace a TGT session in the realm-keyed session cache.
+    pub fn cache_tgt_session(&mut self, tgt: AsRepSession) -> Result<(), Error> {
+        self.cache_tgt_session_at(tgt, SystemTime::now())
+    }
+
+    fn cache_tgt_session_at(&mut self, tgt: AsRepSession, now: SystemTime) -> Result<(), Error> {
+        let realm = tgt_realm(&tgt).ok_or_else(|| Error::InvalidTgtSession {
+            service: tgt.service.name(),
+        })?;
+        let selected = preferred_session_at(self.tgt_sessions.remove(&realm), tgt, now);
+        if realm == self.client.realm {
+            let primary = preferred_session_at(self.tgt.take(), selected, now);
+            self.tgt = Some(primary.clone());
+            self.tgt_sessions.insert(realm, primary);
+        } else {
+            self.tgt_sessions.insert(realm, selected);
+        }
+        Ok(())
     }
 
     /// Ensure this client has a valid TGT, reusing an existing TGT when possible.
@@ -1111,7 +1161,8 @@ impl TokioClient {
             }
         };
 
-        self.tgt = Some(session);
+        self.tgt_sessions.clear();
+        self.cache_tgt_session(session)?;
         self.service_tickets.clear();
         Ok(self.tgt.as_ref().expect("TGT was just inserted"))
     }
@@ -1123,7 +1174,7 @@ impl TokioClient {
             .transport
             .renew_tgt_with_config(&self.config, self.protocol, &tgt, self.tgs_req_options()?)
             .await?;
-        self.tgt = Some(renewed);
+        self.cache_tgt_session(renewed)?;
         self.service_tickets.clear();
         Ok(self.tgt.as_ref().expect("TGT was just inserted"))
     }
@@ -1153,10 +1204,13 @@ impl TokioClient {
             }
         }
 
-        let tgt = self.ensure_tgt().await?;
-        let ticket = self
+        let tgt = match self.cached_tgt_session_for_realm(&service.realm) {
+            Some(tgt) => tgt,
+            None => self.ensure_tgt().await?,
+        };
+        let result = self
             .transport
-            .get_service_ticket_with_referrals(
+            .get_service_ticket_with_referral_trace(
                 &self.config,
                 self.protocol,
                 &tgt,
@@ -1164,6 +1218,10 @@ impl TokioClient {
                 self.tgs_req_options()?,
             )
             .await?;
+        for referral_tgt in result.referral_tgts {
+            self.cache_tgt_session(referral_tgt)?;
+        }
+        let ticket = result.ticket;
         self.cache_service_ticket(ticket.clone());
         Ok(ticket)
     }
@@ -1315,15 +1373,28 @@ impl TokioClient {
     }
 
     fn ccache_credentials(&self) -> Result<Vec<ccache::Credential>, Error> {
-        let mut credentials =
-            Vec::with_capacity(usize::from(self.tgt.is_some()) + self.service_tickets.len());
-        if let Some(tgt) = &self.tgt {
-            credentials.push(tgt.to_ccache_credential()?);
+        let mut credentials = Vec::with_capacity(
+            self.tgt_sessions.len().max(usize::from(self.tgt.is_some()))
+                + self.service_tickets.len(),
+        );
+        if self.tgt_sessions.is_empty() {
+            if let Some(tgt) = &self.tgt {
+                credentials.push(tgt.to_ccache_credential()?);
+            }
+        } else {
+            for tgt in self.tgt_sessions.values() {
+                credentials.push(tgt.to_ccache_credential()?);
+            }
         }
         for ticket in self.service_tickets.values() {
             credentials.push(ticket.to_ccache_credential()?);
         }
         Ok(credentials)
+    }
+
+    fn cached_tgt_session_for_realm(&self, realm: &str) -> Option<AsRepSession> {
+        let tgt = self.tgt_sessions.get(realm)?;
+        session_valid_at(tgt, SystemTime::now()).then(|| tgt.clone())
     }
 
     async fn diagnostic_kdc_endpoints(
@@ -1932,7 +2003,22 @@ impl TokioKdcTransport {
         service: Principal,
         options: TgsReqOptions,
     ) -> Result<TgsRepSession, Error> {
-        self.get_service_ticket_with_referrals_limit(
+        Ok(self
+            .get_service_ticket_with_referral_trace(config, protocol, tgt, service, options)
+            .await?
+            .ticket)
+    }
+
+    /// Acquire a service ticket and return intermediate referral TGTs.
+    pub async fn get_service_ticket_with_referral_trace(
+        &self,
+        config: &Config,
+        protocol: KdcProtocol,
+        tgt: &AsRepSession,
+        service: Principal,
+        options: TgsReqOptions,
+    ) -> Result<ReferralTgsResult, Error> {
+        self.get_service_ticket_with_referral_trace_limit(
             config,
             protocol,
             tgt,
@@ -1949,10 +2035,33 @@ impl TokioKdcTransport {
         config: &Config,
         protocol: KdcProtocol,
         tgt: &AsRepSession,
-        mut service: Principal,
+        service: Principal,
         options: TgsReqOptions,
         max_referrals: usize,
     ) -> Result<TgsRepSession, Error> {
+        Ok(self
+            .get_service_ticket_with_referral_trace_limit(
+                config,
+                protocol,
+                tgt,
+                service,
+                options,
+                max_referrals,
+            )
+            .await?
+            .ticket)
+    }
+
+    /// Acquire a service ticket with an explicit referral limit, returning the referral trace.
+    pub async fn get_service_ticket_with_referral_trace_limit(
+        &self,
+        config: &Config,
+        protocol: KdcProtocol,
+        tgt: &AsRepSession,
+        mut service: Principal,
+        options: TgsReqOptions,
+        max_referrals: usize,
+    ) -> Result<ReferralTgsResult, Error> {
         let mut current_tgt = tgt.clone();
         let mut current_realm =
             tgt_realm(&current_tgt).ok_or_else(|| Error::InvalidReferralTicket {
@@ -1963,6 +2072,7 @@ impl TokioKdcTransport {
                 service_realm(config, &service).unwrap_or_else(|| current_realm.clone());
         }
         let target_realm = service.realm.clone();
+        let mut referral_tgts = Vec::new();
 
         for referrals in 0..=max_referrals {
             let requested_service = if current_realm == target_realm {
@@ -1987,7 +2097,10 @@ impl TokioKdcTransport {
                 process_tgs_rep_with_referral(&request, &response, &current_tgt.session_key)?;
 
             if principal_matches(&ticket.service, &service) {
-                return Ok(ticket);
+                return Ok(ReferralTgsResult {
+                    ticket,
+                    referral_tgts,
+                });
             }
 
             let referred_realm =
@@ -2002,6 +2115,7 @@ impl TokioKdcTransport {
             }
 
             current_realm = referred_realm;
+            referral_tgts.push(ticket.clone());
             current_tgt = ticket;
 
             if referrals == max_referrals {

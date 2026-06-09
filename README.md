@@ -36,12 +36,13 @@ pure-Rust Kerberos library.
   KDC transport with response-too-big fallback and Docker auto-protocol AS/TGS
   coverage, configured/DNS SRV kpasswd transport, typed kpasswd request/reply/result exchanges, complete kpasswd request assembly with generated reply keys, kpasswd AP-REP validation, and a high-level Tokio password-change helper with initial kadmin/changepw ticket acquisition and credential update, `krb5.conf` configured KDC
   discovery, DNS SRV KDC discovery, AS-REP and TGS-REP encrypted-part decryption and validation,
-  generic AP-REQ construction, cross-realm TGS referral following, renewable AS/TGS request flags, explicit
+  generic AP-REQ construction, cross-realm TGS referral following with cached
+  referral TGT sessions, renewable AS/TGS request flags, explicit
   TGT/service-ticket renewal helpers, Docker MIT KDC AS/TGS login, TGT
   renewal, and gated kpasswd change/restore coverage across AES-SHA1, AES-SHA2, DES3, and RC4-HMAC, per-enctype
   keytab AS/TGS integration coverage, ccache credential export/write-back, and a high-level
   Tokio client with password/keytab/ccache credential sources,
-  credential attachment, configuration validation, TGT/session renewal, affirm-login reuse,
+  credential attachment, configuration validation, multi-realm TGT/session caching, renewal, affirm-login reuse,
   destroy semantics, service-ticket caching/lookup/removal, and gokrb5-shaped JSON
   session/cache snapshots plus structured diagnostics; service validation covers
   gokrb5-generated AP-REQ fixtures, service-ticket decryption, authenticator

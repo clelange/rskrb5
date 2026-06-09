@@ -945,6 +945,7 @@ fn tokio_client_destroy_clears_credentials_sessions_and_cache() {
     client.destroy();
 
     assert!(client.tgt_session().is_none());
+    assert_eq!(client.tgt_session_count(), 0);
     assert_eq!(client.cached_service_ticket_count(), 0);
     assert!(
         client
@@ -1283,6 +1284,7 @@ fn tokio_client_diagnostics_reports_keytab_and_kdc_state() {
     assert_eq!(diagnostics.protocol, "Auto");
     assert_eq!(diagnostics.credential_source, "keytab");
     assert!(!diagnostics.has_tgt);
+    assert_eq!(diagnostics.tgt_session_count, 0);
     assert_eq!(diagnostics.service_ticket_cache_count, 0);
     assert_eq!(diagnostics.default_tkt_enctypes, [18, 17]);
     assert_eq!(diagnostics.preferred_preauth_types, [18, 17]);
@@ -1469,6 +1471,44 @@ fn tokio_client_exports_and_saves_ccache() {
     let loaded = ccache::CCache::load(&path).expect("saved ccache loads");
     let _ = std::fs::remove_file(&path);
     assert_eq!(loaded, cache);
+}
+
+#[cfg(feature = "tokio")]
+#[test]
+fn tokio_client_tracks_multiple_tgt_sessions() {
+    let primary_tgt = sample_tgt_session();
+    let referral_tgt = sample_referral_tgt_session("RESDOM.GOKRB5");
+    let mut client =
+        TokioClient::from_tgt_session(Config::new(), KdcProtocol::Tcp, primary_tgt.clone());
+
+    client
+        .cache_tgt_session(referral_tgt.clone())
+        .expect("referral TGT caches");
+
+    assert_eq!(client.tgt_session_count(), 2);
+    assert_eq!(
+        client
+            .tgt_session_for_realm("TEST.GOKRB5")
+            .expect("primary TGT is cached")
+            .service,
+        primary_tgt.service
+    );
+    assert_eq!(
+        client
+            .tgt_session_for_realm("RESDOM.GOKRB5")
+            .expect("referral TGT is cached")
+            .service,
+        referral_tgt.service
+    );
+
+    let cache = client.to_ccache().expect("client exports ccache");
+    assert_eq!(cache.entries().len(), 2);
+    assert!(cache.contains_server(&["krbtgt", "TEST.GOKRB5"]));
+    assert!(cache.contains_server(&["krbtgt", "RESDOM.GOKRB5"]));
+
+    let reloaded = TokioClient::from_ccache(Config::new(), KdcProtocol::Tcp, &cache);
+    assert_eq!(reloaded.tgt_session_count(), 2);
+    assert!(reloaded.tgt_session_for_realm("RESDOM.GOKRB5").is_some());
 }
 
 #[cfg(all(feature = "tokio", feature = "serde"))]
@@ -2014,6 +2054,14 @@ fn sample_tgt_session() -> rskrb5::client::AsRepSession {
     let request = sample_request();
     let response = synthetic_as_rep(&request, request.nonce);
     process_as_rep(&request, &response, &reply_key()).expect("sample TGT validates")
+}
+
+fn sample_referral_tgt_session(realm: &str) -> rskrb5::client::AsRepSession {
+    let mut tgt = sample_tgt_session();
+    tgt.service = Principal::new("TEST.GOKRB5", 2, ["krbtgt".to_owned(), realm.to_owned()]);
+    tgt.session_key.value = vec![0x9a; 32];
+    tgt.ticket = format!("referral-ticket-{realm}").into_bytes();
+    tgt
 }
 
 fn sample_tgs_request(tgt: &rskrb5::client::AsRepSession) -> BuiltTgsReq {

@@ -812,6 +812,45 @@ fn docker_mit_kdc_tgs_referral_to_resource_domain() -> Result<(), Box<dyn Error>
     })
 }
 
+#[test]
+fn docker_mit_kdc_tokio_client_caches_referral_tgt() -> Result<(), Box<dyn Error>> {
+    if std::env::var("INTEGRATION").as_deref() != Ok("1") {
+        eprintln!("skipping Docker KDC integration test; set INTEGRATION=1 to enable");
+        return Ok(());
+    }
+    let _guard = INTEGRATION_LOCK.lock().expect("integration test lock");
+
+    runtime().block_on(async {
+        let config = configured_kdc_config()?;
+
+        for protocol in [KdcProtocol::Udp, KdcProtocol::Tcp] {
+            eprintln!("running high-level Tokio client TGS referral cache over {protocol:?}");
+            let mut client = TokioClient::with_password(
+                config.clone(),
+                protocol,
+                Principal::user(REALM, USER),
+                PASSWORD,
+            )
+            .with_transport(TokioKdcTransport::new().with_timeout(Duration::from_secs(10)));
+
+            let service = resdom_service_principal();
+            let first = client.get_service_ticket(service.clone()).await?;
+            let second = client.get_service_ticket(service.clone()).await?;
+
+            assert_eq!(first, second);
+            assert_eq!(first.client, Principal::user(REALM, USER));
+            assert_eq!(first.service, service);
+            assert_eq!(first.session_key.etype, AES256_ETYPE);
+            assert!(client.tgt_session().is_some());
+            assert!(client.tgt_session_for_realm(RESDOM_REALM).is_some());
+            assert_eq!(client.tgt_session_count(), 2);
+            assert_eq!(client.cached_service_ticket_count(), 1);
+        }
+
+        Ok::<_, Box<dyn Error>>(())
+    })
+}
+
 #[cfg(feature = "spnego")]
 #[test]
 fn docker_mit_kdc_spnego_header_round_trip_through_service_validator() -> Result<(), Box<dyn Error>>
