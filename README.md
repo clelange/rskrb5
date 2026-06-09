@@ -69,7 +69,9 @@ pure-Rust Kerberos library.
   info, device info, compressed and uncompressed client/device claims info,
   signature zeroing, authorization-data extraction, resource group SID
   expansion, gokrb5-style AD credential summaries, and AES service checksum
-  verification.
+  verification, plus gated `TESTAD=1` keytab login, no-preauth login,
+  user-domain service-ticket/PAC, and resource-trust service-ticket/PAC
+  parity tests.
 - `sspi-rs` is treated as a mature Negotiate/Kerberos collaboration or facade
   candidate.
 - `krb5-rs` is not used as a base implementation because the published crate is
@@ -88,8 +90,8 @@ for the translated gokrb5 fixtures and Docker MIT KDC tests in this repository.
 
 Known gaps before a public crates.io preview include credential cache platform
 stores such as API, KCM, KEYRING, and MSLSA; FAST, PKINIT,
-S4U2Self/S4U2Proxy client flows; full Active Directory live-test coverage;
-system GSSAPI/SSPI facade integration; and a declared stable API surface.
+S4U2Self/S4U2Proxy client flows; maintained Active Directory lab coverage in
+CI; system GSSAPI/SSPI facade integration; and a declared stable API surface.
 
 Generate the compatibility report:
 
@@ -130,6 +132,11 @@ input because it temporarily changes the Docker test principal password before
 restoring it. Use `TEST_KPASSWD_ADDR`, `TEST_KPASSWD_PORT`, and
 `TEST_KPASSWD_SADDR` when the password-change service or sender address differs
 from the localhost defaults.
+
+The Active Directory integration tests mirror gokrb5's `TESTAD=1` cases and
+default to the gokrb5 lab addresses `192.168.88.100:88` and
+`192.168.88.101:88`. Use `TEST_AD_USER_KDC_ADDR` and
+`TEST_AD_RESOURCE_KDC_ADDR` to point them at another AD test environment.
 
 ## Distribution Direction
 
