@@ -700,6 +700,28 @@ impl TokioClientDiagnostics {
     }
 }
 
+/// Counts of unusable sessions removed from a Tokio client cache.
+#[cfg(feature = "tokio")]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "PascalCase"))]
+pub struct PrunedSessions {
+    /// Whether the primary TGT was removed.
+    pub primary_tgt: bool,
+    /// Number of realm-keyed TGT sessions removed.
+    pub tgt_sessions: usize,
+    /// Number of service tickets removed.
+    pub service_tickets: usize,
+}
+
+#[cfg(feature = "tokio")]
+impl PrunedSessions {
+    /// Whether no sessions were removed.
+    pub fn is_empty(&self) -> bool {
+        !self.primary_tgt && self.tgt_sessions == 0 && self.service_tickets == 0
+    }
+}
+
 /// Handle for a background Tokio TGT auto-renewal task.
 #[cfg(feature = "tokio")]
 #[derive(Debug)]
@@ -1200,6 +1222,35 @@ impl TokioClient {
         let service = self.resolve_service_principal(service);
         let key = service_cache_key(&service);
         self.service_tickets.remove(&key)
+    }
+
+    /// Drop expired, non-renewable TGT and service-ticket sessions from local caches.
+    pub fn prune_unusable_sessions(&mut self) -> PrunedSessions {
+        self.prune_unusable_sessions_at(SystemTime::now())
+    }
+
+    fn prune_unusable_sessions_at(&mut self, now: SystemTime) -> PrunedSessions {
+        let primary_tgt = self
+            .tgt
+            .as_ref()
+            .is_some_and(|tgt| !session_usable_at(tgt, now));
+        if primary_tgt {
+            self.tgt = None;
+        }
+
+        let tgt_session_count = self.tgt_sessions.len();
+        self.tgt_sessions
+            .retain(|_, session| session_usable_at(session, now));
+
+        let service_ticket_count = self.service_tickets.len();
+        self.service_tickets
+            .retain(|_, session| session_usable_at(session, now));
+
+        PrunedSessions {
+            primary_tgt,
+            tgt_sessions: tgt_session_count - self.tgt_sessions.len(),
+            service_tickets: service_ticket_count - self.service_tickets.len(),
+        }
     }
 
     /// Drop live credentials, the TGT session, and all cached service tickets.
@@ -4551,6 +4602,11 @@ fn service_cache_key(service: &Principal) -> String {
 #[cfg(feature = "tokio")]
 fn session_valid_at(session: &AsRepSession, now: SystemTime) -> bool {
     session.start_time <= now && now < session.end_time
+}
+
+#[cfg(feature = "tokio")]
+fn session_usable_at(session: &AsRepSession, now: SystemTime) -> bool {
+    session_valid_at(session, now) || session_renewable_at(session, now)
 }
 
 #[cfg(feature = "tokio")]

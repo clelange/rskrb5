@@ -23,7 +23,7 @@ use rskrb5::client::{
     select_preauth_key_info, verify_kpasswd_ap_rep,
 };
 #[cfg(feature = "tokio")]
-use rskrb5::client::{KdcProtocol, TokioClient};
+use rskrb5::client::{KdcProtocol, PrunedSessions, TokioClient};
 #[cfg(feature = "tokio")]
 use rskrb5::config::Config;
 use rskrb5::crypto::AesSha1Etype;
@@ -931,6 +931,97 @@ fn tokio_client_cached_service_ticket_resolves_empty_realm_and_ignores_expired_e
             .is_some()
     );
     assert_eq!(client.cached_service_ticket_count(), 0);
+}
+
+#[cfg(feature = "tokio")]
+#[test]
+fn tokio_client_prunes_unusable_sessions_but_keeps_renewable_entries() {
+    let tgt = current_tgt_session(10, 50);
+    let now = SystemTime::now();
+    let expired_start = now
+        .checked_sub(Duration::from_secs(2 * 60 * 60))
+        .expect("expired start time");
+    let expired_end = now
+        .checked_sub(Duration::from_secs(60 * 60))
+        .expect("expired end time");
+    let future_renew_till = now
+        .checked_add(Duration::from_secs(60 * 60))
+        .expect("renew-till time");
+    let mut client = TokioClient::from_tgt_session(Config::new(), KdcProtocol::Tcp, tgt.clone());
+
+    let mut expired_referral_tgt = sample_referral_tgt_session("EXPIRED.GOKRB5");
+    expired_referral_tgt.auth_time = expired_start;
+    expired_referral_tgt.start_time = expired_start;
+    expired_referral_tgt.end_time = expired_end;
+    expired_referral_tgt.renew_till = None;
+    client
+        .cache_tgt_session(expired_referral_tgt)
+        .expect("expired referral TGT caches");
+
+    let mut expired_service_ticket = sample_service_ticket_session(&tgt);
+    expired_service_ticket.service =
+        Principal::new("TEST.GOKRB5", 2, ["HTTP", "expired.test.gokrb5"]);
+    expired_service_ticket.start_time = expired_start;
+    expired_service_ticket.end_time = expired_end;
+    expired_service_ticket.renew_till = None;
+    client.cache_service_ticket(expired_service_ticket);
+
+    let mut renewable_service_ticket = sample_service_ticket_session(&tgt);
+    renewable_service_ticket.service =
+        Principal::new("TEST.GOKRB5", 2, ["HTTP", "renewable.test.gokrb5"]);
+    renewable_service_ticket.start_time = expired_start;
+    renewable_service_ticket.end_time = expired_end;
+    renewable_service_ticket.renew_till = Some(future_renew_till);
+    client.cache_service_ticket(renewable_service_ticket.clone());
+
+    let pruned = client.prune_unusable_sessions();
+
+    assert_eq!(
+        pruned,
+        PrunedSessions {
+            primary_tgt: false,
+            tgt_sessions: 1,
+            service_tickets: 1,
+        }
+    );
+    assert!(!pruned.is_empty());
+    assert_eq!(client.tgt_session_count(), 1);
+    assert!(client.tgt_session().is_some());
+    assert!(client.tgt_session_for_realm("EXPIRED.GOKRB5").is_none());
+    assert_eq!(client.cached_service_ticket_count(), 1);
+    assert!(
+        client
+            .cached_service_ticket(renewable_service_ticket.service.clone())
+            .is_none()
+    );
+    assert!(
+        client
+            .remove_cached_service_ticket(renewable_service_ticket.service)
+            .is_some()
+    );
+}
+
+#[cfg(feature = "tokio")]
+#[test]
+fn tokio_client_prunes_expired_nonrenewable_primary_tgt() {
+    let mut tgt = current_tgt_session(70, 0);
+    tgt.renew_till = None;
+    let mut client = TokioClient::from_tgt_session(Config::new(), KdcProtocol::Tcp, tgt);
+
+    let pruned = client.prune_unusable_sessions();
+
+    assert_eq!(
+        pruned,
+        PrunedSessions {
+            primary_tgt: true,
+            tgt_sessions: 1,
+            service_tickets: 0,
+        }
+    );
+    assert!(client.tgt_session().is_none());
+    assert_eq!(client.tgt_session_count(), 0);
+    assert!(client.prune_unusable_sessions().is_empty());
+    assert!(PrunedSessions::default().is_empty());
 }
 
 #[cfg(feature = "tokio")]
