@@ -262,6 +262,8 @@ pub struct TgsReqOptions {
     pub etypes: Vec<i32>,
     /// KDC option bit string as stored in krb5.conf.
     pub kdc_option_bits: u32,
+    /// Additional TGS padata appended after PA-TGS-REQ.
+    pub padata: Vec<rasn_kerberos::PaData>,
 }
 
 impl TgsReqOptions {
@@ -274,6 +276,7 @@ impl TgsReqOptions {
             nonce,
             etypes: DEFAULT_TGS_ENCTYPES.to_vec(),
             kdc_option_bits: 0,
+            padata: Vec::new(),
         }
     }
 
@@ -316,6 +319,12 @@ impl TgsReqOptions {
     /// Override KDC options using the raw krb5.conf bit representation.
     pub fn with_kdc_option_bits(mut self, kdc_option_bits: u32) -> Self {
         self.kdc_option_bits = kdc_option_bits;
+        self
+    }
+
+    /// Add additional TGS padata.
+    pub fn with_padata(mut self, padata: impl Into<Vec<rasn_kerberos::PaData>>) -> Self {
+        self.padata = padata.into();
         self
     }
 
@@ -3128,6 +3137,48 @@ pub fn build_tgs_req_with_confounder(
     )
 }
 
+/// Build an S4U2Self TGS-REQ using the supplied service TGT.
+///
+/// The requested service is the TGT client principal, and the impersonated user
+/// is carried in PA-FOR-USER.
+pub fn build_s4u2self_req(
+    service_tgt: &AsRepSession,
+    user: Principal,
+    options: TgsReqOptions,
+) -> Result<BuiltTgsReq, Error> {
+    let (timestamp, cusec) = current_preauth_time()?;
+    let etype = KerberosEtype::from_etype_id(service_tgt.session_key.etype)
+        .ok_or(Error::UnsupportedEtype(service_tgt.session_key.etype))?;
+    let mut confounder = vec![0; etype.confounder_len()];
+    getrandom::fill(&mut confounder)?;
+    build_s4u2self_req_with_confounder(service_tgt, user, options, timestamp, cusec, &confounder)
+}
+
+/// Build a deterministic S4U2Self TGS-REQ with an explicit authenticator timestamp and confounder.
+pub fn build_s4u2self_req_with_confounder(
+    service_tgt: &AsRepSession,
+    user: Principal,
+    mut options: TgsReqOptions,
+    timestamp: SystemTime,
+    cusec: u32,
+    confounder: &[u8],
+) -> Result<BuiltTgsReq, Error> {
+    options.padata.retain(|padata| padata.r#type != PA_FOR_USER);
+    options
+        .padata
+        .push(pa_for_user_padata(&user, &service_tgt.session_key)?);
+    let service = service_tgt.client.clone();
+    build_tgs_req_for_realm_with_confounder(
+        service_tgt,
+        service.realm.clone(),
+        service,
+        options,
+        timestamp,
+        cusec,
+        confounder,
+    )
+}
+
 /// Build a TGS-REQ for an explicit KDC realm, timestamp, and confounder.
 pub fn build_tgs_req_for_realm_with_confounder(
     tgt: &AsRepSession,
@@ -3209,14 +3260,17 @@ pub fn build_tgs_req_for_realm_with_confounder(
             cipher: cipher.into(),
         },
     };
-    let padata = rasn_kerberos::PaData {
+    let pa_tgs_req = rasn_kerberos::PaData {
         r#type: PA_TGS_REQ,
         value: encode("PA-TGS-REQ AP-REQ", &ap_req)?.into(),
     };
+    let mut padata = Vec::with_capacity(options.padata.len() + 1);
+    padata.push(pa_tgs_req);
+    padata.extend(options.padata);
     let message = rasn_kerberos::TgsReq(rasn_kerberos::KdcReq {
         pvno: rasn::types::Integer::from(KRB5_PVNO),
         msg_type: rasn::types::Integer::from(KRB_TGS_REQ_MSG_TYPE),
-        padata: Some(vec![padata]),
+        padata: Some(padata),
         req_body,
     });
     let der = encode("TGS-REQ", &message)?;

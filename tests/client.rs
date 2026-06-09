@@ -15,13 +15,14 @@ use rskrb5::client::{
     TGS_REP_ENCPART_SESSION_KEY_USAGE, TGS_REQ_AUTHENTICATOR_CHECKSUM_USAGE,
     TGS_REQ_AUTHENTICATOR_USAGE, TgsReqOptions, build_ap_req_with_confounder,
     build_kpasswd_request, build_kpasswd_request_with_confounders, build_preauthenticated_as_req,
-    build_tgs_req_for_realm_with_confounder, build_tgs_req_with_confounder, build_tgt_as_req,
-    build_tgt_renewal_req_with_confounder, build_ticket_renewal_req_with_confounder,
-    default_password_salt, derive_password_reply_key, exchange_as_req, exchange_tgs_req,
-    login_as_service_with_keytab, login_as_service_with_password, login_tgt_with_keytab,
-    login_tgt_with_password, pa_enc_timestamp_with_confounder, pa_for_user_padata, process_as_rep,
-    process_kdc_error, process_tgs_rep, process_tgs_rep_with_referral, renew_tgt, renew_ticket,
-    s4u_byte_array, select_preauth_key_info, verify_kpasswd_ap_rep,
+    build_s4u2self_req_with_confounder, build_tgs_req_for_realm_with_confounder,
+    build_tgs_req_with_confounder, build_tgt_as_req, build_tgt_renewal_req_with_confounder,
+    build_ticket_renewal_req_with_confounder, default_password_salt, derive_password_reply_key,
+    exchange_as_req, exchange_tgs_req, login_as_service_with_keytab,
+    login_as_service_with_password, login_tgt_with_keytab, login_tgt_with_password,
+    pa_enc_timestamp_with_confounder, pa_for_user_padata, process_as_rep, process_kdc_error,
+    process_tgs_rep, process_tgs_rep_with_referral, renew_tgt, renew_ticket, s4u_byte_array,
+    select_preauth_key_info, verify_kpasswd_ap_rep,
 };
 #[cfg(feature = "tokio")]
 use rskrb5::client::{KdcProtocol, PrunedSessions, TokioClient};
@@ -490,6 +491,55 @@ fn builds_tgs_req_for_explicit_kdc_realm() {
         ),
         service
     );
+}
+
+#[test]
+fn builds_s4u2self_tgs_req_with_pa_for_user() {
+    let mut service_tgt = sample_tgt_session();
+    service_tgt.client = sample_service_principal();
+    let user = Principal::user("TEST.GOKRB5", "delegated-user");
+
+    let request = build_s4u2self_req_with_confounder(
+        &service_tgt,
+        user.clone(),
+        TgsReqOptions::new(timestamp(1_893_553_450), 0x5566_7788).with_etypes(vec![18]),
+        timestamp(1_893_553_451),
+        654_321,
+        &decode_hex(TGS_REQ_CONFOUNDER),
+    )
+    .expect("S4U2Self TGS-REQ builds");
+    let decoded: rasn_kerberos::TgsReq = rasn::der::decode(&request.der).expect("TGS-REQ decodes");
+
+    assert_eq!(request.client, service_tgt.client);
+    assert_eq!(request.service, service_tgt.client);
+    assert_eq!(request.kdc_realm, "TEST.GOKRB5");
+    assert_eq!(
+        principal_from_parts(
+            &decoded.0.req_body.realm,
+            decoded.0.req_body.sname.as_ref().expect("sname")
+        ),
+        service_tgt.client
+    );
+
+    let padata = decoded.0.padata.as_ref().expect("S4U TGS-REQ padata");
+    assert_eq!(padata.len(), 2);
+    assert_eq!(padata[0].r#type, PA_TGS_REQ);
+    assert_eq!(padata[1].r#type, PA_FOR_USER);
+    let pa_for_user = rskrb5::messages::PaForUser::decode_der(padata[1].value.as_ref())
+        .expect("PA-FOR-USER decodes");
+    assert_eq!(
+        principal_from_parts(&pa_for_user.user_realm, &pa_for_user.user_name),
+        user
+    );
+    assert_eq!(pa_for_user.auth_package.as_bytes(), b"Kerberos");
+    assert_eq!(pa_for_user.cksum.r#type, -138);
+    let s4u_bytes = s4u_byte_array(&user, "Kerberos");
+    let expected_checksum = kerb_checksum_hmac_md5(
+        &service_tgt.session_key.value,
+        &s4u_bytes,
+        PA_FOR_USER_CHECKSUM_USAGE,
+    );
+    assert_eq!(pa_for_user.cksum.checksum.as_ref(), expected_checksum);
 }
 
 #[test]
