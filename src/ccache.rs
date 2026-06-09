@@ -262,6 +262,21 @@ impl CCache {
         }
     }
 
+    /// Insert or replace a cache configuration entry for the default client.
+    pub fn upsert_config_entry(
+        &mut self,
+        key: impl Into<String>,
+        principal: Option<String>,
+        value: impl Into<Vec<u8>>,
+    ) -> Option<Credential> {
+        self.upsert_credential(Credential::config_entry(
+            self.default_principal.clone(),
+            key,
+            principal,
+            value,
+        ))
+    }
+
     /// Remove non-configuration credentials for a client principal.
     ///
     /// X-CACHECONF entries are preserved because they carry cache metadata
@@ -291,7 +306,10 @@ impl CCache {
 
     /// Return parsed cache configuration entries.
     pub fn config_entries(&self) -> Vec<ConfigEntry<'_>> {
-        self.credentials.iter().filter_map(config_entry).collect()
+        self.credentials
+            .iter()
+            .filter_map(parse_config_entry)
+            .collect()
     }
 
     /// Return a cache configuration value by key and optional associated principal.
@@ -339,10 +357,10 @@ fn same_principal_identity(left: &Principal, right: &Principal) -> bool {
 }
 
 fn is_config_credential(credential: &Credential) -> bool {
-    config_entry(credential).is_some()
+    parse_config_entry(credential).is_some()
 }
 
-fn config_entry(credential: &Credential) -> Option<ConfigEntry<'_>> {
+fn parse_config_entry(credential: &Credential) -> Option<ConfigEntry<'_>> {
     if credential.server.realm != X_CACHECONF_REALM {
         return None;
     }
@@ -548,6 +566,37 @@ pub struct Credential {
 }
 
 impl Credential {
+    /// Build a cache configuration credential.
+    ///
+    /// The `value` is stored in the ticket field, matching MIT's X-CACHECONF
+    /// convention.
+    pub fn config_entry(
+        client: Principal,
+        key: impl Into<String>,
+        principal: Option<String>,
+        value: impl Into<Vec<u8>>,
+    ) -> Self {
+        let mut components = vec![X_CACHECONF_COMPONENT.to_owned(), key.into()];
+        if let Some(principal) = principal {
+            components.push(principal);
+        }
+        Self {
+            client,
+            server: Principal::new(X_CACHECONF_REALM, 0, components),
+            key: EncryptionKey {
+                etype: 0,
+                value: Vec::new(),
+            },
+            times: CredentialTimes::default(),
+            is_skey: false,
+            ticket_flags: [0; 4],
+            addresses: Vec::new(),
+            auth_data: Vec::new(),
+            ticket: value.into(),
+            second_ticket: Vec::new(),
+        }
+    }
+
     fn parse(bytes: &[u8], offset: &mut usize, version: u8, endian: Endian) -> Result<Self, Error> {
         let client = Principal::parse(bytes, offset, version, endian)?;
         let server = Principal::parse(bytes, offset, version, endian)?;

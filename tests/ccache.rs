@@ -1,5 +1,5 @@
 use pretty_assertions::assert_eq;
-use rskrb5::ccache::{CCache, CacheName, Error};
+use rskrb5::ccache::{CCache, CacheName, Credential, Error, Principal};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -238,6 +238,44 @@ fn entries_filter_out_x_cacheconf_credentials() {
             .credentials()
             .iter()
             .any(|entry| entry.server.realm.starts_with("X-CACHECONF"))
+    );
+}
+
+#[test]
+fn builds_and_upserts_x_cacheconf_entries() {
+    let client = Principal::new("TEST.GOKRB5", 1, vec!["testuser1".to_owned()]);
+    let credential =
+        Credential::config_entry(client.clone(), "start_realm", None, b"TEST.GOKRB5".to_vec());
+
+    assert_eq!(credential.client, client);
+    assert_eq!(credential.server.realm, "X-CACHECONF:");
+    assert_eq!(
+        credential.server.components,
+        ["krb5_ccache_conf_data", "start_realm"]
+    );
+    assert_eq!(credential.ticket, b"TEST.GOKRB5");
+    assert_eq!(credential.key.etype, 0);
+    assert!(credential.key.value.is_empty());
+
+    let mut cache = CCache::new(credential.client.clone());
+    assert!(
+        cache
+            .upsert_config_entry("start_realm", None, b"TEST.GOKRB5".to_vec())
+            .is_none()
+    );
+    assert_eq!(cache.entries().len(), 0);
+    assert_eq!(
+        cache.config_entry_value("start_realm", None),
+        Some(b"TEST.GOKRB5".as_slice())
+    );
+
+    let replaced = cache
+        .upsert_config_entry("start_realm", None, b"OTHER.GOKRB5".to_vec())
+        .expect("config entry is replaced");
+    assert_eq!(replaced.ticket, b"TEST.GOKRB5");
+    assert_eq!(
+        cache.config_entry_value("start_realm", None),
+        Some(b"OTHER.GOKRB5".as_slice())
     );
 }
 
