@@ -2,8 +2,8 @@
 
 use std::error::Error;
 use std::fs;
-use std::io::Write;
-use std::net::Ipv4Addr;
+use std::io::{Read, Write};
+use std::net::{Ipv4Addr, TcpStream};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::Mutex;
@@ -1020,6 +1020,37 @@ fn docker_mit_kdc_spnego_header_round_trip_through_service_validator() -> Result
 
 #[cfg(feature = "spnego")]
 #[test]
+fn docker_mit_kdc_spnego_header_authenticates_to_docker_http() -> Result<(), Box<dyn Error>> {
+    if std::env::var("INTEGRATION").as_deref() != Ok("1") {
+        eprintln!("skipping Docker KDC integration test; set INTEGRATION=1 to enable");
+        return Ok(());
+    }
+    let _guard = INTEGRATION_LOCK.lock().expect("integration test lock");
+
+    runtime().block_on(async {
+        let config = configured_kdc_config()?;
+        let mut client = TokioClient::with_password(
+            config,
+            KdcProtocol::Auto,
+            Principal::user(REALM, USER),
+            PASSWORD,
+        )
+        .with_transport(TokioKdcTransport::new().with_timeout(Duration::from_secs(10)));
+        let header = client.spnego_header(service_principal()).await?;
+        let response = http_get_with_authorization("/modgssapi/index.html", &header)?;
+        let status = response.lines().next().unwrap_or_default();
+
+        assert!(
+            status.contains(" 200 "),
+            "unexpected Docker HTTP response status: {status}"
+        );
+
+        Ok::<_, Box<dyn Error>>(())
+    })
+}
+
+#[cfg(feature = "spnego")]
+#[test]
 fn docker_mit_kdc_rc4_hmac_spnego_header_round_trip_through_service_validator()
 -> Result<(), Box<dyn Error>> {
     if std::env::var("INTEGRATION").as_deref() != Ok("1") {
@@ -1255,6 +1286,75 @@ fn service_principal() -> Principal {
 
 fn resdom_service_principal() -> Principal {
     Principal::new(RESDOM_REALM, 2, ["HTTP", RESDOM_SERVICE_HOST])
+}
+
+#[cfg(feature = "spnego")]
+fn http_get_with_authorization(path: &str, authorization: &str) -> Result<String, Box<dyn Error>> {
+    let target = http_target(path)?;
+    let mut stream = TcpStream::connect(&target.addr)?;
+    stream.set_read_timeout(Some(Duration::from_secs(10)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(10)))?;
+    write!(
+        stream,
+        "GET {} HTTP/1.1\r\nHost: {}\r\nAuthorization: {}\r\nConnection: close\r\n\r\n",
+        target.path, target.authority, authorization
+    )?;
+
+    let mut response = String::new();
+    stream.read_to_string(&mut response)?;
+    Ok(response)
+}
+
+#[cfg(feature = "spnego")]
+struct HttpTarget {
+    authority: String,
+    addr: String,
+    path: String,
+}
+
+#[cfg(feature = "spnego")]
+fn http_target(path: &str) -> Result<HttpTarget, Box<dyn Error>> {
+    let base = std::env::var("TEST_HTTP_URL").unwrap_or_else(|_| "http://127.0.0.1".to_owned());
+    let Some(without_scheme) = base.strip_prefix("http://") else {
+        return Err(format!("TEST_HTTP_URL must be an http:// URL: {base}").into());
+    };
+    let (authority, base_path) = without_scheme
+        .split_once('/')
+        .map_or((without_scheme, ""), |(authority, path)| (authority, path));
+    if authority.is_empty() {
+        return Err("TEST_HTTP_URL must include a host".into());
+    }
+
+    let addr = if authority
+        .rsplit_once(':')
+        .is_some_and(|(_, port)| port.parse::<u16>().is_ok())
+    {
+        authority.to_owned()
+    } else {
+        format!("{authority}:80")
+    };
+    let base_path = base_path.trim_matches('/');
+    let request_path = ensure_absolute_path(path);
+    let path = if base_path.is_empty() {
+        request_path
+    } else {
+        format!("/{base_path}{request_path}")
+    };
+
+    Ok(HttpTarget {
+        authority: authority.to_owned(),
+        addr,
+        path,
+    })
+}
+
+#[cfg(feature = "spnego")]
+fn ensure_absolute_path(path: &str) -> String {
+    if path.starts_with('/') {
+        path.to_owned()
+    } else {
+        format!("/{path}")
+    }
 }
 
 async fn assert_keytab_as_tgs_for_etypes(

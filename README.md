@@ -59,7 +59,8 @@ pure-Rust Kerberos library.
   verification and verified ticket PAC extraction; SPNEGO/GSSAPI covers KRB5
   mech tokens, RFC4121 MIC and sealed/unsealed Wrap tokens, NegTokenInit/Resp,
   HTTP Negotiate headers with raw KRB5 token fallback, client AP-REQ initiator
-  headers from TGS service tickets, AP-REP response verification, and service-side AP-REQ to AP-REP
+  headers from TGS service tickets, live Docker HTTP Negotiate acceptance,
+  AP-REP response verification, and service-side AP-REQ to AP-REP
   response flow;
   HTTP/Tower adapters cover
   generic `http` request helpers and service-side Tower middleware that
