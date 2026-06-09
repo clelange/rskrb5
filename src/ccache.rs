@@ -5,6 +5,7 @@
 //! remain opaque DER bytes until the crypto and ASN.1 message layers are wired
 //! together.
 
+use crate::file_name;
 use std::path::{Path, PathBuf};
 
 const CCACHE_FIRST_BYTE: u8 = 5;
@@ -79,28 +80,12 @@ impl CCache {
     /// This does not touch the filesystem; it only validates that the name
     /// denotes a cache format backed by this module.
     pub fn file_path_from_cache_name(name: &str) -> Result<PathBuf, Error> {
-        if name.is_empty() {
-            return Err(Error::InvalidCacheName);
-        }
-
-        let Some((prefix, path)) = name.split_once(':') else {
-            return Ok(PathBuf::from(name));
-        };
-
-        if is_windows_drive_path(prefix, path) {
-            return Ok(PathBuf::from(name));
-        }
-
-        if prefix.eq_ignore_ascii_case("FILE") || prefix.eq_ignore_ascii_case("WRFILE") {
-            if path.is_empty() {
-                return Err(Error::InvalidCacheName);
-            }
-            Ok(PathBuf::from(path))
-        } else {
-            Err(Error::UnsupportedCacheType {
-                cache_type: prefix.to_owned(),
-            })
-        }
+        file_name::file_path_from_name(name, &["FILE", "WRFILE"]).map_err(|error| match error {
+            file_name::Error::Empty => Error::InvalidCacheName,
+            file_name::Error::UnsupportedType { name_type } => Error::UnsupportedCacheType {
+                cache_type: name_type,
+            },
+        })
     }
 
     /// Parse credential cache bytes.
@@ -665,12 +650,6 @@ pub enum Error {
     /// The v4 header length did not match parsed fields.
     #[error("invalid credential cache header length")]
     InvalidHeaderLength,
-}
-
-fn is_windows_drive_path(prefix: &str, path: &str) -> bool {
-    prefix.len() == 1
-        && prefix.as_bytes()[0].is_ascii_alphabetic()
-        && (path.starts_with('\\') || path.starts_with('/'))
 }
 
 #[derive(Clone, Copy, Debug)]

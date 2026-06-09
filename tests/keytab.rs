@@ -57,6 +57,11 @@ fn resolves_file_keytab_names() {
         PathBuf::from("/etc/krb5.keytab")
     );
     assert_eq!(
+        Keytab::file_path_from_keytab_name("file:/etc/krb5.keytab")
+            .expect("lowercase FILE path resolves"),
+        PathBuf::from("/etc/krb5.keytab")
+    );
+    assert_eq!(
         Keytab::file_path_from_keytab_name("WRFILE:relative.keytab").expect("WRFILE path resolves"),
         PathBuf::from("relative.keytab")
     );

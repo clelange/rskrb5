@@ -16,6 +16,7 @@ pub mod config;
 pub mod crypto;
 #[cfg(feature = "messages")]
 mod der;
+mod file_name;
 #[cfg(feature = "http")]
 pub mod http;
 #[cfg(feature = "messages")]

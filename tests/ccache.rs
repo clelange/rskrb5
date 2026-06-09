@@ -84,6 +84,11 @@ fn resolves_file_cache_names() {
         PathBuf::from("/tmp/krb5cc_1000")
     );
     assert_eq!(
+        CCache::file_path_from_cache_name("file:/tmp/krb5cc_1000")
+            .expect("lowercase FILE path resolves"),
+        PathBuf::from("/tmp/krb5cc_1000")
+    );
+    assert_eq!(
         CCache::file_path_from_cache_name("WRFILE:relative-cache").expect("WRFILE path resolves"),
         PathBuf::from("relative-cache")
     );
