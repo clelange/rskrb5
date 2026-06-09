@@ -132,6 +132,18 @@ fn resolves_file_keytab_names() {
         Keytab::file_path_from_keytab_name("C:\\temp\\krb5.keytab").expect("Windows path resolves"),
         PathBuf::from("C:\\temp\\krb5.keytab")
     );
+
+    let uid = std::env::var("UID").unwrap_or_else(|_| "0".to_owned());
+    assert_eq!(
+        Keytab::file_path_from_keytab_name("FILE:/tmp/krb5_%{uid}.keytab")
+            .expect("uid path token resolves"),
+        PathBuf::from(format!("/tmp/krb5_{uid}.keytab"))
+    );
+    assert_eq!(
+        Keytab::file_path_from_keytab_name("WRFILE:/tmp/krb5_%{euid}.keytab")
+            .expect("euid path token resolves"),
+        PathBuf::from(format!("/tmp/krb5_{uid}.keytab"))
+    );
 }
 
 #[test]

@@ -106,6 +106,23 @@ fn resolves_file_cache_names() {
         CCache::file_path_from_cache_name("C:\\temp\\krb5cc").expect("Windows path resolves"),
         PathBuf::from("C:\\temp\\krb5cc")
     );
+
+    let uid = std::env::var("UID").unwrap_or_else(|_| "0".to_owned());
+    assert_eq!(
+        CCache::file_path_from_cache_name("FILE:/tmp/krb5cc_%{uid}")
+            .expect("uid path token resolves"),
+        PathBuf::from(format!("/tmp/krb5cc_{uid}"))
+    );
+    assert_eq!(
+        CCache::file_path_from_cache_name("WRFILE:/tmp/krb5cc_%{euid}")
+            .expect("euid path token resolves"),
+        PathBuf::from(format!("/tmp/krb5cc_{uid}"))
+    );
+    assert_eq!(
+        CCache::file_path_from_cache_name("DIR::relative/tkt_%{uid}")
+            .expect("DIR subsidiary uid path token resolves"),
+        PathBuf::from(format!("relative/tkt_{uid}"))
+    );
 }
 
 #[test]

@@ -398,7 +398,7 @@ fn validate_dir_subsidiary_path(path: &str) -> Result<PathBuf, Error> {
     if path.is_empty() {
         return Err(Error::InvalidCacheName);
     }
-    let path = PathBuf::from(path);
+    let path = PathBuf::from(file_name::expand_path_tokens(path));
     let has_parent = path
         .parent()
         .is_some_and(|parent| !parent.as_os_str().is_empty());
@@ -415,7 +415,7 @@ fn dir_collection_primary_path(directory: &str) -> Result<PathBuf, Error> {
     if directory.is_empty() {
         return Err(Error::InvalidCacheName);
     }
-    let directory = Path::new(directory);
+    let directory = PathBuf::from(file_name::expand_path_tokens(directory));
     let primary_path = directory.join(DIR_PRIMARY_FILE);
     let primary = match std::fs::read_to_string(&primary_path) {
         Ok(contents) => parse_dir_primary_name(&contents)?,

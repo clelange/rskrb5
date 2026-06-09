@@ -24,7 +24,7 @@ pure-Rust Kerberos library.
   config parsing covers gokrb5-compatible libdefaults including `default_ccache_name`,
   `KRB5_CONFIG` path-list loading,
   comment/tab/no-blank-line variants, realm host mappings, domain realm lookup, duration parsing, and configured KDC/KPassword server lookup; ccache parsing
-  covers MIT file caches, `KRB5CCNAME` FILE/WRFILE/DIR cache-name helpers, opaque ticket bytes,
+  covers MIT file caches, `KRB5CCNAME` FILE/WRFILE/DIR cache-name helpers with `%{uid}`/`%{euid}` expansion, opaque ticket bytes,
   server entry lookup, X-CACHECONF configuration entry read/write, redacted metadata JSON, and exact fixture round-trips; crypto covers RFC3961 n-fold, RFC3962
   AES128/AES256-CTS-HMAC-SHA1-96, RFC8009
   AES128/AES256-CTS-HMAC-SHA2, DES3-CBC-SHA1-KD, and RC4-HMAC string-to-key,
@@ -43,7 +43,7 @@ pure-Rust Kerberos library.
   and renewable referral TGT sessions, renewable AS/TGS request flags, explicit
   TGT/service-ticket renewal helpers, Docker MIT KDC AS/TGS login, TGT
   renewal, and gated kpasswd change/restore coverage across AES-SHA1, AES-SHA2, DES3, and RC4-HMAC, per-enctype
-  keytab AS/TGS integration coverage, keytab file-name helpers, ccache credential export/write-back and
+  keytab AS/TGS integration coverage, keytab file-name helpers with `%{uid}`/`%{euid}` expansion, ccache credential export/write-back and
   file cache-name loading/saving plus configured default ccache loading/write-back, and a high-level
   Tokio client with password/keytab/ccache credential sources,
   credential attachment, file-name constructors/write-back, configuration validation, multi-realm TGT/session caching/removal,
