@@ -8,7 +8,9 @@ use rskrb5::config::Config;
 use rskrb5::crypto::AesSha1Etype;
 use rskrb5::keytab::{EncryptionKey, Keytab};
 use rskrb5::pac;
-use rskrb5::service::{ApRepOptions, Error, Principal, ServiceValidator, ValidatedApReq};
+use rskrb5::service::{
+    ApRepOptions, Error, Principal, ServiceValidator, SharedReplayCache, ValidatedApReq,
+};
 
 mod common;
 
@@ -387,6 +389,55 @@ fn clears_old_replay_cache_entries() {
     validator
         .validate_ap_req(&decode_hex(VALID_AP_REQ))
         .expect("expired replay entry no longer rejects request");
+}
+
+#[test]
+fn shared_replay_cache_rejects_replay_across_validators() {
+    let keytab = http_keytab();
+    let now = timestamp(1_893_553_447);
+    let replay_cache = SharedReplayCache::new();
+    let mut first = ServiceValidator::new(&keytab)
+        .with_now(now)
+        .with_shared_replay_cache(replay_cache.clone());
+    let mut second = ServiceValidator::new(&keytab)
+        .with_now(now)
+        .with_shared_replay_cache(replay_cache.clone());
+
+    assert!(
+        replay_cache.is_empty().expect("shared replay cache reads"),
+        "new shared replay cache is empty"
+    );
+    first
+        .validate_ap_req(&decode_hex(VALID_AP_REQ))
+        .expect("first AP-REQ validates");
+    assert_eq!(replay_cache.len().expect("shared replay cache counts"), 1);
+
+    assert!(matches!(
+        second
+            .validate_ap_req(&decode_hex(VALID_AP_REQ))
+            .expect_err("second validator sees replay"),
+        Error::Replay
+    ));
+
+    let removed = replay_cache
+        .clear_older_than_at(
+            Duration::from_secs(1),
+            now.checked_add(Duration::from_secs(2))
+                .expect("cleanup time"),
+        )
+        .expect("shared replay cache ages entries");
+    assert_eq!(removed, 1);
+    second
+        .validate_ap_req(&decode_hex(VALID_AP_REQ))
+        .expect("aged shared replay entry no longer rejects request");
+
+    let mut local = ServiceValidator::new(&keytab)
+        .with_now(now)
+        .with_shared_replay_cache(replay_cache)
+        .without_shared_replay_cache();
+    local
+        .validate_ap_req(&decode_hex(VALID_AP_REQ))
+        .expect("opted-out validator uses local replay cache");
 }
 
 #[test]
