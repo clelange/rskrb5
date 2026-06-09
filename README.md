@@ -29,8 +29,8 @@ pure-Rust Kerberos library.
   server entry lookup, X-CACHECONF configuration entry read/write, redacted metadata JSON, and exact fixture round-trips; crypto covers RFC3961 n-fold, RFC3962
   AES128/AES256-CTS-HMAC-SHA1-96, RFC8009
   AES128/AES256-CTS-HMAC-SHA2, DES3-CBC-SHA1-KD, and RC4-HMAC string-to-key,
-  KDF, checksums, and deterministic encrypted-message vectors; message wrappers
-  preserve gokrb5 EncryptedData signed-kvno DER edge fixtures; kadmin covers
+  KDF, checksums, and deterministic encrypted-message vectors; message helpers
+  preserve gokrb5 EncryptedData signed-kvno DER edge fixtures and expose KRB-ERROR diagnostics; kadmin covers
   ChangePasswdData builders, DER decode, exact fixture round-trip, KRB-PRIV payload building, and kpasswd request
   and reply frame parsing plus reply result handling and result-code checks; client AS/TGS exchange primitives
   cover deterministic TGT AS-REQ construction, KRB-ERROR preauthentication
