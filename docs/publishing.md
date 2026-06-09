@@ -53,9 +53,9 @@ For integration coverage, run or dispatch the gated Docker jobs that apply to
 the release:
 
 ```sh
-INTEGRATION=1 cargo test --all-features --test integration
-TESTPRIVILEGED=1 cargo test --all-features --test integration
-TEST_KPASSWD=1 cargo test --all-features --test integration
+INTEGRATION=1 cargo test --all-features --test client_integration
+TESTPRIVILEGED=1 cargo test --all-features --test client_integration
+TEST_KPASSWD=1 cargo test --all-features --test client_integration
 ```
 
 `TESTAD=1` remains optional until Active Directory coverage is implemented and

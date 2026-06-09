@@ -85,6 +85,9 @@ jobs:
       DNSUTILS_OVERRIDE_NS: 127.0.88.53:53
     steps:
       - uses: actions/checkout@v6
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
       - name: Start gokrb5 integration dependencies
         run: |
           sudo apt-get update
