@@ -1746,28 +1746,7 @@ fn tokio_client_renews_ccache_loaded_renewable_service_ticket() {
 fn tokio_client_renews_cached_referral_tgt_before_reusing_it() {
     runtime().block_on(async {
         let primary_tgt = current_tgt_session(10, 50);
-        let referral_service = Principal::tgt_service("RESDOM.GOKRB5");
-        let referral_request = build_tgs_req_with_confounder(
-            &primary_tgt,
-            referral_service.clone(),
-            TgsReqOptions::new(timestamp(1_893_553_450), 0x8877_6655).with_etypes(vec![18]),
-            timestamp(1_893_553_451),
-            654_321,
-            &decode_hex(TGS_REQ_CONFOUNDER),
-        )
-        .expect("referral TGS-REQ builds");
-        let referral_response = synthetic_tgs_rep_with_service(
-            &referral_request,
-            referral_request.nonce,
-            &primary_tgt.session_key,
-            referral_service.clone(),
-        );
-        let mut referral_tgt = process_tgs_rep_with_referral(
-            &referral_request,
-            &referral_response,
-            &primary_tgt.session_key,
-        )
-        .expect("referral TGT validates");
+        let mut referral_tgt = valid_referral_tgt_session(&primary_tgt, "RESDOM.GOKRB5");
         referral_tgt.session_key.value = vec![0x45; 32];
         let cached_referral_key = referral_tgt.session_key.clone();
         let referral_renewal_reply_key = referral_tgt.session_key.clone();
@@ -1863,6 +1842,77 @@ fn tokio_client_renews_cached_referral_tgt_before_reusing_it() {
             hex_encode(&renewed_referral.session_key.value),
             SERVICE_SESSION_KEY
         );
+    });
+}
+
+#[cfg(feature = "tokio")]
+#[test]
+fn tokio_client_renews_tgt_session_for_realm() {
+    runtime().block_on(async {
+        let primary_tgt = current_tgt_session(10, 50);
+        let mut referral_tgt = valid_referral_tgt_session(&primary_tgt, "RESDOM.GOKRB5");
+        referral_tgt.session_key.value = vec![0x47; 32];
+        let cached_referral_key = referral_tgt.session_key.clone();
+        let referral_renewal_reply_key = referral_tgt.session_key.clone();
+        let expected_client = primary_tgt.client.clone();
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind local KDC listener");
+        let addr = listener.local_addr().expect("local listener address");
+        let mut client = TokioClient::from_tgt_session(
+            config_with_kdc_server(addr.to_string()),
+            KdcProtocol::Tcp,
+            primary_tgt,
+        );
+        client
+            .cache_tgt_session(referral_tgt)
+            .expect("referral TGT caches");
+
+        let task = tokio::spawn(async move {
+            let (request, mut socket) = read_tcp_kdc_request(&listener).await;
+            let decoded: rasn_kerberos::TgsReq =
+                rasn::der::decode(&request).expect("TGS-REQ decodes");
+            let body = &decoded.0.req_body;
+            let expected_options = 0x0000_0010 | KDC_OPTION_RENEWABLE | KDC_OPTION_RENEW;
+            assert_eq!(
+                body.kdc_options.0.as_raw_slice(),
+                expected_options.to_be_bytes().as_slice()
+            );
+            assert_eq!(
+                principal_from_parts(&body.realm, body.sname.as_ref().expect("sname")),
+                Principal::tgt_service("RESDOM.GOKRB5")
+            );
+
+            let mut built = built_tgs_request_from_der(decoded, &request);
+            built.client = expected_client;
+            let response = synthetic_tgs_rep(&built, built.nonce, &referral_renewal_reply_key);
+            write_tcp_kdc_response(&mut socket, &response).await;
+        });
+
+        let renewed = client
+            .renew_tgt_session_for_realm("RESDOM.GOKRB5")
+            .await
+            .expect("referral TGT renews explicitly");
+        task.await.expect("KDC task succeeds");
+
+        assert_eq!(renewed.service, Principal::tgt_service("RESDOM.GOKRB5"));
+        assert_ne!(renewed.session_key, cached_referral_key);
+        assert_eq!(hex_encode(&renewed.session_key.value), SERVICE_SESSION_KEY);
+        assert_eq!(
+            client
+                .tgt_session_for_realm("RESDOM.GOKRB5")
+                .expect("renewed referral is cached")
+                .session_key,
+            renewed.session_key
+        );
+        assert!(matches!(
+            client
+                .renew_tgt_session_for_realm("MISSING.GOKRB5")
+                .await
+                .expect_err("missing realm has no TGT"),
+            Error::NoTgtSession
+        ));
     });
 }
 
@@ -2555,6 +2605,27 @@ fn sample_referral_tgt_session(realm: &str) -> rskrb5::client::AsRepSession {
     tgt.session_key.value = vec![0x9a; 32];
     tgt.ticket = format!("referral-ticket-{realm}").into_bytes();
     tgt
+}
+
+#[cfg(feature = "tokio")]
+fn valid_referral_tgt_session(
+    tgt: &rskrb5::client::AsRepSession,
+    realm: &str,
+) -> rskrb5::client::AsRepSession {
+    let referral_service = Principal::tgt_service(realm);
+    let request = build_tgs_req_with_confounder(
+        tgt,
+        referral_service.clone(),
+        TgsReqOptions::new(timestamp(1_893_553_450), 0x8877_6655).with_etypes(vec![18]),
+        timestamp(1_893_553_451),
+        654_321,
+        &decode_hex(TGS_REQ_CONFOUNDER),
+    )
+    .expect("referral TGS-REQ builds");
+    let response =
+        synthetic_tgs_rep_with_service(&request, request.nonce, &tgt.session_key, referral_service);
+    process_tgs_rep_with_referral(&request, &response, &tgt.session_key)
+        .expect("referral TGT validates")
 }
 
 #[cfg(feature = "tokio")]

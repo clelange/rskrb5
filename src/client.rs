@@ -1385,14 +1385,37 @@ impl TokioClient {
 
     /// Renew the current TGT explicitly.
     pub async fn renew_tgt(&mut self) -> Result<&AsRepSession, Error> {
-        let tgt = self.tgt.clone().ok_or(Error::NoTgtSession)?;
+        let realm = self.client.realm.clone();
+        self.renew_tgt_session_for_realm(&realm).await?;
+        Ok(self.tgt.as_ref().expect("TGT was just inserted"))
+    }
+
+    /// Renew a cached TGT session for a target realm.
+    pub async fn renew_tgt_session_for_realm(
+        &mut self,
+        realm: &str,
+    ) -> Result<AsRepSession, Error> {
+        let tgt = if realm == self.client.realm {
+            self.tgt
+                .clone()
+                .or_else(|| self.tgt_sessions.get(realm).cloned())
+        } else {
+            self.tgt_sessions.get(realm).cloned()
+        }
+        .ok_or(Error::NoTgtSession)?;
         let renewed = self
             .transport
             .renew_tgt_with_config(&self.config, self.protocol, &tgt, self.tgs_req_options()?)
             .await?;
-        self.cache_tgt_session(renewed)?;
-        self.service_tickets.clear();
-        Ok(self.tgt.as_ref().expect("TGT was just inserted"))
+        let renewed_realm = tgt_realm(&renewed).ok_or_else(|| Error::InvalidTgtSession {
+            service: renewed.service.name(),
+        })?;
+        if renewed_realm == self.client.realm {
+            self.tgt = Some(renewed.clone());
+            self.service_tickets.clear();
+        }
+        self.tgt_sessions.insert(renewed_realm, renewed.clone());
+        Ok(renewed)
     }
 
     /// Refresh the primary TGT if it is missing, expired, or inside the refresh window.
@@ -1647,7 +1670,13 @@ impl TokioClient {
         else {
             return Ok(None);
         };
-        self.cache_tgt_session(renewed.clone())?;
+        let renewed_realm = tgt_realm(&renewed).ok_or_else(|| Error::InvalidTgtSession {
+            service: renewed.service.name(),
+        })?;
+        if renewed_realm == self.client.realm {
+            self.tgt = Some(renewed.clone());
+        }
+        self.tgt_sessions.insert(renewed_realm, renewed.clone());
         Ok(Some(renewed))
     }
 
