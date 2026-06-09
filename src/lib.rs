@@ -14,6 +14,7 @@ pub mod ccache;
 pub mod client;
 pub mod config;
 pub mod crypto;
+#[cfg(feature = "messages")]
 mod der;
 #[cfg(feature = "http")]
 pub mod http;

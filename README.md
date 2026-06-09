@@ -72,7 +72,7 @@ pure-Rust Kerberos library.
 Generate the compatibility report:
 
 ```sh
-cargo run --bin rskrb5-compat-report
+cargo run --no-default-features --features evaluation --bin rskrb5-compat-report
 ```
 
 The report records the gokrb5 v8 test contract and the current support matrix
@@ -90,6 +90,7 @@ Run the local checks:
 ```sh
 cargo fmt --check
 cargo check --no-default-features
+cargo check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all-features
 cargo doc --all-features --no-deps

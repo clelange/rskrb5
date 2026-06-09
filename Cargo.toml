@@ -12,7 +12,7 @@ categories = ["authentication", "cryptography", "network-programming"]
 publish = false
 
 [features]
-default = ["evaluation"]
+default = ["spnego", "tokio", "serde"]
 evaluation = [
     "spnego",
     "dep:hex",
