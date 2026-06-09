@@ -216,6 +216,33 @@ fn tower_service_loads_keytab_env() {
 
 #[cfg(feature = "tower")]
 #[test]
+fn tower_layer_loads_keytab_env() {
+    let path = temp_file("http-layer-keytab-env");
+    let name = format!("FILE:{}", path.display());
+    keytab().save(&path).expect("keytab saves");
+    let _env = common::EnvVarGuard::set_krb5_ktname(&name);
+
+    let layer = krb_http::NegotiateLayer::from_keytab_env()
+        .expect("layer loads keytab env")
+        .with_now(timestamp(1_893_553_447))
+        .with_ap_rep(false);
+    let _ = std::fs::remove_file(&path);
+    let mut service = layer.layer(AssertAcceptedService);
+    let mut request = Request::new(());
+    krb_http::set_authorization_header(&mut request, &valid_authorization_header())
+        .expect("authorization header sets");
+
+    let response = run_ready(service.call(request)).expect("inner response succeeds");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        response.headers().get(WWW_AUTHENTICATE).is_none(),
+        "AP-REP header is disabled"
+    );
+}
+
+#[cfg(feature = "tower")]
+#[test]
 fn tower_layer_loads_config_default_keytab_name() {
     let path = temp_file("http-default-keytab-name");
     let name = format!("FILE:{}", path.display());
