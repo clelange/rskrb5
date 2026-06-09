@@ -53,6 +53,8 @@ const MAX_UDP_DATAGRAM: usize = 65_507;
 #[cfg(feature = "tokio")]
 const DEFAULT_MAX_REFERRALS: usize = 5;
 #[cfg(feature = "tokio")]
+const KRB5CCNAME_ENV: &str = "KRB5CCNAME";
+#[cfg(feature = "tokio")]
 const SESSION_REFRESH_DIVISOR: u32 = 6;
 
 /// PA-ENC-TIMESTAMP preauthentication type.
@@ -920,6 +922,15 @@ impl TokioClient {
         Self::from_ccache_name(config, protocol, cache_name)
     }
 
+    /// Create a cache-only client from the default credential cache.
+    ///
+    /// `KRB5CCNAME` takes precedence when set. Otherwise this falls back to
+    /// `config.libdefaults.default_ccache_name`.
+    pub fn from_default_ccache(config: Config, protocol: KdcProtocol) -> Result<Self, Error> {
+        let cache_name = default_ccache_name(&config)?;
+        Self::from_ccache_name(config, protocol, cache_name)
+    }
+
     /// Create a cache-only client by loading the file ccache named by `KRB5CCNAME`.
     pub fn from_ccache_env(config: Config, protocol: KdcProtocol) -> Result<Self, Error> {
         let cache = ccache::CCache::load_from_env()?;
@@ -973,6 +984,14 @@ impl TokioClient {
         self.save_ccache_name(configured_default_ccache_name(&self.config)?)
     }
 
+    /// Save current TGT and service-ticket state to the default credential cache.
+    ///
+    /// `KRB5CCNAME` takes precedence when set. Otherwise this falls back to
+    /// `config.libdefaults.default_ccache_name`.
+    pub fn save_default_ccache(&self) -> Result<(), Error> {
+        self.save_ccache_name(default_ccache_name(&self.config)?)
+    }
+
     /// Load an existing ccache when present, update this client's entries, and save it.
     ///
     /// Missing files are created. Existing X-CACHECONF metadata and entries for
@@ -1003,6 +1022,14 @@ impl TokioClient {
     /// Update the ccache named by `config.libdefaults.default_ccache_name`.
     pub fn update_default_ccache_name(&self) -> Result<(), Error> {
         self.update_ccache_name(configured_default_ccache_name(&self.config)?)
+    }
+
+    /// Update the default credential cache.
+    ///
+    /// `KRB5CCNAME` takes precedence when set. Otherwise this falls back to
+    /// `config.libdefaults.default_ccache_name`.
+    pub fn update_default_ccache(&self) -> Result<(), Error> {
+        self.update_ccache_name(default_ccache_name(&self.config)?)
     }
 
     fn new(
@@ -4613,6 +4640,15 @@ fn configured_default_ccache_name(config: &Config) -> Result<String, Error> {
         return Err(Error::NoDefaultCCacheName);
     }
     Ok(cache_name)
+}
+
+#[cfg(feature = "tokio")]
+fn default_ccache_name(config: &Config) -> Result<String, Error> {
+    match std::env::var(KRB5CCNAME_ENV) {
+        Ok(cache_name) => Ok(cache_name),
+        Err(std::env::VarError::NotPresent) => configured_default_ccache_name(config),
+        Err(error) => Err(ccache::Error::DefaultCacheName(error).into()),
+    }
 }
 
 #[cfg(feature = "tokio")]
