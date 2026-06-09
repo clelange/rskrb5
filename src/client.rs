@@ -2025,59 +2025,9 @@ impl TokioKdcTransport {
         realm: &str,
         protocol: KdcProtocol,
     ) -> Result<Vec<KdcEndpoint>, Error> {
-        let service = match protocol {
-            KdcProtocol::Udp => "_kerberos._udp",
-            KdcProtocol::Tcp => "_kerberos._tcp",
-            KdcProtocol::Auto => "_kerberos._udp",
-        };
-        let query = format!("{service}.{realm}.");
-        let resolver = TokioResolver::builder_tokio()
-            .map_err(|source| Error::DnsResolverConfig(source.to_string()))?
-            .build()
-            .map_err(|source| Error::DnsResolverConfig(source.to_string()))?;
-        let lookup = resolver
-            .srv_lookup(query.as_str())
-            .await
-            .map_err(|source| Error::DnsSrvLookup {
-                realm: realm.to_owned(),
-                protocol,
-                message: source.to_string(),
-            })?;
-
-        let mut records = lookup
-            .answers()
-            .iter()
-            .filter_map(|record| match &record.data {
-                RData::SRV(srv) => Some(srv),
-                _ => None,
-            })
-            .map(|srv| {
-                (
-                    srv.priority,
-                    srv.weight,
-                    srv.target.to_utf8().trim_end_matches('.').to_owned(),
-                    srv.port,
-                )
-            })
-            .filter(|(_, _, target, _)| !target.is_empty() && target != ".")
-            .collect::<Vec<_>>();
-        records.sort_by(|left, right| {
-            left.0
-                .cmp(&right.0)
-                .then_with(|| right.1.cmp(&left.1))
-                .then_with(|| left.2.cmp(&right.2))
-                .then_with(|| left.3.cmp(&right.3))
-        });
-
-        let endpoints = records
-            .into_iter()
-            .map(|(_, _, host, port)| KdcEndpoint {
-                protocol,
-                host,
-                port,
-                source: KdcEndpointSource::DnsSrv,
-            })
-            .collect::<Vec<_>>();
+        let endpoints = self
+            .discover_srv_endpoints("_kerberos", realm, protocol)
+            .await?;
         if endpoints.is_empty() {
             Err(Error::NoKdcEndpoints {
                 realm: realm.to_owned(),
