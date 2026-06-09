@@ -1595,6 +1595,89 @@ fn tokio_client_from_ccache_rejects_expired_service_ticket() {
 
 #[cfg(feature = "tokio")]
 #[test]
+fn tokio_client_renews_expired_renewable_cached_service_ticket() {
+    runtime().block_on(async {
+        let tgt = sample_tgt_session();
+        let mut service_ticket = sample_service_ticket_session(&tgt);
+        service_ticket.session_key.value = vec![0x44; 32];
+        let cached_session_key = service_ticket.session_key.clone();
+        let renewal_reply_key = service_ticket.session_key.clone();
+        let now = SystemTime::now();
+        service_ticket.start_time = now
+            .checked_sub(Duration::from_secs(2 * 60 * 60))
+            .expect("expired start time");
+        service_ticket.end_time = now
+            .checked_sub(Duration::from_secs(60 * 60))
+            .expect("expired end time");
+        service_ticket.renew_till = Some(
+            now.checked_add(Duration::from_secs(60 * 60))
+                .expect("renew-till time"),
+        );
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind local KDC listener");
+        let addr = listener.local_addr().expect("local listener address");
+        let mut client = TokioClient::from_tgt_session(
+            config_with_kdc_server(addr.to_string()),
+            KdcProtocol::Tcp,
+            tgt,
+        );
+        client.cache_service_ticket(service_ticket.clone());
+        assert_eq!(client.cached_service_ticket_count(), 1);
+
+        let task = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept client");
+            let mut header = [0; 4];
+            socket
+                .read_exact(&mut header)
+                .await
+                .expect("read request length");
+            let request_len = u32::from_be_bytes(header) as usize;
+            let mut request = vec![0; request_len];
+            socket.read_exact(&mut request).await.expect("read request");
+
+            let decoded: rasn_kerberos::TgsReq =
+                rasn::der::decode(&request).expect("TGS-REQ decodes");
+            let body = &decoded.0.req_body;
+            let expected_options = 0x0000_0010 | KDC_OPTION_RENEWABLE | KDC_OPTION_RENEW;
+            assert_eq!(
+                body.kdc_options.0.as_raw_slice(),
+                expected_options.to_be_bytes().as_slice()
+            );
+            assert_eq!(
+                principal_from_parts(&body.realm, body.sname.as_ref().expect("sname")),
+                sample_service_principal()
+            );
+
+            let built = built_tgs_request_from_der(decoded, &request);
+            let response = synthetic_tgs_rep(&built, built.nonce, &renewal_reply_key);
+            socket
+                .write_all(&(response.len() as u32).to_be_bytes())
+                .await
+                .expect("write response length");
+            socket.write_all(&response).await.expect("write response");
+        });
+
+        let renewed = client
+            .get_service_ticket(sample_service_principal())
+            .await
+            .expect("renewable cached service ticket renews");
+        task.await.expect("KDC task succeeds");
+
+        assert_eq!(renewed.service, sample_service_principal());
+        assert_eq!(hex_encode(&renewed.session_key.value), SERVICE_SESSION_KEY);
+        assert_eq!(client.cached_service_ticket_count(), 1);
+        let cached = client
+            .remove_cached_service_ticket(sample_service_principal())
+            .expect("renewed service ticket is cached");
+        assert_eq!(cached.session_key, renewed.session_key);
+        assert_ne!(cached.session_key, cached_session_key);
+    });
+}
+
+#[cfg(feature = "tokio")]
+#[test]
 fn tokio_client_exports_and_saves_ccache() {
     let tgt = sample_tgt_session();
     let service_ticket = sample_service_ticket_session(&tgt);
@@ -2745,6 +2828,22 @@ fn config_with_kdc() -> Config {
 "#,
     )
     .expect("config parses")
+}
+
+#[cfg(feature = "tokio")]
+fn config_with_kdc_server(server: String) -> Config {
+    let input = format!(
+        r#"
+[libdefaults]
+ dns_lookup_kdc = false
+
+[realms]
+ TEST.GOKRB5 = {{
+  kdc = {server}
+ }}
+"#,
+    );
+    Config::parse(&input).expect("config parses")
 }
 
 #[cfg(feature = "tokio")]
