@@ -4,6 +4,7 @@
 //! and service flows can consume long-term keys.
 
 use crate::file_name;
+use std::fmt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -323,12 +324,21 @@ impl Principal {
 }
 
 /// Kerberos encryption key as stored in a keytab.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq, zeroize::Zeroize, zeroize::ZeroizeOnDrop)]
 pub struct EncryptionKey {
     /// Kerberos encryption type id.
     pub etype: i32,
     /// Raw key bytes.
     pub value: Vec<u8>,
+}
+
+impl fmt::Debug for EncryptionKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("EncryptionKey")
+            .field("etype", &self.etype)
+            .field("value_len", &self.value.len())
+            .finish()
+    }
 }
 
 /// Keytab parsing and serialization error.

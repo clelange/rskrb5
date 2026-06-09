@@ -93,6 +93,18 @@ fn rejects_unsupported_keytab_names() {
 }
 
 #[test]
+fn encryption_key_debug_redacts_value() {
+    let key = EncryptionKey {
+        etype: 18,
+        value: vec![1, 2, 3, 4],
+    };
+    let debug = format!("{key:?}");
+
+    assert_eq!(debug, "EncryptionKey { etype: 18, value_len: 4 }");
+    assert!(!debug.contains("1, 2, 3, 4"));
+}
+
+#[test]
 fn saves_and_loads_file_keytab_name() {
     let bytes = decode_hex(KEYTAB_TESTUSER1_TEST_GOKRB5);
     let keytab = Keytab::parse(&bytes).expect("keytab fixture parses");

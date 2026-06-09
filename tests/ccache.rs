@@ -119,6 +119,18 @@ fn rejects_unsupported_cache_names() {
 }
 
 #[test]
+fn encryption_key_debug_redacts_value() {
+    let key = rskrb5::ccache::EncryptionKey {
+        etype: 18,
+        value: vec![1, 2, 3, 4],
+    };
+    let debug = format!("{key:?}");
+
+    assert_eq!(debug, "EncryptionKey { etype: 18, value_len: 4 }");
+    assert!(!debug.contains("1, 2, 3, 4"));
+}
+
+#[test]
 fn saves_and_loads_file_cache_name() {
     let bytes = decode_hex(CCACHE_TEST);
     let cache = CCache::parse(&bytes).expect("ccache fixture parses");

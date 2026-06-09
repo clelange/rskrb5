@@ -6,6 +6,7 @@
 //! together.
 
 use crate::file_name;
+use std::fmt;
 use std::path::{Path, PathBuf};
 
 const CCACHE_FIRST_BYTE: u8 = 5;
@@ -517,13 +518,22 @@ impl Credential {
 }
 
 /// Kerberos encryption key stored in a ccache credential.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq, zeroize::Zeroize, zeroize::ZeroizeOnDrop)]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 pub struct EncryptionKey {
     /// Kerberos encryption type id.
     pub etype: i32,
     /// Raw key bytes.
     pub value: Vec<u8>,
+}
+
+impl fmt::Debug for EncryptionKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("EncryptionKey")
+            .field("etype", &self.etype)
+            .field("value_len", &self.value.len())
+            .finish()
+    }
 }
 
 /// Credential timestamp fields as POSIX seconds.
