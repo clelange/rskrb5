@@ -21,7 +21,8 @@ pure-Rust Kerberos library.
   password-derived ktutil-compatible entries from explicit principals or SPN-style names plus redacted metadata JSON against
   gokrb5 fixtures and load/save file-backed `KRB5_KTNAME` and
   `default_keytab_name` values;
-  config parsing covers gokrb5-compatible libdefaults including `default_ccache_name`,
+  config parsing covers gokrb5-compatible libdefaults including `default_ccache_name`
+  and canonicalize KDC option handling,
   `KRB5_CONFIG` path-list loading,
   comment/tab/no-blank-line variants, realm host mappings, domain realm lookup, duration parsing, and configured KDC/KPassword server lookup; ccache parsing
   covers MIT file caches, `KRB5CCNAME` load/save plus FILE/WRFILE/DIR cache-name helpers with `%{uid}`/`%{euid}` expansion, opaque ticket bytes,

@@ -103,6 +103,9 @@ pub const TGS_REP_ENCPART_SESSION_KEY_USAGE: u32 = 8;
 /// Raw KDC option mask for `renewable` in RFC 4120 bit-string order.
 pub const KDC_OPTION_RENEWABLE: u32 = 0x0080_0000;
 
+/// Raw KDC option mask for `canonicalize` in RFC 4120 bit-string order.
+pub const KDC_OPTION_CANONICALIZE: u32 = 0x0001_0000;
+
 /// Raw KDC option mask for `renew` in RFC 4120 bit-string order.
 pub const KDC_OPTION_RENEW: u32 = 0x0000_0002;
 
@@ -196,6 +199,9 @@ impl AsReqOptions {
             defaults.default_tkt_enctype_ids.clone()
         };
         options.kdc_option_bits = defaults.kdc_default_options;
+        if defaults.canonicalize {
+            options.kdc_option_bits |= KDC_OPTION_CANONICALIZE;
+        }
         options
     }
 
@@ -278,6 +284,9 @@ impl TgsReqOptions {
             defaults.default_tgs_enctype_ids.clone()
         };
         options.kdc_option_bits = defaults.kdc_default_options;
+        if defaults.canonicalize {
+            options.kdc_option_bits |= KDC_OPTION_CANONICALIZE;
+        }
         options
     }
 

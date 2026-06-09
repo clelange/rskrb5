@@ -9,18 +9,19 @@ use rskrb5::client::KpasswdRequestOptions;
 use rskrb5::client::{
     AP_REP_ENCPART_USAGE, AP_REQ_AUTHENTICATOR_USAGE, AS_REP_ENCPART_USAGE,
     AS_REQ_PA_ENC_TIMESTAMP_USAGE, ApReqOptions, AsReqOptions, BuiltAsReq, BuiltTgsReq, Error,
-    KDC_ERR_PREAUTH_REQUIRED, KDC_OPTION_RENEW, KDC_OPTION_RENEWABLE, KdcError, KdcTransport,
-    PA_ENC_TIMESTAMP, PA_ETYPE_INFO2, PA_REQ_ENC_PA_REP, PA_TGS_REQ, PreauthKeyInfo, Principal,
-    TGS_REP_ENCPART_SESSION_KEY_USAGE, TGS_REQ_AUTHENTICATOR_CHECKSUM_USAGE,
-    TGS_REQ_AUTHENTICATOR_USAGE, TgsReqOptions, build_ap_req_with_confounder,
-    build_kpasswd_request, build_kpasswd_request_with_confounders, build_preauthenticated_as_req,
-    build_tgs_req_for_realm_with_confounder, build_tgs_req_with_confounder, build_tgt_as_req,
-    build_tgt_renewal_req_with_confounder, build_ticket_renewal_req_with_confounder,
-    default_password_salt, derive_password_reply_key, exchange_as_req, exchange_tgs_req,
-    login_as_service_with_keytab, login_as_service_with_password, login_tgt_with_keytab,
-    login_tgt_with_password, pa_enc_timestamp_with_confounder, process_as_rep, process_kdc_error,
-    process_tgs_rep, process_tgs_rep_with_referral, renew_tgt, renew_ticket,
-    select_preauth_key_info, verify_kpasswd_ap_rep,
+    KDC_ERR_PREAUTH_REQUIRED, KDC_OPTION_CANONICALIZE, KDC_OPTION_RENEW, KDC_OPTION_RENEWABLE,
+    KdcError, KdcTransport, PA_ENC_TIMESTAMP, PA_ETYPE_INFO2, PA_REQ_ENC_PA_REP, PA_TGS_REQ,
+    PreauthKeyInfo, Principal, TGS_REP_ENCPART_SESSION_KEY_USAGE,
+    TGS_REQ_AUTHENTICATOR_CHECKSUM_USAGE, TGS_REQ_AUTHENTICATOR_USAGE, TgsReqOptions,
+    build_ap_req_with_confounder, build_kpasswd_request, build_kpasswd_request_with_confounders,
+    build_preauthenticated_as_req, build_tgs_req_for_realm_with_confounder,
+    build_tgs_req_with_confounder, build_tgt_as_req, build_tgt_renewal_req_with_confounder,
+    build_ticket_renewal_req_with_confounder, default_password_salt, derive_password_reply_key,
+    exchange_as_req, exchange_tgs_req, login_as_service_with_keytab,
+    login_as_service_with_password, login_tgt_with_keytab, login_tgt_with_password,
+    pa_enc_timestamp_with_confounder, process_as_rep, process_kdc_error, process_tgs_rep,
+    process_tgs_rep_with_referral, renew_tgt, renew_ticket, select_preauth_key_info,
+    verify_kpasswd_ap_rep,
 };
 #[cfg(feature = "tokio")]
 use rskrb5::client::{KdcProtocol, PrunedSessions, TokioClient};
@@ -105,6 +106,28 @@ fn builds_tgt_as_req_with_renew_lifetime_sets_renewable_flag() {
     assert_eq!(
         system_time_from_kerberos_time(body.rtime.as_ref().expect("renew time")),
         timestamp(1_893_589_447)
+    );
+}
+
+#[test]
+fn as_req_options_from_libdefaults_sets_canonicalize_flag() {
+    let defaults = rskrb5::config::LibDefaults {
+        canonicalize: true,
+        kdc_default_options: 0x0000_0010,
+        ..Default::default()
+    };
+    let client = Principal::user("TEST.GOKRB5", "testuser1");
+    let options = AsReqOptions::from_libdefaults(timestamp(1_893_553_447), 0x1122_3344, &defaults);
+
+    let request = build_tgt_as_req(client, options).expect("AS-REQ builds");
+    let decoded: rasn_kerberos::AsReq = rasn::der::decode(&request.der).expect("AS-REQ decodes");
+    let body = &decoded.0.req_body;
+
+    assert_eq!(
+        body.kdc_options.0.as_raw_slice(),
+        (KDC_OPTION_CANONICALIZE | 0x0000_0010)
+            .to_be_bytes()
+            .as_slice()
     );
 }
 
@@ -371,6 +394,37 @@ fn builds_tgs_req_with_pa_tgs_req_and_checksum() {
         checksum.checksum.as_ref(),
         TGS_REQ_AUTHENTICATOR_CHECKSUM_USAGE,
     ));
+}
+
+#[test]
+fn tgs_req_options_from_libdefaults_sets_canonicalize_flag() {
+    let defaults = rskrb5::config::LibDefaults {
+        canonicalize: true,
+        kdc_default_options: 0x0000_0010,
+        ..Default::default()
+    };
+    let tgt = sample_tgt_session();
+    let service = sample_service_principal();
+    let options = TgsReqOptions::from_libdefaults(timestamp(1_893_553_450), 0x5566_7788, &defaults);
+
+    let request = build_tgs_req_with_confounder(
+        &tgt,
+        service,
+        options,
+        timestamp(1_893_553_451),
+        654_321,
+        &decode_hex(TGS_REQ_CONFOUNDER),
+    )
+    .expect("TGS-REQ builds");
+    let decoded: rasn_kerberos::TgsReq = rasn::der::decode(&request.der).expect("TGS-REQ decodes");
+    let body = &decoded.0.req_body;
+
+    assert_eq!(
+        body.kdc_options.0.as_raw_slice(),
+        (KDC_OPTION_CANONICALIZE | 0x0000_0010)
+            .to_be_bytes()
+            .as_slice()
+    );
 }
 
 #[test]
