@@ -174,6 +174,31 @@ fn validates_ap_req_from_default_keytab_name() {
 }
 
 #[test]
+fn validates_ap_req_from_default_keytab_when_env_is_absent() {
+    if std::env::var_os("KRB5_KTNAME").is_some() {
+        return;
+    }
+
+    let keytab = http_keytab();
+    let path = temp_service_keytab_file("validate-default-env-fallback");
+    let name = format!("FILE:{}", path.display());
+    keytab.save_name(&name).expect("keytab saves by name");
+    let config = config_with_default_keytab_name(&name);
+    let mut validator = ServiceValidator::from_default_keytab(&config)
+        .expect("validator loads default keytab")
+        .with_now(timestamp(1_893_553_447));
+    let _ = std::fs::remove_file(&path);
+
+    let validated = validator
+        .validate_ap_req(&decode_hex(VALID_AP_REQ))
+        .expect("AP-REQ validates");
+
+    assert_eq!(validated.client.name(), "testuser1");
+    assert_eq!(validated.service.name(), "HTTP/host.test.gokrb5");
+    assert_eq!(validated.session_key.etype, 18);
+}
+
+#[test]
 fn validates_ap_req_with_verified_ticket_pac() {
     let keytab = syshttp_keytab();
     let mut validator = ServiceValidator::new(&keytab).with_now(timestamp(1_893_553_447));

@@ -349,6 +349,15 @@ impl Keytab {
     }
 }
 
+#[cfg(feature = "messages")]
+pub(crate) fn default_keytab_name(configured_name: &str) -> Result<String, Error> {
+    match std::env::var(KRB5_KTNAME_ENV) {
+        Ok(keytab_name) => Ok(keytab_name),
+        Err(std::env::VarError::NotPresent) => Ok(configured_name.to_owned()),
+        Err(error) => Err(Error::DefaultKeytabName(error)),
+    }
+}
+
 impl Default for Keytab {
     fn default() -> Self {
         Self::new()

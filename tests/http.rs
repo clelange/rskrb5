@@ -217,6 +217,38 @@ fn tower_layer_loads_config_default_keytab_name() {
 
 #[cfg(feature = "tower")]
 #[test]
+fn tower_layer_loads_default_keytab_when_env_is_absent() {
+    if std::env::var_os("KRB5_KTNAME").is_some() {
+        return;
+    }
+
+    let path = temp_file("http-default-keytab-env-fallback");
+    let name = format!("FILE:{}", path.display());
+    keytab().save(&path).expect("keytab saves");
+    let config = config_with_default_keytab_name(&name);
+
+    let layer = krb_http::NegotiateLayer::from_default_keytab(&config)
+        .expect("layer loads default keytab")
+        .with_now(timestamp(1_893_553_447))
+        .with_ap_rep(false);
+    let _ = std::fs::remove_file(&path);
+
+    let mut service = layer.layer(AssertAcceptedService);
+    let mut request = Request::new(());
+    krb_http::set_authorization_header(&mut request, &valid_authorization_header())
+        .expect("authorization header sets");
+
+    let response = run_ready(service.call(request)).expect("inner response succeeds");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        response.headers().get(WWW_AUTHENTICATE).is_none(),
+        "AP-REP header is disabled"
+    );
+}
+
+#[cfg(feature = "tower")]
+#[test]
 fn tower_layer_rejects_replayed_request() {
     let keytab = keytab();
     let mut service = krb_http::NegotiateLayer::new(&keytab)

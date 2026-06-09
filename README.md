@@ -53,7 +53,7 @@ pure-Rust Kerberos library.
   session/cache snapshots plus structured diagnostics; service validation covers
   gokrb5-generated AP-REQ fixtures, service-ticket decryption, authenticator
   decryption, client matching, ticket time checks, clock skew, replay, and
-  replay-cache aging, address-required behavior, file-name and configured-default keytab validators,
+  replay-cache aging, address-required behavior, file-name, configured-default, and environment-preferred keytab validators,
   plus AP-REP mutual-auth reply generation and
   verification and verified ticket PAC extraction; SPNEGO/GSSAPI covers KRB5
   mech tokens, RFC4121 MIC and sealed/unsealed Wrap tokens, NegTokenInit/Resp,
@@ -63,7 +63,7 @@ pure-Rust Kerberos library.
   HTTP/Tower adapters cover
   generic `http` request helpers and service-side Tower middleware that
   challenges, validates, attaches accepted contexts, emits AP-REP response
-  headers, and supports borrowed, owned, file-name, and configured-default keytab layers, with a compileable Axum Negotiate example; PAC
+  headers, and supports borrowed, owned, file-name, configured-default, and environment-preferred keytab layers, with a compileable Axum Negotiate example; PAC
   parsing covers the PAC container, KERB_VALIDATION_INFO NDR, client info,
   UPN/DNS info, credentials info with AS-key decrypt helpers, S4U delegation
   info, device info, compressed and uncompressed client/device claims info,

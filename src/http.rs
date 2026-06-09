@@ -241,6 +241,16 @@ impl NegotiateLayer<'static> {
         Self::from_keytab_name(&config.libdefaults.default_keytab_name)
     }
 
+    /// Create a Negotiate layer from the default keytab.
+    ///
+    /// `KRB5_KTNAME` takes precedence when set. Otherwise this falls back to
+    /// `config.libdefaults.default_keytab_name`.
+    pub fn from_default_keytab(config: &Config) -> Result<Self> {
+        Self::from_keytab_name(crate::keytab::default_keytab_name(
+            &config.libdefaults.default_keytab_name,
+        )?)
+    }
+
     /// Create a Negotiate layer by loading the file keytab named by `KRB5_KTNAME`.
     pub fn from_keytab_env() -> Result<Self> {
         Ok(Self::from_keytab(Keytab::load_from_env()?))
@@ -305,6 +315,14 @@ impl<S> NegotiateService<'static, S> {
     /// Wrap an inner service by loading `config.libdefaults.default_keytab_name`.
     pub fn from_default_keytab_name(inner: S, config: &Config) -> Result<Self> {
         Ok(NegotiateLayer::from_default_keytab_name(config)?.layer(inner))
+    }
+
+    /// Wrap an inner service with the default keytab.
+    ///
+    /// `KRB5_KTNAME` takes precedence when set. Otherwise this falls back to
+    /// `config.libdefaults.default_keytab_name`.
+    pub fn from_default_keytab(inner: S, config: &Config) -> Result<Self> {
+        Ok(NegotiateLayer::from_default_keytab(config)?.layer(inner))
     }
 
     /// Wrap an inner service by loading the file keytab named by `KRB5_KTNAME`.
