@@ -19,7 +19,7 @@ pure-Rust Kerberos library.
 - The first real modules are `keytab`, `krb5.conf`, `ccache`, `crypto`,
   `client`, `kadmin`, `service`, and `pac`: keytabs parse, serialize, and select keys against
   gokrb5 fixtures;
-  config parsing covers libdefaults, realm host mappings, domain realm lookup,
+  config parsing covers gokrb5-compatible libdefaults, realm host mappings, domain realm lookup,
   duration parsing, and configured KDC/KPassword server lookup; ccache parsing
   covers MIT file caches, opaque ticket bytes, server entry lookup, and exact
   fixture round-trips; crypto covers RFC3961 n-fold, RFC3962

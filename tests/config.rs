@@ -85,6 +85,16 @@ const COMPLEX_KRB5_CONF: &str = r#"
 "#;
 
 #[test]
+fn libdefaults_defaults_match_gokrb5() {
+    let config = Config::new();
+
+    assert!(!config.libdefaults.dns_lookup_kdc);
+    assert!(!config.libdefaults.dns_lookup_realm);
+    assert!(config.libdefaults.dns_canonicalize_hostname);
+    assert!(config.libdefaults.no_addresses);
+}
+
+#[test]
 fn parses_gokrb5_integration_config_fixture() {
     let config = Config::parse(KRB5_CONF).expect("config parses");
 

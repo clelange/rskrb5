@@ -1207,8 +1207,10 @@ fn tokio_client_exposes_assume_preauthentication_setting() {
 #[cfg(feature = "tokio")]
 #[test]
 fn tokio_client_validates_configuration() {
+    let mut dns_config = Config::new();
+    dns_config.libdefaults.dns_lookup_kdc = true;
     let configured = TokioClient::with_password(
-        Config::new(),
+        dns_config,
         KdcProtocol::Tcp,
         Principal::user("TEST.GOKRB5", "testuser1"),
         TESTUSER_PASSWORD,
