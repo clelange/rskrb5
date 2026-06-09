@@ -19,6 +19,8 @@ use rskrb5::spnego::{self, AcceptedContext, Krb5MechToken, NegTokenInit, SpnegoT
 #[cfg(feature = "tower")]
 use http_types::Response;
 #[cfg(feature = "tower")]
+use rskrb5::config::Config;
+#[cfg(feature = "tower")]
 use tower_layer::Layer;
 #[cfg(feature = "tower")]
 use tower_service::Service;
@@ -187,6 +189,34 @@ fn tower_layer_loads_owned_keytab_name() {
 
 #[cfg(feature = "tower")]
 #[test]
+fn tower_layer_loads_config_default_keytab_name() {
+    let path = temp_file("http-default-keytab-name");
+    let name = format!("FILE:{}", path.display());
+    keytab().save(&path).expect("keytab saves");
+    let config = config_with_default_keytab_name(&name);
+
+    let layer = krb_http::NegotiateLayer::from_default_keytab_name(&config)
+        .expect("layer loads default keytab name")
+        .with_now(timestamp(1_893_553_447))
+        .with_ap_rep(false);
+    let _ = std::fs::remove_file(&path);
+
+    let mut service = layer.layer(AssertAcceptedService);
+    let mut request = Request::new(());
+    krb_http::set_authorization_header(&mut request, &valid_authorization_header())
+        .expect("authorization header sets");
+
+    let response = run_ready(service.call(request)).expect("inner response succeeds");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        response.headers().get(WWW_AUTHENTICATE).is_none(),
+        "AP-REP header is disabled"
+    );
+}
+
+#[cfg(feature = "tower")]
+#[test]
 fn tower_layer_rejects_replayed_request() {
     let keytab = keytab();
     let mut service = krb_http::NegotiateLayer::new(&keytab)
@@ -231,6 +261,17 @@ fn raw_krb5_authorization_header() -> String {
 
 fn keytab() -> Keytab {
     Keytab::parse(&decode_hex(HTTP_KEYTAB)).expect("HTTP keytab parses")
+}
+
+#[cfg(feature = "tower")]
+fn config_with_default_keytab_name(keytab_name: &str) -> Config {
+    let input = format!(
+        r#"
+[libdefaults]
+ default_keytab_name = {keytab_name}
+"#,
+    );
+    Config::parse(&input).expect("config parses")
 }
 
 fn base64_encode(bytes: &[u8]) -> String {

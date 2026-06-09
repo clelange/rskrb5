@@ -12,6 +12,8 @@ use http_types::{Request, Response, StatusCode};
 #[cfg(feature = "tokio")]
 use crate::client::{Principal, TokioClient};
 #[cfg(feature = "tower")]
+use crate::config::Config;
+#[cfg(feature = "tower")]
 use crate::keytab::Keytab;
 #[cfg(feature = "tower")]
 use crate::service::{ApRepOptions, HostAddress};
@@ -234,6 +236,11 @@ impl NegotiateLayer<'static> {
         Ok(Self::from_keytab(Keytab::load_name(keytab_name)?))
     }
 
+    /// Create a Negotiate layer from `config.libdefaults.default_keytab_name`.
+    pub fn from_default_keytab_name(config: &Config) -> Result<Self> {
+        Self::from_keytab_name(&config.libdefaults.default_keytab_name)
+    }
+
     /// Create a Negotiate layer by loading the file keytab named by `KRB5_KTNAME`.
     pub fn from_keytab_env() -> Result<Self> {
         Ok(Self::from_keytab(Keytab::load_from_env()?))
@@ -293,6 +300,11 @@ impl<S> NegotiateService<'static, S> {
     /// module. Other keytab stores are rejected explicitly.
     pub fn from_keytab_name(inner: S, keytab_name: impl AsRef<str>) -> Result<Self> {
         Ok(NegotiateLayer::from_keytab_name(keytab_name)?.layer(inner))
+    }
+
+    /// Wrap an inner service by loading `config.libdefaults.default_keytab_name`.
+    pub fn from_default_keytab_name(inner: S, config: &Config) -> Result<Self> {
+        Ok(NegotiateLayer::from_default_keytab_name(config)?.layer(inner))
     }
 
     /// Wrap an inner service by loading the file keytab named by `KRB5_KTNAME`.

@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use pretty_assertions::assert_eq;
+use rskrb5::config::Config;
 use rskrb5::crypto::AesSha1Etype;
 use rskrb5::keytab::{EncryptionKey, Keytab};
 use rskrb5::pac;
@@ -139,6 +140,27 @@ fn validates_ap_req_from_keytab_name() {
     keytab.save_name(&name).expect("keytab saves by name");
     let mut validator = ServiceValidator::from_keytab_name(&name)
         .expect("validator loads keytab by name")
+        .with_now(timestamp(1_893_553_447));
+    let _ = std::fs::remove_file(&path);
+
+    let validated = validator
+        .validate_ap_req(&decode_hex(VALID_AP_REQ))
+        .expect("AP-REQ validates");
+
+    assert_eq!(validated.client.name(), "testuser1");
+    assert_eq!(validated.service.name(), "HTTP/host.test.gokrb5");
+    assert_eq!(validated.session_key.etype, 18);
+}
+
+#[test]
+fn validates_ap_req_from_default_keytab_name() {
+    let keytab = http_keytab();
+    let path = temp_service_keytab_file("validate-default-name");
+    let name = format!("FILE:{}", path.display());
+    keytab.save_name(&name).expect("keytab saves by name");
+    let config = config_with_default_keytab_name(&name);
+    let mut validator = ServiceValidator::from_default_keytab_name(&config)
+        .expect("validator loads default keytab name")
         .with_now(timestamp(1_893_553_447));
     let _ = std::fs::remove_file(&path);
 
@@ -389,6 +411,16 @@ fn http_keytab() -> Keytab {
 
 fn syshttp_keytab() -> Keytab {
     Keytab::parse(&decode_hex(common::SYSHTTP_KEYTAB)).expect("sysHTTP keytab parses")
+}
+
+fn config_with_default_keytab_name(keytab_name: &str) -> Config {
+    let input = format!(
+        r#"
+[libdefaults]
+ default_keytab_name = {keytab_name}
+"#,
+    );
+    Config::parse(&input).expect("config parses")
 }
 
 fn ap_req_with_pac() -> Vec<u8> {

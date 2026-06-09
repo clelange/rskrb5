@@ -11,6 +11,7 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use crate::config::Config;
 use crate::crypto::KerberosEtype;
 use crate::keytab::{EncryptionKey, Keytab};
 use crate::pac::{self, Pac};
@@ -498,6 +499,11 @@ impl ServiceValidator<'static> {
     /// module. Other keytab stores are rejected explicitly.
     pub fn from_keytab_name(keytab_name: impl AsRef<str>) -> Result<Self, Error> {
         Ok(Self::from_keytab(Keytab::load_name(keytab_name)?))
+    }
+
+    /// Create a validator from `config.libdefaults.default_keytab_name`.
+    pub fn from_default_keytab_name(config: &Config) -> Result<Self, Error> {
+        Self::from_keytab_name(&config.libdefaults.default_keytab_name)
     }
 
     /// Create a validator by loading the file keytab named by `KRB5_KTNAME`.
