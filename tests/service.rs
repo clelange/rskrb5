@@ -153,6 +153,27 @@ fn validates_ap_req_from_keytab_name() {
 }
 
 #[test]
+fn validates_ap_req_from_keytab_env() {
+    let keytab = http_keytab();
+    let path = temp_service_keytab_file("validate-env");
+    let name = format!("FILE:{}", path.display());
+    keytab.save_name(&name).expect("keytab saves by name");
+    let _env = common::EnvVarGuard::set_krb5_ktname(&name);
+    let mut validator = ServiceValidator::from_keytab_env()
+        .expect("validator loads keytab from env")
+        .with_now(timestamp(1_893_553_447));
+    let _ = std::fs::remove_file(&path);
+
+    let validated = validator
+        .validate_ap_req(&decode_hex(VALID_AP_REQ))
+        .expect("AP-REQ validates");
+
+    assert_eq!(validated.client.name(), "testuser1");
+    assert_eq!(validated.service.name(), "HTTP/host.test.gokrb5");
+    assert_eq!(validated.session_key.etype, 18);
+}
+
+#[test]
 fn validates_ap_req_from_default_keytab_name() {
     let keytab = http_keytab();
     let path = temp_service_keytab_file("validate-default-name");
