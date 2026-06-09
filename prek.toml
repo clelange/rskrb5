@@ -34,6 +34,24 @@ pass_filenames = false
 stages = ["pre-push", "manual"]
 
 [[repos.hooks]]
+id = "cargo-check-no-default-features"
+name = "cargo check --no-default-features"
+language = "system"
+entry = "cargo check --no-default-features"
+files = "\\.rs$|Cargo\\.(toml|lock)$"
+pass_filenames = false
+stages = ["pre-push", "manual"]
+
+[[repos.hooks]]
+id = "cargo-check"
+name = "cargo check"
+language = "system"
+entry = "cargo check"
+files = "\\.rs$|Cargo\\.(toml|lock)$"
+pass_filenames = false
+stages = ["pre-push", "manual"]
+
+[[repos.hooks]]
 id = "cargo-test"
 name = "cargo test"
 language = "system"
