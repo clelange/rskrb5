@@ -425,6 +425,47 @@ fn docker_mit_kdc_tokio_client_password_cache() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
+fn docker_mit_kdc_tokio_client_destroy_clears_live_state() -> Result<(), Box<dyn Error>> {
+    if std::env::var("INTEGRATION").as_deref() != Ok("1") {
+        eprintln!("skipping Docker KDC integration test; set INTEGRATION=1 to enable");
+        return Ok(());
+    }
+    let _guard = INTEGRATION_LOCK.lock().expect("integration test lock");
+
+    runtime().block_on(async {
+        let service = service_principal();
+        let mut client = TokioClient::with_keytab(
+            configured_kdc_config()?,
+            KdcProtocol::Auto,
+            Principal::user(REALM, USER),
+            testuser_keytab()?,
+        )
+        .with_transport(TokioKdcTransport::new().with_timeout(Duration::from_secs(10)));
+        client.login().await?;
+        let ticket = client.get_service_ticket(service.clone()).await?;
+
+        assert_login_session(client.tgt_session().expect("TGT is cached").clone());
+        assert_eq!(ticket.service, service);
+        assert_eq!(client.cached_service_ticket_count(), 1);
+        assert!(client.cached_service_ticket(service.clone()).is_some());
+
+        client.destroy();
+
+        assert!(client.tgt_session().is_none());
+        assert_eq!(client.tgt_session_count(), 0);
+        assert_eq!(client.cached_service_ticket_count(), 0);
+        assert!(client.cached_service_ticket(service).is_none());
+        let error = match client.login().await {
+            Ok(_) => panic!("destroyed client must not log in without credentials"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, ClientError::NoClientCredentials));
+
+        Ok::<_, Box<dyn Error>>(())
+    })
+}
+
+#[test]
 fn docker_mit_kdc_tokio_client_change_password() -> Result<(), Box<dyn Error>> {
     if std::env::var("INTEGRATION").as_deref() != Ok("1") {
         eprintln!("skipping Docker KDC integration test; set INTEGRATION=1 to enable");
