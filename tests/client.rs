@@ -870,6 +870,71 @@ fn tokio_client_returns_cached_service_ticket_from_ccache() {
 
 #[cfg(feature = "tokio")]
 #[test]
+fn tokio_client_exposes_and_removes_cached_service_ticket() {
+    let tgt = sample_tgt_session();
+    let mut service_ticket = sample_service_ticket_session(&tgt);
+    let now = SystemTime::now();
+    service_ticket.start_time = now
+        .checked_sub(Duration::from_secs(60))
+        .expect("start time");
+    service_ticket.end_time = now
+        .checked_add(Duration::from_secs(60 * 60))
+        .expect("end time");
+    let mut client = TokioClient::from_tgt_session(Config::new(), KdcProtocol::Tcp, tgt);
+    client.cache_service_ticket(service_ticket.clone());
+
+    let cached = client
+        .cached_service_ticket(sample_service_principal())
+        .expect("valid cached service ticket is returned");
+    assert_eq!(cached.service, service_ticket.service);
+    assert_eq!(cached.session_key, service_ticket.session_key);
+
+    let removed = client
+        .remove_cached_service_ticket(sample_service_principal())
+        .expect("cached service ticket is removed");
+    assert_eq!(removed.ticket, service_ticket.ticket);
+    assert_eq!(client.cached_service_ticket_count(), 0);
+    assert!(
+        client
+            .cached_service_ticket(sample_service_principal())
+            .is_none()
+    );
+}
+
+#[cfg(feature = "tokio")]
+#[test]
+fn tokio_client_cached_service_ticket_resolves_empty_realm_and_ignores_expired_entries() {
+    let tgt = sample_tgt_session();
+    let mut service_ticket = sample_service_ticket_session(&tgt);
+    let now = SystemTime::now();
+    service_ticket.start_time = now
+        .checked_sub(Duration::from_secs(10 * 60))
+        .expect("start time");
+    service_ticket.end_time = now.checked_sub(Duration::from_secs(60)).expect("end time");
+
+    let mut config = Config::new();
+    config
+        .domain_realm
+        .insert("host.test.gokrb5".to_owned(), "TEST.GOKRB5".to_owned());
+    let mut client = TokioClient::from_tgt_session(config, KdcProtocol::Tcp, tgt);
+    client.cache_service_ticket(service_ticket);
+
+    assert!(
+        client
+            .cached_service_ticket(Principal::new("", 2, ["HTTP", "host.test.gokrb5"]))
+            .is_none()
+    );
+    assert_eq!(client.cached_service_ticket_count(), 1);
+    assert!(
+        client
+            .remove_cached_service_ticket(Principal::new("", 2, ["HTTP", "host.test.gokrb5"]))
+            .is_some()
+    );
+    assert_eq!(client.cached_service_ticket_count(), 0);
+}
+
+#[cfg(feature = "tokio")]
+#[test]
 fn tokio_client_from_ccache_ignores_other_client_credentials() {
     let tgt = sample_tgt_session();
     let service_ticket = sample_service_ticket_session(&tgt);

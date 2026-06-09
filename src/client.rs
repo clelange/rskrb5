@@ -847,6 +847,21 @@ impl TokioClient {
         self.service_tickets.clear();
     }
 
+    /// Return a currently valid cached service ticket without contacting a KDC.
+    pub fn cached_service_ticket(&self, service: Principal) -> Option<TgsRepSession> {
+        let service = self.resolve_service_principal(service);
+        let key = service_cache_key(&service);
+        let ticket = self.service_tickets.get(&key)?;
+        session_valid_at(ticket, SystemTime::now()).then(|| ticket.clone())
+    }
+
+    /// Remove a cached service ticket without dropping the TGT.
+    pub fn remove_cached_service_ticket(&mut self, service: Principal) -> Option<TgsRepSession> {
+        let service = self.resolve_service_principal(service);
+        let key = service_cache_key(&service);
+        self.service_tickets.remove(&key)
+    }
+
     /// Return public TGT session metadata as pretty-printed JSON.
     #[cfg(feature = "serde")]
     pub fn sessions_json(&self) -> Result<String, serde_json::Error> {
