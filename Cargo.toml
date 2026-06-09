@@ -10,6 +10,7 @@ readme = "README.md"
 keywords = ["kerberos", "krb5", "spnego", "gssapi", "authentication"]
 categories = ["authentication", "cryptography", "network-programming"]
 publish = false
+exclude = [".github/"]
 
 [features]
 default = ["spnego", "tokio", "serde"]
