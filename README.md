@@ -42,7 +42,7 @@ pure-Rust Kerberos library.
   keytab AS/TGS integration coverage, ccache credential export/write-back, and a high-level
   Tokio client with password/keytab/ccache credential sources,
   credential attachment, TGT/session renewal, affirm-login reuse,
-  service-ticket caching/lookup/removal, and gokrb5-shaped JSON
+  destroy semantics, service-ticket caching/lookup/removal, and gokrb5-shaped JSON
   session/cache snapshots; service validation covers
   gokrb5-generated AP-REQ fixtures, service-ticket decryption, authenticator
   decryption, client matching, ticket time checks, clock skew, replay, and

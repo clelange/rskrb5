@@ -935,6 +935,30 @@ fn tokio_client_cached_service_ticket_resolves_empty_realm_and_ignores_expired_e
 
 #[cfg(feature = "tokio")]
 #[test]
+fn tokio_client_destroy_clears_credentials_sessions_and_cache() {
+    let tgt = sample_tgt_session();
+    let service_ticket = sample_service_ticket_session(&tgt);
+    let mut client = TokioClient::from_tgt_session(Config::new(), KdcProtocol::Tcp, tgt)
+        .with_password_credential(TESTUSER_PASSWORD);
+    client.cache_service_ticket(service_ticket);
+
+    client.destroy();
+
+    assert!(client.tgt_session().is_none());
+    assert_eq!(client.cached_service_ticket_count(), 0);
+    assert!(
+        client
+            .cached_service_ticket(sample_service_principal())
+            .is_none()
+    );
+    let error = runtime()
+        .block_on(client.login())
+        .expect_err("destroyed client has no credentials or TGT");
+    assert!(matches!(error, Error::NoClientCredentials));
+}
+
+#[cfg(feature = "tokio")]
+#[test]
 fn tokio_client_from_ccache_ignores_other_client_credentials() {
     let tgt = sample_tgt_session();
     let service_ticket = sample_service_ticket_session(&tgt);

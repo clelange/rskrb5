@@ -882,6 +882,13 @@ impl TokioClient {
         self.service_tickets.remove(&key)
     }
 
+    /// Drop live credentials, the TGT session, and all cached service tickets.
+    pub fn destroy(&mut self) {
+        self.credentials = None;
+        self.tgt = None;
+        self.service_tickets.clear();
+    }
+
     /// Return public TGT session metadata as pretty-printed JSON.
     #[cfg(feature = "serde")]
     pub fn sessions_json(&self) -> Result<String, serde_json::Error> {
