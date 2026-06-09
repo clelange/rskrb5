@@ -127,9 +127,10 @@ prek run --all-files --stage pre-push
 ```
 
 The GitHub workflow includes a manual Docker-backed integration job. Run it from
-`workflow_dispatch` with the `integration` input to exercise the live MIT KDC AS
-login test; it preserves the gokrb5-style `INTEGRATION=1`, `TESTPRIVILEGED=1`,
-and optional `TESTAD=1` and `TEST_KPASSWD=1` gates.
+`workflow_dispatch` with the `integration` input to exercise the live MIT KDC,
+HTTP, DNS, ccache, referral, renewal, and kpasswd-gated integration suite; it
+preserves the gokrb5-style `INTEGRATION=1`, `TESTPRIVILEGED=1`, and optional
+`TESTAD=1` and `TEST_KPASSWD=1` gates.
 
 The live kpasswd integration test also requires the `test_kpasswd` workflow
 input because it temporarily changes the Docker test principal password before

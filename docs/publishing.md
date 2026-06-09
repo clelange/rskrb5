@@ -56,11 +56,12 @@ the release:
 INTEGRATION=1 cargo test --all-features --test client_integration
 INTEGRATION=1 TESTPRIVILEGED=1 cargo test --all-features --test client_integration
 INTEGRATION=1 TESTPRIVILEGED=1 TEST_KPASSWD=1 cargo test --all-features --test client_integration
+INTEGRATION=1 TESTAD=1 cargo test --all-features --test client_ad_integration
 ```
 
 `TESTPRIVILEGED=1` and `TEST_KPASSWD=1` are additive gates on top of
-`INTEGRATION=1`. `TESTAD=1` remains optional until Active Directory coverage is
-implemented and documented.
+`INTEGRATION=1`. `TESTAD=1` uses the Active Directory lab endpoints documented
+in the README and remains optional until that lab is maintained in CI.
 
 ## crates.io Cutover
 
