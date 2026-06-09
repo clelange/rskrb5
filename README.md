@@ -50,7 +50,8 @@ pure-Rust Kerberos library.
   session/cache snapshots plus structured diagnostics; service validation covers
   gokrb5-generated AP-REQ fixtures, service-ticket decryption, authenticator
   decryption, client matching, ticket time checks, clock skew, replay, and
-  replay-cache aging, address-required behavior, plus AP-REP mutual-auth reply generation and
+  replay-cache aging, address-required behavior, file-name keytab validators,
+  plus AP-REP mutual-auth reply generation and
   verification and verified ticket PAC extraction; SPNEGO/GSSAPI covers KRB5
   mech tokens, RFC4121 MIC and sealed/unsealed Wrap tokens, NegTokenInit/Resp,
   HTTP Negotiate headers with raw KRB5 token fallback, client AP-REQ initiator

@@ -7,6 +7,7 @@
 //! builds and verifies AP-REP mutual-auth replies using the AP-REQ
 //! authenticator timestamp.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -246,7 +247,7 @@ impl ReplayCache {
 /// AP-REQ validator backed by a service keytab.
 #[derive(Debug)]
 pub struct ServiceValidator<'a> {
-    keytab: &'a Keytab,
+    keytab: Cow<'a, Keytab>,
     max_clock_skew: Duration,
     now: Option<SystemTime>,
     keytab_principal: Option<Vec<String>>,
@@ -259,7 +260,7 @@ impl<'a> ServiceValidator<'a> {
     /// Create a validator with gokrb5-compatible defaults.
     pub fn new(keytab: &'a Keytab) -> Self {
         Self {
-            keytab,
+            keytab: Cow::Borrowed(keytab),
             max_clock_skew: DEFAULT_MAX_CLOCK_SKEW,
             now: None,
             keytab_principal: None,
@@ -478,6 +479,34 @@ impl<'a> ServiceValidator<'a> {
                 realm: service.realm.clone(),
             })
         }
+    }
+}
+
+impl ServiceValidator<'static> {
+    /// Create a validator from an owned keytab.
+    pub fn from_keytab(keytab: Keytab) -> Self {
+        Self {
+            keytab: Cow::Owned(keytab),
+            max_clock_skew: DEFAULT_MAX_CLOCK_SKEW,
+            now: None,
+            keytab_principal: None,
+            client_address: None,
+            require_client_address: false,
+            replay_cache: ReplayCache::new(),
+        }
+    }
+
+    /// Create a validator by loading a file-backed keytab name.
+    ///
+    /// Bare paths, `FILE:path`, and `WRFILE:path` are supported by the keytab
+    /// module. Other keytab stores are rejected explicitly.
+    pub fn from_keytab_name(keytab_name: impl AsRef<str>) -> Result<Self, Error> {
+        Ok(Self::from_keytab(Keytab::load_name(keytab_name)?))
+    }
+
+    /// Create a validator by loading the file keytab named by `KRB5_KTNAME`.
+    pub fn from_keytab_env() -> Result<Self, Error> {
+        Ok(Self::from_keytab(Keytab::load_from_env()?))
     }
 }
 
