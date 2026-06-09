@@ -1199,6 +1199,16 @@ impl TokioClient {
         self.tgt_sessions.get(realm)
     }
 
+    /// Remove a cached TGT session for a target realm.
+    pub fn remove_tgt_session_for_realm(&mut self, realm: &str) -> Option<AsRepSession> {
+        let removed = self.tgt_sessions.remove(realm);
+        if realm == self.client.realm {
+            let primary = self.tgt.take();
+            return removed.or(primary);
+        }
+        removed
+    }
+
     /// Number of cached service tickets.
     pub fn cached_service_ticket_count(&self) -> usize {
         self.service_tickets.len()

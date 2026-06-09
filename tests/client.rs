@@ -1978,6 +1978,29 @@ fn tokio_client_tracks_multiple_tgt_sessions() {
     let reloaded = TokioClient::from_ccache(Config::new(), KdcProtocol::Tcp, &cache);
     assert_eq!(reloaded.tgt_session_count(), 2);
     assert!(reloaded.tgt_session_for_realm("RESDOM.GOKRB5").is_some());
+
+    let removed_referral = client
+        .remove_tgt_session_for_realm("RESDOM.GOKRB5")
+        .expect("referral TGT is removed");
+    assert_eq!(removed_referral.service, referral_tgt.service);
+    assert_eq!(client.tgt_session_count(), 1);
+    assert!(client.tgt_session_for_realm("RESDOM.GOKRB5").is_none());
+    assert_eq!(
+        client.tgt_session().expect("primary TGT remains").service,
+        primary_tgt.service
+    );
+
+    let removed_primary = client
+        .remove_tgt_session_for_realm("TEST.GOKRB5")
+        .expect("primary TGT is removed");
+    assert_eq!(removed_primary.service, primary_tgt.service);
+    assert!(client.tgt_session().is_none());
+    assert_eq!(client.tgt_session_count(), 0);
+    assert!(
+        client
+            .remove_tgt_session_for_realm("MISSING.GOKRB5")
+            .is_none()
+    );
 }
 
 #[cfg(all(feature = "tokio", feature = "serde"))]
