@@ -62,7 +62,7 @@ pure-Rust Kerberos library.
   mech tokens, RFC4121 MIC and sealed/unsealed Wrap tokens, NegTokenInit/Resp,
   HTTP Negotiate headers with raw KRB5 token fallback, client AP-REQ initiator
   headers from TGS service tickets, live Docker HTTP SPNEGO and raw KRB5 Negotiate acceptance,
-  AP-REP response verification, and service-side AP-REQ to AP-REP
+  AP-REP response verification, live replay-sequence rejection, and service-side AP-REQ to AP-REP
   response flow;
   HTTP/Tower adapters cover
   generic `http` request helpers and service-side Tower middleware that

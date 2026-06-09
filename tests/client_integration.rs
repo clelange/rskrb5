@@ -1216,6 +1216,64 @@ fn docker_mit_kdc_spnego_header_round_trip_through_service_validator() -> Result
 
 #[cfg(feature = "spnego")]
 #[test]
+fn docker_mit_kdc_spnego_service_rejects_replayed_headers() -> Result<(), Box<dyn Error>> {
+    if std::env::var("INTEGRATION").as_deref() != Ok("1") {
+        eprintln!("skipping Docker KDC integration test; set INTEGRATION=1 to enable");
+        return Ok(());
+    }
+    let _guard = INTEGRATION_LOCK.lock().expect("integration test lock");
+
+    runtime().block_on(async {
+        let mut client = TokioClient::with_password(
+            configured_kdc_config()?,
+            KdcProtocol::Auto,
+            Principal::user(REALM, USER),
+            PASSWORD,
+        )
+        .with_transport(TokioKdcTransport::new().with_timeout(Duration::from_secs(10)));
+        let service_ticket = client.get_service_ticket(service_principal()).await?;
+        let now = SystemTime::now();
+        let first = rskrb5::spnego::init_sec_context_with_confounder(
+            &service_ticket,
+            rskrb5::spnego::InitiatorContextOptions::new().with_sequence_number(Some(1)),
+            now,
+            111_111,
+            &[0x11; 16],
+        )?;
+        let second = rskrb5::spnego::init_sec_context_with_confounder(
+            &service_ticket,
+            rskrb5::spnego::InitiatorContextOptions::new().with_sequence_number(Some(2)),
+            now,
+            222_222,
+            &[0x22; 16],
+        )?;
+
+        let keytab = http_keytab()?;
+        let mut validator = rskrb5::service::ServiceValidator::new(&keytab).with_now(now);
+        rskrb5::spnego::accept_sec_context_header(&mut validator, &first.header)?;
+        rskrb5::spnego::accept_sec_context_header(&mut validator, &second.header)?;
+
+        let first_replay = rskrb5::spnego::accept_sec_context_header(&mut validator, &first.header)
+            .expect_err("first header replay is rejected");
+        let second_replay =
+            rskrb5::spnego::accept_sec_context_header(&mut validator, &second.header)
+                .expect_err("second header replay is rejected");
+
+        assert!(matches!(
+            first_replay,
+            rskrb5::spnego::Error::Service(rskrb5::service::Error::Replay)
+        ));
+        assert!(matches!(
+            second_replay,
+            rskrb5::spnego::Error::Service(rskrb5::service::Error::Replay)
+        ));
+
+        Ok::<_, Box<dyn Error>>(())
+    })
+}
+
+#[cfg(feature = "spnego")]
+#[test]
 fn docker_mit_kdc_spnego_header_authenticates_to_docker_http() -> Result<(), Box<dyn Error>> {
     if std::env::var("INTEGRATION").as_deref() != Ok("1") {
         eprintln!("skipping Docker KDC integration test; set INTEGRATION=1 to enable");
