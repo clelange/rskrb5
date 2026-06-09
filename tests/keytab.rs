@@ -1,4 +1,4 @@
-use rskrb5::keytab::{EncryptionKey, Entry, Keytab, Principal};
+use rskrb5::keytab::{EncryptionKey, Entry, Keytab, KeytabName, Principal};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -132,6 +132,21 @@ fn resolves_file_keytab_names() {
         Keytab::file_path_from_keytab_name("C:\\temp\\krb5.keytab").expect("Windows path resolves"),
         PathBuf::from("C:\\temp\\krb5.keytab")
     );
+}
+
+#[test]
+fn parses_typed_file_keytab_names() {
+    let parsed = KeytabName::parse("FILE:/etc/krb5.keytab").expect("FILE keytab name parses");
+    assert_eq!(parsed.file_path(), PathBuf::from("/etc/krb5.keytab"));
+    assert_eq!(parsed.into_file_path(), PathBuf::from("/etc/krb5.keytab"));
+
+    let parsed: KeytabName = "WRFILE:relative.keytab"
+        .parse()
+        .expect("WRFILE keytab name parses through FromStr");
+    assert_eq!(parsed.file_path(), PathBuf::from("relative.keytab"));
+
+    let parsed = KeytabName::parse("C:\\temp\\krb5.keytab").expect("Windows path parses");
+    assert_eq!(parsed.file_path(), PathBuf::from("C:\\temp\\krb5.keytab"));
 }
 
 #[test]

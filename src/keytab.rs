@@ -7,10 +7,55 @@ use crate::crypto::KerberosEtype;
 use crate::file_name;
 use std::fmt;
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 use std::time::{Duration, SystemTime, SystemTimeError, UNIX_EPOCH};
 
 const KEYTAB_FIRST_BYTE: u8 = 5;
 const KRB5_KTNAME_ENV: &str = "KRB5_KTNAME";
+
+/// Parsed MIT-style keytab name.
+///
+/// `rskrb5` currently supports file-backed keytabs only. The explicit name
+/// type gives callers a validation point before attempting filesystem access.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum KeytabName {
+    /// A file-backed keytab.
+    File(PathBuf),
+}
+
+impl KeytabName {
+    /// Parse a MIT-style keytab name.
+    ///
+    /// Bare paths, `FILE:path`, and `WRFILE:path` are supported. Collection
+    /// and platform stores such as `DIR:`, `KEYRING:`, and `MEMORY:` are
+    /// rejected explicitly.
+    pub fn parse(name: impl AsRef<str>) -> Result<Self, Error> {
+        Keytab::file_path_from_keytab_name(name.as_ref()).map(Self::File)
+    }
+
+    /// File path for this keytab name.
+    pub fn file_path(&self) -> &Path {
+        match self {
+            Self::File(path) => path,
+        }
+    }
+
+    /// Consume this keytab name and return its file path.
+    pub fn into_file_path(self) -> PathBuf {
+        match self {
+            Self::File(path) => path,
+        }
+    }
+}
+
+impl FromStr for KeytabName {
+    type Err = Error;
+
+    fn from_str(name: &str) -> Result<Self, Self::Err> {
+        Self::parse(name)
+    }
+}
 
 /// Parsed keytab file.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -48,7 +93,7 @@ impl Keytab {
     ///
     /// Bare paths, `FILE:path`, and `WRFILE:path` are supported.
     pub fn load_name(name: impl AsRef<str>) -> Result<Self, Error> {
-        Self::load(Self::file_path_from_keytab_name(name.as_ref())?)
+        Self::load(KeytabName::parse(name)?.into_file_path())
     }
 
     /// Parse keytab bytes.
@@ -141,7 +186,7 @@ impl Keytab {
     ///
     /// Bare paths, `FILE:path`, and `WRFILE:path` are supported.
     pub fn save_name(&self, name: impl AsRef<str>) -> Result<(), Error> {
-        self.save(Self::file_path_from_keytab_name(name.as_ref())?)
+        self.save(KeytabName::parse(name)?.into_file_path())
     }
 
     /// Resolve a MIT-style keytab name to a file path.
