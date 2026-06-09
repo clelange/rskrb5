@@ -2361,6 +2361,89 @@ fn tokio_client_tracks_multiple_tgt_sessions() {
     );
 }
 
+#[cfg(feature = "tokio")]
+#[test]
+fn tokio_client_prefers_freshest_cached_tgt_session() {
+    let primary_session = |remaining_minutes: u64, ticket: &[u8]| {
+        let mut tgt = current_tgt_session(5, remaining_minutes);
+        tgt.ticket = ticket.to_vec();
+        tgt
+    };
+    let referral_session = |remaining_minutes: u64, ticket: &[u8]| {
+        let mut tgt = primary_session(remaining_minutes, ticket);
+        tgt.service = Principal::new(
+            "TEST.GOKRB5",
+            2,
+            ["krbtgt".to_owned(), "RESDOM.GOKRB5".to_owned()],
+        );
+        tgt
+    };
+
+    let primary_tgt = primary_session(120, b"primary-long");
+    let mut client =
+        TokioClient::from_tgt_session(Config::new(), KdcProtocol::Tcp, primary_tgt.clone());
+
+    client
+        .cache_tgt_session(primary_session(30, b"primary-short"))
+        .expect("shorter primary TGT caches");
+    assert_eq!(
+        client
+            .tgt_session()
+            .expect("primary TGT remains")
+            .ticket
+            .as_slice(),
+        b"primary-long"
+    );
+    assert_eq!(
+        client
+            .tgt_session_for_realm("TEST.GOKRB5")
+            .expect("realm-keyed primary remains")
+            .ticket
+            .as_slice(),
+        b"primary-long"
+    );
+
+    client
+        .cache_tgt_session(primary_session(180, b"primary-longer"))
+        .expect("longer primary TGT caches");
+    assert_eq!(
+        client
+            .tgt_session()
+            .expect("primary TGT is replaced")
+            .ticket
+            .as_slice(),
+        b"primary-longer"
+    );
+
+    client
+        .cache_tgt_session(referral_session(90, b"referral-long"))
+        .expect("referral TGT caches");
+
+    client
+        .cache_tgt_session(referral_session(15, b"referral-short"))
+        .expect("shorter referral TGT caches");
+    assert_eq!(
+        client
+            .tgt_session_for_realm("RESDOM.GOKRB5")
+            .expect("longer referral TGT remains")
+            .ticket
+            .as_slice(),
+        b"referral-long"
+    );
+
+    client
+        .cache_tgt_session(referral_session(180, b"referral-longer"))
+        .expect("longer referral TGT caches");
+    assert_eq!(
+        client
+            .tgt_session_for_realm("RESDOM.GOKRB5")
+            .expect("longer referral TGT is selected")
+            .ticket
+            .as_slice(),
+        b"referral-longer"
+    );
+}
+
 #[cfg(all(feature = "tokio", feature = "serde"))]
 #[test]
 fn tokio_client_json_snapshots_match_gokrb5_shapes() {
