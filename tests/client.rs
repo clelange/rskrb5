@@ -1206,6 +1206,66 @@ fn tokio_client_exposes_assume_preauthentication_setting() {
 
 #[cfg(feature = "tokio")]
 #[test]
+fn tokio_client_validates_configuration() {
+    let configured = TokioClient::with_password(
+        Config::new(),
+        KdcProtocol::Tcp,
+        Principal::user("TEST.GOKRB5", "testuser1"),
+        TESTUSER_PASSWORD,
+    );
+    assert!(configured.is_configured());
+    configured
+        .validate_configuration()
+        .expect("password-backed client with DNS KDC lookup is configured");
+
+    let missing_name = TokioClient::with_password(
+        Config::new(),
+        KdcProtocol::Tcp,
+        Principal::user("TEST.GOKRB5", ""),
+        TESTUSER_PASSWORD,
+    );
+    assert!(!missing_name.is_configured());
+    assert!(matches!(
+        missing_name.validate_configuration(),
+        Err(Error::MissingClientName)
+    ));
+
+    let missing_realm = TokioClient::with_password(
+        Config::new(),
+        KdcProtocol::Tcp,
+        Principal::user("", "testuser1"),
+        TESTUSER_PASSWORD,
+    );
+    assert!(!missing_realm.is_configured());
+    assert!(matches!(
+        missing_realm.validate_configuration(),
+        Err(Error::MissingClientRealm)
+    ));
+
+    let mut missing_credentials =
+        TokioClient::from_tgt_session(Config::new(), KdcProtocol::Tcp, sample_tgt_session());
+    missing_credentials.destroy();
+    assert!(!missing_credentials.is_configured());
+    assert!(matches!(
+        missing_credentials.validate_configuration(),
+        Err(Error::NoClientCredentials)
+    ));
+
+    let missing_kdc = TokioClient::with_password(
+        config_without_kdcs(),
+        KdcProtocol::Tcp,
+        Principal::user("TEST.GOKRB5", "testuser1"),
+        TESTUSER_PASSWORD,
+    );
+    assert!(!missing_kdc.is_configured());
+    assert!(matches!(
+        missing_kdc.validate_configuration(),
+        Err(Error::NoConfiguredKdc { realm }) if realm == "TEST.GOKRB5"
+    ));
+}
+
+#[cfg(feature = "tokio")]
+#[test]
 fn tokio_client_login_rejects_expired_cache_only_tgt() {
     let tgt = sample_tgt_session();
     let now = SystemTime::now()

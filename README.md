@@ -41,7 +41,7 @@ pure-Rust Kerberos library.
   renewal, and gated kpasswd change/restore coverage across AES-SHA1, AES-SHA2, DES3, and RC4-HMAC, per-enctype
   keytab AS/TGS integration coverage, ccache credential export/write-back, and a high-level
   Tokio client with password/keytab/ccache credential sources,
-  credential attachment, TGT/session renewal, affirm-login reuse,
+  credential attachment, configuration validation, TGT/session renewal, affirm-login reuse,
   destroy semantics, service-ticket caching/lookup/removal, and gokrb5-shaped JSON
   session/cache snapshots; service validation covers
   gokrb5-generated AP-REQ fixtures, service-ticket decryption, authenticator

@@ -847,6 +847,44 @@ impl TokioClient {
         &self.client
     }
 
+    /// Validate that the client has enough local state for KDC operations.
+    pub fn validate_configuration(&self) -> Result<(), Error> {
+        if self.client.components.is_empty()
+            || self
+                .client
+                .components
+                .iter()
+                .any(|component| component.is_empty())
+        {
+            return Err(Error::MissingClientName);
+        }
+        if self.client.realm.is_empty() {
+            return Err(Error::MissingClientRealm);
+        }
+        if self.credentials.is_none() && self.tgt.is_none() {
+            return Err(Error::NoClientCredentials);
+        }
+        if !self.config.libdefaults.dns_lookup_kdc {
+            let realm_entry =
+                self.config
+                    .realm(&self.client.realm)
+                    .ok_or_else(|| Error::NoConfiguredKdc {
+                        realm: self.client.realm.clone(),
+                    })?;
+            if realm_entry.kdc.is_empty() {
+                return Err(Error::NoConfiguredKdc {
+                    realm: self.client.realm.clone(),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether the client has enough local state for KDC operations.
+    pub fn is_configured(&self) -> bool {
+        self.validate_configuration().is_ok()
+    }
+
     /// Whether AS login sends PA-ENC-TIMESTAMP in the first AS-REQ.
     pub fn assume_preauthentication(&self) -> bool {
         self.assume_preauthentication
@@ -3362,6 +3400,24 @@ pub enum Error {
     #[cfg(feature = "tokio")]
     #[error("no password or keytab credentials are configured")]
     NoClientCredentials,
+
+    /// A high-level client operation needs a non-empty client principal name.
+    #[cfg(feature = "tokio")]
+    #[error("client principal name is not configured")]
+    MissingClientName,
+
+    /// A high-level client operation needs a non-empty client realm.
+    #[cfg(feature = "tokio")]
+    #[error("client principal realm is not configured")]
+    MissingClientRealm,
+
+    /// KDC DNS lookup is disabled and no configured KDC exists for the realm.
+    #[cfg(feature = "tokio")]
+    #[error("no configured KDC exists for realm {realm}")]
+    NoConfiguredKdc {
+        /// Realm missing a configured KDC.
+        realm: String,
+    },
 
     /// A high-level client operation needs a current TGT.
     #[cfg(feature = "tokio")]
