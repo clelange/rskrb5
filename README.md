@@ -68,7 +68,8 @@ pure-Rust Kerberos library.
   UPN/DNS info, credentials info with AS-key decrypt helpers, S4U delegation
   info, device info, compressed and uncompressed client/device claims info,
   signature zeroing, authorization-data extraction, resource group SID
-  expansion, and AES service checksum verification.
+  expansion, gokrb5-style AD credential summaries, and AES service checksum
+  verification.
 - `sspi-rs` is treated as a mature Negotiate/Kerberos collaboration or facade
   candidate.
 - `krb5-rs` is not used as a base implementation because the published crate is

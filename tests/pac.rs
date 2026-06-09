@@ -54,6 +54,49 @@ fn parses_gokrb5_pac_container_and_buffers() {
 }
 
 #[test]
+fn derives_ad_credentials_from_kerb_validation_info() {
+    let bytes = decode_hex(common::PAC_AD_WIN2K);
+    assert!(
+        Pac::parse(&bytes)
+            .expect("raw PAC parses")
+            .ad_credentials()
+            .is_none(),
+        "unprocessed PAC has no AD credential summary"
+    );
+
+    let pac = Pac::parse_and_process(&bytes).expect("PAC parses");
+    let kvi = pac.kerb_validation_info.as_ref().expect("KVI is processed");
+    let credentials = pac
+        .ad_credentials()
+        .expect("AD credentials derive from KVI");
+
+    assert_eq!(credentials.effective_name, "testuser1");
+    assert_eq!(credentials.full_name, "Test1 User1");
+    assert_eq!(credentials.user_id, 1105);
+    assert_eq!(credentials.primary_group_id, 513);
+    assert_eq!(
+        credentials.logon_time,
+        unix_time(1_494_085_991, 825_766_900)
+    );
+    assert_eq!(credentials.logoff_time, kvi.logoff_time.system_time());
+    assert_eq!(
+        credentials.password_last_set,
+        unix_time(1_494_055_388, 968_750_000)
+    );
+    assert_eq!(
+        credentials.group_membership_sids,
+        kvi.group_membership_sids()
+    );
+    assert_eq!(credentials.logon_domain_name, "TEST");
+    assert_eq!(
+        credentials.logon_domain_id.as_deref(),
+        Some("S-1-5-21-3167651404-3865080224-2280184895")
+    );
+    assert_eq!(credentials.logon_server, "ADDC");
+    assert_eq!(kvi.ad_credentials(), credentials);
+}
+
+#[test]
 fn parses_signature_data_and_zeroes_checksum_bytes() {
     let pac = Pac::parse_and_process(&decode_hex(common::PAC_AD_WIN2K)).expect("PAC parses");
     let server = pac

@@ -227,6 +227,13 @@ impl Pac {
         Ok(())
     }
 
+    /// Return AD credential attributes derived from `KERB_VALIDATION_INFO`, when present.
+    pub fn ad_credentials(&self) -> Option<AdCredentials> {
+        self.kerb_validation_info
+            .as_ref()
+            .map(KerbValidationInfo::ad_credentials)
+    }
+
     /// Verify required service-side PAC buffers and the server checksum.
     pub fn verify(&self, key: &EncryptionKey) -> Result<(), Error> {
         self.require_service_buffers()?;
@@ -1113,6 +1120,36 @@ pub struct DomainGroupMembership {
     pub group_ids: Vec<GroupMembership>,
 }
 
+/// AD credential attributes derived from PAC `KERB_VALIDATION_INFO`.
+///
+/// This mirrors the AD credential summary gokrb5 exposes to service callers,
+/// while preserving optional PAC fields as Rust options.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdCredentials {
+    /// Effective user name.
+    pub effective_name: String,
+    /// Full user name.
+    pub full_name: String,
+    /// User RID.
+    pub user_id: u32,
+    /// Primary group RID.
+    pub primary_group_id: u32,
+    /// Logon time.
+    pub logon_time: SystemTime,
+    /// Logoff time.
+    pub logoff_time: SystemTime,
+    /// Password last set time.
+    pub password_last_set: SystemTime,
+    /// Group membership SIDs.
+    pub group_membership_sids: Vec<String>,
+    /// Logon domain name.
+    pub logon_domain_name: String,
+    /// Logon domain SID, when present.
+    pub logon_domain_id: Option<String>,
+    /// Logon server name.
+    pub logon_server: String,
+}
+
 /// Parsed KERB_VALIDATION_INFO.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct KerbValidationInfo {
@@ -1334,6 +1371,23 @@ impl KerbValidationInfo {
             }
         }
         sids
+    }
+
+    /// Return a gokrb5-style AD credential summary.
+    pub fn ad_credentials(&self) -> AdCredentials {
+        AdCredentials {
+            effective_name: self.effective_name.value.clone(),
+            full_name: self.full_name.value.clone(),
+            user_id: self.user_id,
+            primary_group_id: self.primary_group_id,
+            logon_time: self.logon_time.system_time(),
+            logoff_time: self.logoff_time.system_time(),
+            password_last_set: self.password_last_set.system_time(),
+            group_membership_sids: self.group_membership_sids(),
+            logon_domain_name: self.logon_domain_name.value.clone(),
+            logon_domain_id: self.logon_domain_id.as_ref().map(ToString::to_string),
+            logon_server: self.logon_server.value.clone(),
+        }
     }
 }
 
