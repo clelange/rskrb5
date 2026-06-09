@@ -140,6 +140,27 @@ fn encryption_key_debug_redacts_value() {
     assert!(!debug.contains("1, 2, 3, 4"));
 }
 
+#[cfg(feature = "serde")]
+#[test]
+fn keytab_metadata_json_redacts_key_values() {
+    let bytes = decode_hex(KTUTIL_USER_KEYTAB);
+    let keytab = Keytab::parse(&bytes).expect("keytab parses");
+    let metadata = keytab.entry_metadata();
+
+    assert_eq!(metadata.len(), 3);
+    assert_eq!(metadata[0].principal, "user@EXAMPLE.ORG");
+    assert_eq!(metadata[0].etype, 18);
+    assert_eq!(metadata[0].key_length, 32);
+
+    let json = keytab.entries_json().expect("keytab JSON renders");
+    assert!(json.contains(r#""Principal": "user@EXAMPLE.ORG""#));
+    assert!(json.contains(r#""KeyLength": 32"#));
+    assert!(
+        !json.contains("6e88eb2b3931ef17c92e780a4ee421f1411ff5b104e3f75b50dd13f9ed04f9c6"),
+        "raw key material is not rendered"
+    );
+}
+
 #[test]
 fn saves_and_loads_file_keytab_name() {
     let bytes = decode_hex(KEYTAB_TESTUSER1_TEST_GOKRB5);

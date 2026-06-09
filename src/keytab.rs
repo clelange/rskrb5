@@ -193,6 +193,23 @@ impl Keytab {
         &mut self.entries
     }
 
+    /// Redacted entry metadata, suitable for diagnostics and JSON rendering.
+    #[cfg(feature = "serde")]
+    pub fn entry_metadata(&self) -> Vec<KeytabEntryMetadata> {
+        self.entries
+            .iter()
+            .map(KeytabEntryMetadata::from_entry)
+            .collect()
+    }
+
+    /// Return redacted entry metadata as pretty-printed JSON.
+    ///
+    /// Raw key bytes are intentionally omitted.
+    #[cfg(feature = "serde")]
+    pub fn entries_json(&self) -> Result<String, serde_json::Error> {
+        serde_json::to_string_pretty(&self.entry_metadata())
+    }
+
     /// Add an entry by deriving key material from a password.
     ///
     /// This mirrors gokrb5's keytab entry generation: the default Kerberos
@@ -327,6 +344,16 @@ impl Principal {
         salt
     }
 
+    /// Principal components joined by `/`.
+    pub fn name_string(&self) -> String {
+        self.components.join("/")
+    }
+
+    /// Principal as `name@REALM`.
+    pub fn principal_string(&self) -> String {
+        format!("{}@{}", self.name_string(), self.realm)
+    }
+
     fn parse(bytes: &[u8], offset: &mut usize, version: u8, endian: Endian) -> Result<Self, Error> {
         let mut component_count = read_i16(bytes, offset, endian)?;
         if version == 1 {
@@ -393,6 +420,51 @@ impl fmt::Debug for EncryptionKey {
             .field("etype", &self.etype)
             .field("value_len", &self.value.len())
             .finish()
+    }
+}
+
+/// Redacted keytab entry metadata.
+#[cfg(feature = "serde")]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct KeytabEntryMetadata {
+    /// Principal as `name@REALM`.
+    pub principal: String,
+    /// Principal realm.
+    pub realm: String,
+    /// Principal name components.
+    pub components: Vec<String>,
+    /// Kerberos name type.
+    pub name_type: i32,
+    /// Entry timestamp as POSIX seconds.
+    pub timestamp: u32,
+    /// 8-bit key version number.
+    #[serde(rename = "KVNO8")]
+    pub kvno8: u8,
+    /// 32-bit key version number.
+    #[serde(rename = "KVNO")]
+    pub kvno: u32,
+    /// Kerberos encryption type id.
+    #[serde(rename = "EType")]
+    pub etype: i32,
+    /// Length of the key value in bytes.
+    pub key_length: usize,
+}
+
+#[cfg(feature = "serde")]
+impl KeytabEntryMetadata {
+    fn from_entry(entry: &Entry) -> Self {
+        Self {
+            principal: entry.principal.principal_string(),
+            realm: entry.principal.realm.clone(),
+            components: entry.principal.components.clone(),
+            name_type: entry.principal.name_type,
+            timestamp: entry.timestamp,
+            kvno8: entry.kvno8,
+            kvno: entry.kvno,
+            etype: entry.key.etype,
+            key_length: entry.key.value.len(),
+        }
     }
 }
 
