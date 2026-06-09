@@ -1,10 +1,15 @@
 #![cfg(feature = "tokio")]
 
 use std::error::Error;
+use std::fs;
+use std::io::Write;
 use std::net::Ipv4Addr;
+use std::path::PathBuf;
+use std::process::{Command, Stdio};
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use rskrb5::ccache::CCache;
 use rskrb5::client::{
     AsReqOptions, KdcProtocol, PreauthKeyInfo, Principal, TgsReqOptions, TokioClient,
     TokioKdcTransport, build_tgs_req, build_tgt_as_req, derive_password_reply_key,
@@ -687,6 +692,100 @@ fn docker_mit_latest_kdc_keytab_aes_sha2_as_tgs_through_tcp_and_udp() -> Result<
 }
 
 #[test]
+fn docker_mit_kdc_loads_external_kinit_ccache() -> Result<(), Box<dyn Error>> {
+    if !privileged_integration_enabled() {
+        return Ok(());
+    }
+    let _guard = INTEGRATION_LOCK.lock().expect("integration test lock");
+
+    let env = ExternalKrbEnv::new("load-kinit")?;
+    env.kinit()?;
+    let cache = CCache::load_name(&env.ccache_name)?;
+
+    assert_eq!(cache.default_principal().name_string(), USER);
+    assert_eq!(cache.default_principal().realm, REALM);
+    assert!(cache.contains_server(&["krbtgt", REALM]));
+
+    Ok(())
+}
+
+#[test]
+fn docker_mit_kdc_reads_external_kvno_service_ticket_ccache() -> Result<(), Box<dyn Error>> {
+    if !privileged_integration_enabled() {
+        return Ok(());
+    }
+    let _guard = INTEGRATION_LOCK.lock().expect("integration test lock");
+
+    let env = ExternalKrbEnv::new("kvno-service")?;
+    env.kinit()?;
+    env.kvno(&format!("HTTP/{SERVICE_HOST}"))?;
+    let cache = CCache::load_name(&env.ccache_name)?;
+
+    assert!(cache.contains_server(&["HTTP", SERVICE_HOST]));
+    let service = cache
+        .get_entry(&["HTTP", SERVICE_HOST])
+        .expect("HTTP service ticket is cached");
+    assert_eq!(service.server.realm, REALM);
+    assert_eq!(service.key.etype, AES256_ETYPE);
+
+    Ok(())
+}
+
+#[test]
+fn docker_mit_kdc_tokio_client_uses_external_ccache_tgt() -> Result<(), Box<dyn Error>> {
+    if !privileged_integration_enabled() {
+        return Ok(());
+    }
+    let _guard = INTEGRATION_LOCK.lock().expect("integration test lock");
+
+    let env = ExternalKrbEnv::new("client-tgt")?;
+    env.kinit()?;
+    let cache = CCache::load_name(&env.ccache_name)?;
+
+    runtime().block_on(async {
+        let mut client =
+            TokioClient::from_ccache(configured_kdc_config()?, KdcProtocol::Auto, &cache)
+                .with_transport(TokioKdcTransport::new().with_timeout(Duration::from_secs(10)));
+        let first = client.get_service_ticket(service_principal()).await?;
+        let second = client.get_service_ticket(service_principal()).await?;
+
+        assert_eq!(first, second);
+        assert_eq!(first.client, Principal::user(REALM, USER));
+        assert_eq!(first.service, service_principal());
+        assert_eq!(first.session_key.etype, AES256_ETYPE);
+        assert_eq!(client.cached_service_ticket_count(), 1);
+
+        Ok::<_, Box<dyn Error>>(())
+    })
+}
+
+#[test]
+fn docker_mit_kdc_tokio_client_uses_cached_service_ticket_without_kdc() -> Result<(), Box<dyn Error>>
+{
+    if !privileged_integration_enabled() {
+        return Ok(());
+    }
+    let _guard = INTEGRATION_LOCK.lock().expect("integration test lock");
+
+    let env = ExternalKrbEnv::new("client-cached-service")?;
+    env.kinit()?;
+    env.kvno(&format!("HTTP/{SERVICE_HOST}"))?;
+    let cache = CCache::load_name(&env.ccache_name)?;
+
+    runtime().block_on(async {
+        let mut client = TokioClient::from_ccache(Config::new(), KdcProtocol::Auto, &cache)
+            .with_transport(TokioKdcTransport::new().with_timeout(Duration::from_secs(10)));
+        let ticket = client.get_service_ticket(service_principal()).await?;
+
+        assert_eq!(ticket.client, Principal::user(REALM, USER));
+        assert_eq!(ticket.service, service_principal());
+        assert_eq!(ticket.session_key.etype, AES256_ETYPE);
+
+        Ok::<_, Box<dyn Error>>(())
+    })
+}
+
+#[test]
 fn docker_mit_kdc_tgt_renewal_through_tcp_and_udp() -> Result<(), Box<dyn Error>> {
     if std::env::var("INTEGRATION").as_deref() != Ok("1") {
         eprintln!("skipping Docker KDC integration test; set INTEGRATION=1 to enable");
@@ -1346,6 +1445,127 @@ fn des3_confounder(protocol: KdcProtocol, elapsed: Duration) -> [u8; 8] {
     confounder[1..5].copy_from_slice(&elapsed.subsec_nanos().to_be_bytes());
     confounder[5..8].copy_from_slice(&elapsed.as_secs().to_be_bytes()[5..8]);
     confounder
+}
+
+struct ExternalKrbEnv {
+    config_path: PathBuf,
+    ccache_path: PathBuf,
+    ccache_name: String,
+}
+
+impl ExternalKrbEnv {
+    fn new(label: &str) -> Result<Self, Box<dyn Error>> {
+        let config_path = temp_integration_file(&format!("{label}-krb5.conf"))?;
+        let ccache_path = temp_integration_file(&format!("{label}-ccache"))?;
+        let ccache_name = format!("FILE:{}", ccache_path.display());
+        fs::write(&config_path, external_tool_krb5_conf())?;
+        Ok(Self {
+            config_path,
+            ccache_path,
+            ccache_name,
+        })
+    }
+
+    fn kinit(&self) -> Result<(), Box<dyn Error>> {
+        let mut child = self
+            .command("kinit")
+            .arg(format!("{USER}@{REALM}"))
+            .stdin(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+        let mut stdin = child.stdin.take().expect("kinit stdin is piped");
+        stdin.write_all(PASSWORD)?;
+        stdin.write_all(b"\n")?;
+        drop(stdin);
+        let output = child.wait_with_output()?;
+        if !output.status.success() {
+            return Err(format!(
+                "kinit failed with status {:?}: {}",
+                output.status.code(),
+                String::from_utf8_lossy(&output.stderr)
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    fn kvno(&self, service: &str) -> Result<(), Box<dyn Error>> {
+        let output = self.command("kvno").arg(service).output()?;
+        if !output.status.success() {
+            return Err(format!(
+                "kvno failed with status {:?}: {}",
+                output.status.code(),
+                String::from_utf8_lossy(&output.stderr)
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    fn command(&self, program: &str) -> Command {
+        let mut command = Command::new(program);
+        command
+            .env("KRB5_CONFIG", &self.config_path)
+            .env("KRB5CCNAME", &self.ccache_name);
+        command
+    }
+}
+
+impl Drop for ExternalKrbEnv {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.config_path);
+        let _ = fs::remove_file(&self.ccache_path);
+    }
+}
+
+fn privileged_integration_enabled() -> bool {
+    if std::env::var("INTEGRATION").as_deref() != Ok("1") {
+        eprintln!("skipping Docker KDC integration test; set INTEGRATION=1 to enable");
+        return false;
+    }
+    if std::env::var("TESTPRIVILEGED").as_deref() != Ok("1") {
+        eprintln!(
+            "skipping privileged Docker KDC integration test; set TESTPRIVILEGED=1 to enable"
+        );
+        return false;
+    }
+    true
+}
+
+fn external_tool_krb5_conf() -> String {
+    format!(
+        r#"
+[libdefaults]
+ default_realm = {REALM}
+ dns_lookup_realm = false
+ dns_lookup_kdc = false
+ ticket_lifetime = 24h
+ forwardable = yes
+ default_tkt_enctypes = aes256-cts-hmac-sha1-96
+ default_tgs_enctypes = aes256-cts-hmac-sha1-96
+ noaddresses = false
+
+[realms]
+ {REALM} = {{
+  kdc = {}
+  default_domain = test.gokrb5
+ }}
+
+[domain_realm]
+ .test.gokrb5 = {REALM}
+ test.gokrb5 = {REALM}
+"#,
+        kdc_addr()
+    )
+}
+
+fn temp_integration_file(name: &str) -> Result<PathBuf, Box<dyn Error>> {
+    let elapsed = SystemTime::now().duration_since(UNIX_EPOCH)?;
+    Ok(std::env::temp_dir().join(format!(
+        "rskrb5-{name}-{}-{}",
+        std::process::id(),
+        elapsed.as_nanos()
+    )))
 }
 
 fn kdc_addr() -> String {

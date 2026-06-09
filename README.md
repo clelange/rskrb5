@@ -43,7 +43,8 @@ pure-Rust Kerberos library.
   and renewable referral TGT sessions, renewable AS/TGS request flags, explicit
   TGT/service-ticket renewal helpers, Docker MIT KDC AS/TGS login, TGT
   renewal, and gated kpasswd change/restore coverage across AES-SHA1, AES-SHA2, DES3, and RC4-HMAC, per-enctype
-  keytab AS/TGS integration coverage, keytab file-name helpers with `%{uid}`/`%{euid}` expansion, explicit env and environment-preferred client keytab loading, ccache credential export/write-back and
+  keytab AS/TGS integration coverage, gated external `kinit`/`kvno` ccache
+  integration, keytab file-name helpers with `%{uid}`/`%{euid}` expansion, explicit env and environment-preferred client keytab loading, ccache credential export/write-back and
   file/env cache-name loading/saving plus environment-preferred default ccache loading/write-back, and a high-level
   Tokio client with password/keytab/ccache credential sources,
   credential attachment, file-name constructors/write-back, configuration validation, multi-realm TGT/session caching/removal,
