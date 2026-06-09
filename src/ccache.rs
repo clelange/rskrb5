@@ -13,16 +13,18 @@ use std::str::FromStr;
 const CCACHE_FIRST_BYTE: u8 = 5;
 const HEADER_FIELD_TAG_KDC_OFFSET: u16 = 1;
 const KRB5CCNAME_ENV: &str = "KRB5CCNAME";
+const DIR_PRIMARY_FILE: &str = "primary";
+const DIR_DEFAULT_PRIMARY_CACHE: &str = "tkt";
 const X_CACHECONF_REALM: &str = "X-CACHECONF:";
 const X_CACHECONF_COMPONENT: &str = "krb5_ccache_conf_data";
 
 /// Parsed MIT-style credential cache name.
 ///
-/// `rskrb5` currently supports file-backed caches only, including subsidiary
-/// `DIR::path` cache names which point directly at a FILE-format cache in a
-/// DIR collection. Keeping the parsed name explicit gives callers a stable
-/// validation point and leaves room for cache collections and platform stores
-/// to grow into separate variants.
+/// `rskrb5` currently supports direct file-backed cache names, including
+/// subsidiary `DIR::path` cache names which point directly at a FILE-format
+/// cache in a DIR collection. Keeping the parsed name explicit gives callers a
+/// stable validation point and leaves room for platform stores to grow into
+/// separate variants.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum CacheName {
@@ -48,10 +50,12 @@ impl CacheName {
     /// Parse a MIT-style credential cache name.
     ///
     /// Bare paths, `FILE:path`, `WRFILE:path`, and subsidiary `DIR::path`
-    /// cache names are supported. Cache collections and platform stores such
-    /// as `DIR:`, `KCM:`, `KEYRING:`, and `API:` are rejected explicitly.
+    /// cache names are supported. `DIR:directory` primary collections are
+    /// resolved by `CCache::file_path_from_cache_name`, which may touch the
+    /// filesystem. Platform stores such as `KCM:`, `KEYRING:`, and `API:` are
+    /// rejected explicitly.
     pub fn parse(name: impl AsRef<str>) -> Result<Self, Error> {
-        CCache::file_path_from_cache_name(name.as_ref()).map(Self::File)
+        direct_file_path_from_cache_name(name.as_ref()).map(Self::File)
     }
 
     /// File path for this cache name.
@@ -107,9 +111,9 @@ impl CCache {
     /// Load and parse the file credential cache named by `KRB5CCNAME`.
     ///
     /// Only file-backed cache names are supported: bare paths, `FILE:path`,
-    /// `WRFILE:path`, and subsidiary `DIR::path` cache names. Cache
-    /// collections and platform stores such as `DIR:`, `KCM:`, `KEYRING:`,
-    /// and `API:` are rejected explicitly.
+    /// `WRFILE:path`, `DIR:directory`, and subsidiary `DIR::path` cache
+    /// names. Platform stores such as `KCM:`, `KEYRING:`, and `API:` are
+    /// rejected explicitly.
     pub fn load_from_env() -> Result<Self, Error> {
         let name = std::env::var(KRB5CCNAME_ENV).map_err(Error::DefaultCacheName)?;
         Self::load_name(name)
@@ -117,10 +121,10 @@ impl CCache {
 
     /// Load and parse a credential cache by MIT-style cache name.
     ///
-    /// Bare paths, `FILE:path`, `WRFILE:path`, and subsidiary `DIR::path`
-    /// cache names are supported.
+    /// Bare paths, `FILE:path`, `WRFILE:path`, `DIR:directory`, and
+    /// subsidiary `DIR::path` cache names are supported.
     pub fn load_name(name: impl AsRef<str>) -> Result<Self, Error> {
-        Self::load(CacheName::parse(name)?.into_file_path())
+        Self::load(Self::file_path_from_cache_name(name.as_ref())?)
     }
 
     /// Save this credential cache to a file.
@@ -137,29 +141,22 @@ impl CCache {
 
     /// Save this credential cache by MIT-style cache name.
     ///
-    /// Bare paths, `FILE:path`, `WRFILE:path`, and subsidiary `DIR::path`
-    /// cache names are supported.
+    /// Bare paths, `FILE:path`, `WRFILE:path`, `DIR:directory`, and
+    /// subsidiary `DIR::path` cache names are supported.
     pub fn save_name(&self, name: impl AsRef<str>) -> Result<(), Error> {
-        self.save(CacheName::parse(name)?.into_file_path())
+        self.save(Self::file_path_from_cache_name(name.as_ref())?)
     }
 
     /// Resolve a MIT-style cache name to a file path.
     ///
-    /// This does not touch the filesystem; it only validates that the name
-    /// denotes a cache format backed by this module.
+    /// `DIR:directory` names read the directory's `primary` file and create it
+    /// with the default `tkt` primary name when it is absent, matching MIT
+    /// Kerberos collection resolution.
     pub fn file_path_from_cache_name(name: &str) -> Result<PathBuf, Error> {
-        if let Some(path) = dir_subsidiary_path(name) {
-            if path.is_empty() {
-                return Err(Error::InvalidCacheName);
-            }
-            return Ok(PathBuf::from(path));
+        if let Some(directory) = dir_collection_path(name) {
+            return dir_collection_primary_path(directory);
         }
-        file_name::file_path_from_name(name, &["FILE", "WRFILE"]).map_err(|error| match error {
-            file_name::Error::Empty => Error::InvalidCacheName,
-            file_name::Error::UnsupportedType { name_type } => Error::UnsupportedCacheType {
-                cache_type: name_type,
-            },
-        })
+        direct_file_path_from_cache_name(name)
     }
 
     /// Parse credential cache bytes.
@@ -367,6 +364,18 @@ fn same_principal_identity(left: &Principal, right: &Principal) -> bool {
     left.realm == right.realm && left.components == right.components
 }
 
+fn direct_file_path_from_cache_name(name: &str) -> Result<PathBuf, Error> {
+    if let Some(path) = dir_subsidiary_path(name) {
+        return validate_dir_subsidiary_path(path);
+    }
+    file_name::file_path_from_name(name, &["FILE", "WRFILE"]).map_err(|error| match error {
+        file_name::Error::Empty => Error::InvalidCacheName,
+        file_name::Error::UnsupportedType { name_type } => Error::UnsupportedCacheType {
+            cache_type: name_type,
+        },
+    })
+}
+
 fn dir_subsidiary_path(name: &str) -> Option<&str> {
     let (prefix, residual) = name.split_once(':')?;
     if prefix.eq_ignore_ascii_case("DIR") && residual.starts_with(':') {
@@ -374,6 +383,62 @@ fn dir_subsidiary_path(name: &str) -> Option<&str> {
     } else {
         None
     }
+}
+
+fn dir_collection_path(name: &str) -> Option<&str> {
+    let (prefix, residual) = name.split_once(':')?;
+    if prefix.eq_ignore_ascii_case("DIR") && !residual.starts_with(':') {
+        Some(residual)
+    } else {
+        None
+    }
+}
+
+fn validate_dir_subsidiary_path(path: &str) -> Result<PathBuf, Error> {
+    if path.is_empty() {
+        return Err(Error::InvalidCacheName);
+    }
+    let path = PathBuf::from(path);
+    let has_parent = path
+        .parent()
+        .is_some_and(|parent| !parent.as_os_str().is_empty());
+    let Some(filename) = path.file_name().and_then(|filename| filename.to_str()) else {
+        return Err(Error::InvalidCacheName);
+    };
+    if !has_parent || !filename.starts_with(DIR_DEFAULT_PRIMARY_CACHE) {
+        return Err(Error::InvalidCacheName);
+    }
+    Ok(path)
+}
+
+fn dir_collection_primary_path(directory: &str) -> Result<PathBuf, Error> {
+    if directory.is_empty() {
+        return Err(Error::InvalidCacheName);
+    }
+    let directory = Path::new(directory);
+    let primary_path = directory.join(DIR_PRIMARY_FILE);
+    let primary = match std::fs::read_to_string(&primary_path) {
+        Ok(contents) => parse_dir_primary_name(&contents)?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            std::fs::write(
+                &primary_path,
+                format!("{DIR_DEFAULT_PRIMARY_CACHE}\n").as_bytes(),
+            )?;
+            DIR_DEFAULT_PRIMARY_CACHE.to_owned()
+        }
+        Err(error) => return Err(Error::Io(error)),
+    };
+    Ok(directory.join(primary))
+}
+
+fn parse_dir_primary_name(contents: &str) -> Result<String, Error> {
+    let Some((line, _)) = contents.split_once('\n') else {
+        return Err(Error::InvalidCacheName);
+    };
+    if !line.starts_with(DIR_DEFAULT_PRIMARY_CACHE) || line.contains('/') || line.contains('\\') {
+        return Err(Error::InvalidCacheName);
+    }
+    Ok(line.to_owned())
 }
 
 fn is_config_credential(credential: &Credential) -> bool {

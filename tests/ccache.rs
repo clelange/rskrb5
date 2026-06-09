@@ -122,6 +122,12 @@ fn parses_typed_file_cache_names() {
     let parsed = CacheName::parse("DIR::relative/tktABC").expect("DIR subsidiary name parses");
     assert_eq!(parsed.file_path(), PathBuf::from("relative/tktABC"));
 
+    assert!(matches!(
+        CacheName::parse("DIR:relative-collection")
+            .expect_err("DIR primary collection needs ccache resolution"),
+        Error::UnsupportedCacheType { cache_type } if cache_type == "DIR"
+    ));
+
     let parsed = CacheName::parse("C:\\temp\\krb5cc").expect("Windows path parses");
     assert_eq!(parsed.file_path(), PathBuf::from("C:\\temp\\krb5cc"));
 }
@@ -137,11 +143,21 @@ fn rejects_unsupported_cache_names() {
         Error::InvalidCacheName
     ));
     assert!(matches!(
-        CCache::file_path_from_cache_name("DIR:/tmp/krb5cc").expect_err("DIR cache rejected"),
-        Error::UnsupportedCacheType { cache_type } if cache_type == "DIR"
+        CCache::file_path_from_cache_name("DIR:").expect_err("empty DIR collection rejected"),
+        Error::InvalidCacheName
     ));
     assert!(matches!(
         CCache::file_path_from_cache_name("DIR::").expect_err("empty DIR subsidiary rejected"),
+        Error::InvalidCacheName
+    ));
+    assert!(matches!(
+        CCache::file_path_from_cache_name("DIR::tktABC")
+            .expect_err("DIR subsidiary without parent rejected"),
+        Error::InvalidCacheName
+    ));
+    assert!(matches!(
+        CCache::file_path_from_cache_name("DIR::relative/not-cache")
+            .expect_err("DIR subsidiary filename rejected"),
         Error::InvalidCacheName
     ));
     assert!(matches!(
@@ -209,7 +225,9 @@ fn saves_and_loads_file_cache_name() {
 fn saves_and_loads_dir_subsidiary_cache_name() {
     let bytes = decode_hex(CCACHE_TEST);
     let cache = CCache::parse(&bytes).expect("ccache fixture parses");
-    let path = temp_file("save-load-dir-subsidiary");
+    let directory = temp_dir("save-load-dir-subsidiary");
+    std::fs::create_dir(&directory).expect("temp DIR collection is created");
+    let path = directory.join("tktABC");
     let name = format!("DIR::{}", path.display());
 
     cache
@@ -217,8 +235,69 @@ fn saves_and_loads_dir_subsidiary_cache_name() {
         .expect("ccache saves by DIR subsidiary name");
     let loaded = CCache::load_name(&name).expect("ccache loads by DIR subsidiary name");
     let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_dir(&directory);
 
     assert_eq!(loaded, cache);
+}
+
+#[test]
+fn saves_and_loads_dir_primary_collection_cache_name() {
+    let bytes = decode_hex(CCACHE_TEST);
+    let cache = CCache::parse(&bytes).expect("ccache fixture parses");
+    let directory = temp_dir("save-load-dir-primary");
+    std::fs::create_dir(&directory).expect("temp DIR collection is created");
+    let name = format!("DIR:{}", directory.display());
+
+    cache
+        .save_name(&name)
+        .expect("ccache saves by DIR primary collection name");
+    assert_eq!(
+        std::fs::read_to_string(directory.join("primary")).expect("primary file is written"),
+        "tkt\n"
+    );
+    let loaded = CCache::load_name(&name).expect("ccache loads by DIR primary collection name");
+    assert_eq!(loaded, cache);
+
+    let _ = std::fs::remove_file(directory.join("tkt"));
+    let _ = std::fs::remove_file(directory.join("primary"));
+    let _ = std::fs::remove_dir(&directory);
+}
+
+#[test]
+fn dir_primary_collection_uses_existing_primary_file() {
+    let bytes = decode_hex(CCACHE_TEST);
+    let cache = CCache::parse(&bytes).expect("ccache fixture parses");
+    let directory = temp_dir("existing-dir-primary");
+    std::fs::create_dir(&directory).expect("temp DIR collection is created");
+    std::fs::write(directory.join("primary"), b"tktABC\n").expect("primary file is written");
+    let name = format!("DIR:{}", directory.display());
+
+    cache
+        .save_name(&name)
+        .expect("ccache saves to existing DIR primary");
+    assert!(directory.join("tktABC").exists());
+    let loaded = CCache::load_name(&name).expect("ccache loads existing DIR primary");
+    assert_eq!(loaded, cache);
+
+    let _ = std::fs::remove_file(directory.join("tktABC"));
+    let _ = std::fs::remove_file(directory.join("primary"));
+    let _ = std::fs::remove_dir(&directory);
+}
+
+#[test]
+fn dir_primary_collection_rejects_invalid_primary_file() {
+    let directory = temp_dir("invalid-dir-primary");
+    std::fs::create_dir(&directory).expect("temp DIR collection is created");
+    std::fs::write(directory.join("primary"), b"not-a-cache\n").expect("primary file is written");
+    let name = format!("DIR:{}", directory.display());
+
+    assert!(matches!(
+        CCache::file_path_from_cache_name(&name).expect_err("invalid primary file rejected"),
+        Error::InvalidCacheName
+    ));
+
+    let _ = std::fs::remove_file(directory.join("primary"));
+    let _ = std::fs::remove_dir(&directory);
 }
 
 #[test]
@@ -398,4 +477,8 @@ fn temp_file(name: &str) -> PathBuf {
         "rskrb5-ccache-{name}-{}-{nanos}",
         std::process::id()
     ))
+}
+
+fn temp_dir(name: &str) -> PathBuf {
+    temp_file(name)
 }
