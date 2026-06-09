@@ -130,6 +130,35 @@ fn encryption_key_debug_redacts_value() {
     assert!(!debug.contains("1, 2, 3, 4"));
 }
 
+#[cfg(feature = "serde")]
+#[test]
+fn ccache_metadata_json_redacts_key_and_ticket_values() {
+    let bytes = decode_hex(CCACHE_TEST);
+    let cache = CCache::parse(&bytes).expect("ccache parses");
+    let metadata = cache.credential_metadata();
+
+    assert_eq!(metadata.len(), 3);
+    assert_eq!(metadata[0].client, "testuser1@TEST.GOKRB5");
+    assert_eq!(metadata[0].server, "krbtgt/TEST.GOKRB5@TEST.GOKRB5");
+    assert_eq!(metadata[0].etype, 18);
+    assert_eq!(metadata[0].key_length, 32);
+    assert_eq!(metadata[0].ticket_length, 346);
+    assert!(metadata[1].is_config_entry);
+
+    let json = cache.credentials_json().expect("ccache JSON renders");
+    assert!(json.contains(r#""Server": "HTTP/host.test.gokrb5@TEST.GOKRB5""#));
+    assert!(json.contains(r#""KeyLength": 32"#));
+    assert!(json.contains(r#""TicketLength": 368"#));
+    assert!(
+        !json.contains("88b94319f2dcd1de20ebd3bf3174778769323bce76ef71fb37a8ba4be93c38df"),
+        "raw key material is not rendered"
+    );
+    assert!(
+        !json.contains("6182015630820152a003020105"),
+        "ticket DER is not rendered"
+    );
+}
+
 #[test]
 fn saves_and_loads_file_cache_name() {
     let bytes = decode_hex(CCACHE_TEST);

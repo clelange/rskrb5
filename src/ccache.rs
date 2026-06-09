@@ -230,6 +230,23 @@ impl CCache {
             .collect()
     }
 
+    /// Redacted credential metadata, suitable for diagnostics and JSON rendering.
+    #[cfg(feature = "serde")]
+    pub fn credential_metadata(&self) -> Vec<CredentialMetadata> {
+        self.credentials
+            .iter()
+            .map(CredentialMetadata::from_credential)
+            .collect()
+    }
+
+    /// Return redacted credential metadata as pretty-printed JSON.
+    ///
+    /// Raw key bytes and ticket DER are intentionally omitted.
+    #[cfg(feature = "serde")]
+    pub fn credentials_json(&self) -> Result<String, serde_json::Error> {
+        serde_json::to_string_pretty(&self.credential_metadata())
+    }
+
     /// Test whether the cache contains a server principal by name components.
     ///
     /// Like gokrb5, name type and realm are not significant for this check.
@@ -341,6 +358,11 @@ impl Principal {
     /// Principal components joined by `/`.
     pub fn name_string(&self) -> String {
         self.components.join("/")
+    }
+
+    /// Principal as `name@REALM`.
+    pub fn principal_string(&self) -> String {
+        format!("{}@{}", self.name_string(), self.realm)
     }
 
     /// Compare principal components, ignoring name type and realm like gokrb5's
@@ -514,6 +536,70 @@ impl Credential {
         write_data(out, &self.ticket, endian)?;
         write_data(out, &self.second_ticket, endian)?;
         Ok(())
+    }
+}
+
+/// Redacted credential cache entry metadata.
+#[cfg(feature = "serde")]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct CredentialMetadata {
+    /// Client principal as `name@REALM`.
+    pub client: String,
+    /// Server principal as `name@REALM`.
+    pub server: String,
+    /// Client realm.
+    pub client_realm: String,
+    /// Server realm.
+    pub server_realm: String,
+    /// Client principal components.
+    pub client_components: Vec<String>,
+    /// Server principal components.
+    pub server_components: Vec<String>,
+    /// Kerberos encryption type id.
+    #[serde(rename = "EType")]
+    pub etype: i32,
+    /// Length of the session key in bytes.
+    pub key_length: usize,
+    /// Credential timestamps as POSIX seconds.
+    pub times: CredentialTimes,
+    /// Whether the ticket is encrypted in the session key.
+    pub is_skey: bool,
+    /// Kerberos ticket flags as raw bytes.
+    pub ticket_flags: [u8; 4],
+    /// Number of client addresses.
+    pub address_count: usize,
+    /// Number of authorization-data entries.
+    pub auth_data_count: usize,
+    /// Primary ticket length in bytes.
+    pub ticket_length: usize,
+    /// Second ticket length in bytes.
+    pub second_ticket_length: usize,
+    /// Whether this is an X-CACHECONF metadata entry.
+    pub is_config_entry: bool,
+}
+
+#[cfg(feature = "serde")]
+impl CredentialMetadata {
+    fn from_credential(credential: &Credential) -> Self {
+        Self {
+            client: credential.client.principal_string(),
+            server: credential.server.principal_string(),
+            client_realm: credential.client.realm.clone(),
+            server_realm: credential.server.realm.clone(),
+            client_components: credential.client.components.clone(),
+            server_components: credential.server.components.clone(),
+            etype: credential.key.etype,
+            key_length: credential.key.value.len(),
+            times: credential.times.clone(),
+            is_skey: credential.is_skey,
+            ticket_flags: credential.ticket_flags,
+            address_count: credential.addresses.len(),
+            auth_data_count: credential.auth_data.len(),
+            ticket_length: credential.ticket.len(),
+            second_ticket_length: credential.second_ticket.len(),
+            is_config_entry: credential.server.realm.starts_with("X-CACHECONF"),
+        }
     }
 }
 
