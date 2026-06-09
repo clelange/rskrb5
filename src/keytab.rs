@@ -242,6 +242,28 @@ impl Keytab {
         Ok(())
     }
 
+    /// Add an entry from an SPN-style principal name string.
+    ///
+    /// The name is split on `/` and stored with name type `1`
+    /// (`KRB_NT_PRINCIPAL`), matching gokrb5's keytab `AddEntry` behavior.
+    pub fn add_entry_from_password_name(
+        &mut self,
+        principal_name: impl AsRef<str>,
+        realm: impl Into<String>,
+        password: impl AsRef<[u8]>,
+        timestamp: SystemTime,
+        kvno: u8,
+        etype: i32,
+    ) -> Result<(), Error> {
+        self.add_entry_from_password(
+            Principal::from_name(realm, 1, principal_name)?,
+            password,
+            timestamp,
+            kvno,
+            etype,
+        )
+    }
+
     /// Find the newest key matching principal components, realm, kvno, and
     /// encryption type. A `kvno` of `0` matches any kvno, mirroring gokrb5.
     pub fn find_key(
@@ -333,6 +355,23 @@ impl Principal {
             components: components.into_iter().map(Into::into).collect(),
             name_type,
         }
+    }
+
+    /// Create a keytab principal from components separated by `/`.
+    pub fn from_name(
+        realm: impl Into<String>,
+        name_type: i32,
+        principal_name: impl AsRef<str>,
+    ) -> Result<Self, Error> {
+        let principal_name = principal_name.as_ref();
+        if principal_name.is_empty() {
+            return Err(Error::InvalidPrincipalName);
+        }
+        let components = principal_name.split('/');
+        if components.clone().any(str::is_empty) {
+            return Err(Error::InvalidPrincipalName);
+        }
+        Ok(Self::new(realm, name_type, components))
     }
 
     /// Return the default Kerberos password salt for this principal.
@@ -486,6 +525,9 @@ pub enum Error {
         /// Keytab type prefix before the first colon.
         keytab_type: String,
     },
+    /// A principal name was empty or contained empty components.
+    #[error("invalid keytab principal name")]
+    InvalidPrincipalName,
     /// Input is too short to contain the keytab header.
     #[error("keytab is too short: {actual} bytes")]
     TooShort {

@@ -70,6 +70,33 @@ fn generates_gokrb5_service_keytab_entries_from_password() {
 }
 
 #[test]
+fn generates_gokrb5_keytab_entries_from_principal_name() {
+    let expected = decode_hex(KTUTIL_SERVICE_KEYTAB);
+    let expected_keytab = Keytab::parse(&expected).expect("ktutil keytab parses");
+    let timestamp = expected_keytab.entries()[0].system_time();
+    let mut keytab = Keytab::new();
+
+    for etype in [18, 17, 23] {
+        keytab
+            .add_entry_from_password_name(
+                "HTTP/www.example.org",
+                "EXAMPLE.ORG",
+                b"hello456",
+                timestamp,
+                10,
+                etype,
+            )
+            .expect("entry is added");
+    }
+
+    assert_eq!(keytab.to_bytes().expect("keytab serializes"), expected);
+    assert!(matches!(
+        Principal::from_name("EXAMPLE.ORG", 1, "HTTP/").expect_err("empty component rejected"),
+        rskrb5::keytab::Error::InvalidPrincipalName
+    ));
+}
+
+#[test]
 fn saves_and_loads_keytab_file() {
     let bytes = decode_hex(KEYTAB_TESTUSER1_TEST_GOKRB5);
     let keytab = Keytab::parse(&bytes).expect("keytab fixture parses");

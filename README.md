@@ -18,7 +18,7 @@ pure-Rust Kerberos library.
   `picky-krb`.
 - The first real modules are `keytab`, `krb5.conf`, `ccache`, `crypto`,
   `client`, `kadmin`, `service`, and `pac`: keytabs parse, serialize, select keys, and generate
-  password-derived ktutil-compatible entries plus redacted metadata JSON against
+  password-derived ktutil-compatible entries from explicit principals or SPN-style names plus redacted metadata JSON against
   gokrb5 fixtures and load/save file-backed `KRB5_KTNAME` and
   `default_keytab_name` values;
   config parsing covers gokrb5-compatible libdefaults, `KRB5_CONFIG` path-list loading,
