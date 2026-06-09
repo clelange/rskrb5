@@ -254,6 +254,29 @@ fn detects_ap_req_replay() {
 }
 
 #[test]
+fn clears_old_replay_cache_entries() {
+    let keytab = http_keytab();
+    let now = timestamp(1_893_553_447);
+    let mut validator = ServiceValidator::new(&keytab).with_now(now);
+    validator
+        .validate_ap_req(&decode_hex(VALID_AP_REQ))
+        .expect("first AP-REQ validates");
+    assert_eq!(validator.replay_cache_mut().len(), 1);
+
+    let removed = validator.replay_cache_mut().clear_older_than_at(
+        Duration::from_secs(5 * 60),
+        now.checked_add(Duration::from_secs(5 * 60 + 1))
+            .expect("cleanup time"),
+    );
+
+    assert_eq!(removed, 1);
+    assert!(validator.replay_cache_mut().is_empty());
+    validator
+        .validate_ap_req(&decode_hex(VALID_AP_REQ))
+        .expect("expired replay entry no longer rejects request");
+}
+
+#[test]
 fn validates_keytab_principal_override_failure() {
     let keytab = http_keytab();
     let mut validator = ServiceValidator::new(&keytab)

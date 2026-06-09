@@ -7,7 +7,7 @@
 //! builds and verifies AP-REP mutual-auth replies using the AP-REQ
 //! authenticator timestamp.
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::crypto::KerberosEtype;
@@ -199,7 +199,7 @@ pub struct VerifiedApRep {
 /// In-memory AP-REQ replay cache.
 #[derive(Debug, Default)]
 pub struct ReplayCache {
-    entries: HashSet<ReplayKey>,
+    entries: HashMap<ReplayKey, SystemTime>,
 }
 
 impl ReplayCache {
@@ -213,8 +213,33 @@ impl ReplayCache {
         self.entries.clear();
     }
 
-    fn insert(&mut self, key: ReplayKey) -> bool {
-        self.entries.insert(key)
+    /// Number of cached replay entries.
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Whether the replay cache is empty.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// Remove entries presented more than `max_age` ago.
+    pub fn clear_older_than(&mut self, max_age: Duration) -> usize {
+        self.clear_older_than_at(max_age, SystemTime::now())
+    }
+
+    /// Remove entries presented more than `max_age` before `now`.
+    pub fn clear_older_than_at(&mut self, max_age: Duration, now: SystemTime) -> usize {
+        let before = self.entries.len();
+        self.entries.retain(|_, presented_at| {
+            now.duration_since(*presented_at)
+                .map_or(true, |age| age <= max_age)
+        });
+        before - self.entries.len()
+    }
+
+    fn insert(&mut self, key: ReplayKey, presented_at: SystemTime) -> bool {
+        self.entries.insert(key, presented_at).is_none()
     }
 }
 
@@ -367,7 +392,7 @@ impl<'a> ServiceValidator<'a> {
             ctime_seconds: authenticator.ctime.0.timestamp(),
             cusec,
         };
-        if !self.replay_cache.insert(replay_key) {
+        if !self.replay_cache.insert(replay_key, now) {
             return Err(Error::Replay);
         }
 
