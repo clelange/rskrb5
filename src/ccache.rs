@@ -5,10 +5,11 @@
 //! remain opaque DER bytes until the crypto and ASN.1 message layers are wired
 //! together.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 const CCACHE_FIRST_BYTE: u8 = 5;
 const HEADER_FIELD_TAG_KDC_OFFSET: u16 = 1;
+const KRB5CCNAME_ENV: &str = "KRB5CCNAME";
 
 /// Parsed MIT credential cache file.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -37,10 +38,69 @@ impl CCache {
         Self::parse(&bytes)
     }
 
+    /// Load and parse the file credential cache named by `KRB5CCNAME`.
+    ///
+    /// Only file-backed cache names are supported: bare paths, `FILE:path`,
+    /// and `WRFILE:path`. Cache collections and platform stores such as
+    /// `DIR:`, `KCM:`, `KEYRING:`, and `API:` are rejected explicitly.
+    pub fn load_from_env() -> Result<Self, Error> {
+        let name = std::env::var(KRB5CCNAME_ENV).map_err(Error::DefaultCacheName)?;
+        Self::load_name(name)
+    }
+
+    /// Load and parse a credential cache by MIT-style cache name.
+    ///
+    /// Bare paths, `FILE:path`, and `WRFILE:path` are supported.
+    pub fn load_name(name: impl AsRef<str>) -> Result<Self, Error> {
+        Self::load(Self::file_path_from_cache_name(name.as_ref())?)
+    }
+
     /// Save this credential cache to a file.
     pub fn save(&self, path: impl AsRef<Path>) -> Result<(), Error> {
         std::fs::write(path.as_ref(), self.to_bytes()?)?;
         Ok(())
+    }
+
+    /// Save this credential cache to the file cache named by `KRB5CCNAME`.
+    pub fn save_to_env(&self) -> Result<(), Error> {
+        let name = std::env::var(KRB5CCNAME_ENV).map_err(Error::DefaultCacheName)?;
+        self.save_name(name)
+    }
+
+    /// Save this credential cache by MIT-style cache name.
+    ///
+    /// Bare paths, `FILE:path`, and `WRFILE:path` are supported.
+    pub fn save_name(&self, name: impl AsRef<str>) -> Result<(), Error> {
+        self.save(Self::file_path_from_cache_name(name.as_ref())?)
+    }
+
+    /// Resolve a MIT-style cache name to a file path.
+    ///
+    /// This does not touch the filesystem; it only validates that the name
+    /// denotes a cache format backed by this module.
+    pub fn file_path_from_cache_name(name: &str) -> Result<PathBuf, Error> {
+        if name.is_empty() {
+            return Err(Error::InvalidCacheName);
+        }
+
+        let Some((prefix, path)) = name.split_once(':') else {
+            return Ok(PathBuf::from(name));
+        };
+
+        if is_windows_drive_path(prefix, path) {
+            return Ok(PathBuf::from(name));
+        }
+
+        if prefix.eq_ignore_ascii_case("FILE") || prefix.eq_ignore_ascii_case("WRFILE") {
+            if path.is_empty() {
+                return Err(Error::InvalidCacheName);
+            }
+            Ok(PathBuf::from(path))
+        } else {
+            Err(Error::UnsupportedCacheType {
+                cache_type: prefix.to_owned(),
+            })
+        }
     }
 
     /// Parse credential cache bytes.
@@ -549,6 +609,18 @@ pub enum Error {
     /// File loading failed.
     #[error("credential cache file could not be read: {0}")]
     Io(#[from] std::io::Error),
+    /// The default cache name could not be read from `KRB5CCNAME`.
+    #[error("default credential cache name could not be read from KRB5CCNAME: {0}")]
+    DefaultCacheName(std::env::VarError),
+    /// A cache name was empty or did not include a path.
+    #[error("invalid credential cache name")]
+    InvalidCacheName,
+    /// The cache name uses a cache type this module cannot parse.
+    #[error("unsupported credential cache type: {cache_type}")]
+    UnsupportedCacheType {
+        /// Cache type prefix before the first colon.
+        cache_type: String,
+    },
     /// Input is too short to contain the ccache header.
     #[error("credential cache is too short: {actual} bytes")]
     TooShort {
@@ -593,6 +665,12 @@ pub enum Error {
     /// The v4 header length did not match parsed fields.
     #[error("invalid credential cache header length")]
     InvalidHeaderLength,
+}
+
+fn is_windows_drive_path(prefix: &str, path: &str) -> bool {
+    prefix.len() == 1
+        && prefix.as_bytes()[0].is_ascii_alphabetic()
+        && (path.starts_with('\\') || path.starts_with('/'))
 }
 
 #[derive(Clone, Copy, Debug)]

@@ -74,6 +74,60 @@ fn saves_and_loads_ccache_file() {
 }
 
 #[test]
+fn resolves_file_cache_names() {
+    assert_eq!(
+        CCache::file_path_from_cache_name("/tmp/krb5cc_1000").expect("bare path resolves"),
+        PathBuf::from("/tmp/krb5cc_1000")
+    );
+    assert_eq!(
+        CCache::file_path_from_cache_name("FILE:/tmp/krb5cc_1000").expect("FILE path resolves"),
+        PathBuf::from("/tmp/krb5cc_1000")
+    );
+    assert_eq!(
+        CCache::file_path_from_cache_name("WRFILE:relative-cache").expect("WRFILE path resolves"),
+        PathBuf::from("relative-cache")
+    );
+    assert_eq!(
+        CCache::file_path_from_cache_name("C:\\temp\\krb5cc").expect("Windows path resolves"),
+        PathBuf::from("C:\\temp\\krb5cc")
+    );
+}
+
+#[test]
+fn rejects_unsupported_cache_names() {
+    assert!(matches!(
+        CCache::file_path_from_cache_name("").expect_err("empty name rejected"),
+        Error::InvalidCacheName
+    ));
+    assert!(matches!(
+        CCache::file_path_from_cache_name("FILE:").expect_err("empty FILE path rejected"),
+        Error::InvalidCacheName
+    ));
+    assert!(matches!(
+        CCache::file_path_from_cache_name("DIR:/tmp/krb5cc").expect_err("DIR cache rejected"),
+        Error::UnsupportedCacheType { cache_type } if cache_type == "DIR"
+    ));
+    assert!(matches!(
+        CCache::file_path_from_cache_name("KCM:").expect_err("KCM cache rejected"),
+        Error::UnsupportedCacheType { cache_type } if cache_type == "KCM"
+    ));
+}
+
+#[test]
+fn saves_and_loads_file_cache_name() {
+    let bytes = decode_hex(CCACHE_TEST);
+    let cache = CCache::parse(&bytes).expect("ccache fixture parses");
+    let path = temp_file("save-load-name");
+    let name = format!("FILE:{}", path.display());
+
+    cache.save_name(&name).expect("ccache saves by name");
+    let loaded = CCache::load_name(&name).expect("ccache loads by name");
+    let _ = std::fs::remove_file(&path);
+
+    assert_eq!(loaded, cache);
+}
+
+#[test]
 fn gets_client_and_server_entries() {
     let bytes = decode_hex(CCACHE_TEST);
     let cache = CCache::parse(&bytes).expect("ccache fixture parses");

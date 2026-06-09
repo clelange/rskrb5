@@ -21,8 +21,8 @@ pure-Rust Kerberos library.
   gokrb5 fixtures;
   config parsing covers gokrb5-compatible libdefaults, realm host mappings, domain realm lookup,
   duration parsing, and configured KDC/KPassword server lookup; ccache parsing
-  covers MIT file caches, opaque ticket bytes, server entry lookup, and exact
-  fixture round-trips; crypto covers RFC3961 n-fold, RFC3962
+  covers MIT file caches, `KRB5CCNAME` file cache-name helpers, opaque ticket bytes,
+  server entry lookup, and exact fixture round-trips; crypto covers RFC3961 n-fold, RFC3962
   AES128/AES256-CTS-HMAC-SHA1-96, RFC8009
   AES128/AES256-CTS-HMAC-SHA2, DES3-CBC-SHA1-KD, and RC4-HMAC string-to-key,
   KDF, checksums, and deterministic encrypted-message vectors; message wrappers
@@ -40,7 +40,8 @@ pure-Rust Kerberos library.
   referral TGT sessions, renewable AS/TGS request flags, explicit
   TGT/service-ticket renewal helpers, Docker MIT KDC AS/TGS login, TGT
   renewal, and gated kpasswd change/restore coverage across AES-SHA1, AES-SHA2, DES3, and RC4-HMAC, per-enctype
-  keytab AS/TGS integration coverage, ccache credential export/write-back, and a high-level
+  keytab AS/TGS integration coverage, ccache credential export/write-back and
+  file cache-name loading/saving, and a high-level
   Tokio client with password/keytab/ccache credential sources,
   credential attachment, configuration validation, multi-realm TGT/session caching,
   gokrb5-style refresh-window checks, explicit renewal, cancellable Tokio auto-renewal, affirm-login reuse,
