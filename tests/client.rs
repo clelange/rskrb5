@@ -1996,6 +1996,43 @@ fn tokio_client_saves_and_loads_dir_collection_ccache_name() {
     assert_eq!(loaded.cached_service_ticket_count(), 1);
 }
 
+#[cfg(feature = "tokio")]
+#[test]
+fn tokio_client_loads_from_config_default_ccache_name() {
+    let tgt = sample_tgt_session();
+    let service_ticket = sample_service_ticket_session(&tgt);
+    let mut client = TokioClient::from_tgt_session(Config::new(), KdcProtocol::Tcp, tgt.clone());
+    client.cache_service_ticket(service_ticket);
+    let directory = temp_client_ccache_dir("default-ccache-name");
+    std::fs::create_dir(&directory).expect("temp DIR collection is created");
+    let name = format!("DIR:{}", directory.display());
+    client
+        .save_ccache_name(&name)
+        .expect("client saves configured ccache");
+
+    let loaded = TokioClient::from_default_ccache_name(
+        config_with_default_ccache_name(name),
+        KdcProtocol::Tcp,
+    )
+    .expect("client loads configured default ccache");
+
+    let _ = std::fs::remove_file(directory.join("tkt"));
+    let _ = std::fs::remove_file(directory.join("primary"));
+    let _ = std::fs::remove_dir(&directory);
+
+    assert_eq!(loaded.tgt_session().expect("TGT reloads"), &tgt);
+    assert_eq!(loaded.cached_service_ticket_count(), 1);
+}
+
+#[cfg(feature = "tokio")]
+#[test]
+fn tokio_client_rejects_missing_config_default_ccache_name() {
+    let error = TokioClient::from_default_ccache_name(Config::new(), KdcProtocol::Tcp)
+        .expect_err("missing default ccache name is rejected");
+
+    assert!(matches!(error, Error::NoDefaultCCacheName));
+}
+
 #[cfg(all(feature = "tokio", feature = "serde"))]
 #[test]
 fn tokio_client_loads_client_keytab_from_config_name() {
@@ -3165,6 +3202,23 @@ fn config_with_client_keytab_name(keytab_name: String) -> Config {
 [libdefaults]
  dns_lookup_kdc = false
  default_client_keytab_name = {keytab_name}
+
+[realms]
+ TEST.GOKRB5 = {{
+  kdc = kdc.test.gokrb5
+ }}
+"#,
+    );
+    Config::parse(&input).expect("config parses")
+}
+
+#[cfg(feature = "tokio")]
+fn config_with_default_ccache_name(cache_name: String) -> Config {
+    let input = format!(
+        r#"
+[libdefaults]
+ dns_lookup_kdc = false
+ default_ccache_name = {cache_name}
 
 [realms]
  TEST.GOKRB5 = {{

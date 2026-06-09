@@ -900,10 +900,11 @@ impl TokioClient {
         kerberos
     }
 
-    /// Create a cache-only client by loading a file-backed ccache name.
+    /// Create a cache-only client by loading a ccache name.
     ///
-    /// Bare paths, `FILE:path`, and `WRFILE:path` are supported by the ccache
-    /// module. Other credential cache stores are rejected explicitly.
+    /// Bare paths, `FILE:path`, `WRFILE:path`, and MIT `DIR:` collection names
+    /// are supported by the ccache module. Other credential cache stores are
+    /// rejected explicitly.
     pub fn from_ccache_name(
         config: Config,
         protocol: KdcProtocol,
@@ -911,6 +912,15 @@ impl TokioClient {
     ) -> Result<Self, Error> {
         let cache = ccache::CCache::load_name(cache_name)?;
         Ok(Self::from_ccache(config, protocol, &cache))
+    }
+
+    /// Create a cache-only client from `config.libdefaults.default_ccache_name`.
+    pub fn from_default_ccache_name(config: Config, protocol: KdcProtocol) -> Result<Self, Error> {
+        let cache_name = config.libdefaults.default_ccache_name.clone();
+        if cache_name.is_empty() {
+            return Err(Error::NoDefaultCCacheName);
+        }
+        Self::from_ccache_name(config, protocol, cache_name)
     }
 
     /// Create a cache-only client by loading the file ccache named by `KRB5CCNAME`.
@@ -955,7 +965,7 @@ impl TokioClient {
         Ok(())
     }
 
-    /// Save current TGT and service-ticket state to a fresh file-backed ccache name.
+    /// Save current TGT and service-ticket state to a fresh ccache name.
     pub fn save_ccache_name(&self, cache_name: impl AsRef<str>) -> Result<(), Error> {
         self.to_ccache()?.save_name(cache_name)?;
         Ok(())
@@ -979,7 +989,7 @@ impl TokioClient {
         Ok(())
     }
 
-    /// Load an existing file-backed ccache name, update this client's entries, and save it.
+    /// Load an existing ccache name, update this client's entries, and save it.
     ///
     /// Missing files are created. Existing X-CACHECONF metadata and entries for
     /// other clients are preserved.
@@ -3917,6 +3927,11 @@ pub enum Error {
     #[cfg(feature = "tokio")]
     #[error("no password or keytab credentials are configured")]
     NoClientCredentials,
+
+    /// A configured credential-cache load needs `default_ccache_name`.
+    #[cfg(feature = "tokio")]
+    #[error("config.libdefaults.default_ccache_name is not configured")]
+    NoDefaultCCacheName,
 
     /// A high-level client operation needs a non-empty client principal name.
     #[cfg(feature = "tokio")]

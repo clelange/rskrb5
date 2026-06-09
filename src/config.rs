@@ -194,6 +194,8 @@ pub struct LibDefaults {
     pub ccache_type: i32,
     /// Accepted clock skew.
     pub clockskew: Duration,
+    /// Default credential cache name.
+    pub default_ccache_name: String,
     /// Default client keytab path.
     pub default_client_keytab_name: String,
     /// Default service keytab path.
@@ -270,6 +272,7 @@ impl LibDefaults {
             canonicalize: false,
             ccache_type: 4,
             clockskew: Duration::from_secs(300),
+            default_ccache_name: String::new(),
             default_client_keytab_name,
             default_keytab_name: "/etc/krb5.keytab".to_owned(),
             default_realm: String::new(),
@@ -320,6 +323,7 @@ impl LibDefaults {
                 "canonicalize" => self.canonicalize = parse_boolean(value)?,
                 "ccache_type" => self.ccache_type = parse_i32(value, line, key)?,
                 "clockskew" => self.clockskew = parse_duration(value)?,
+                "default_ccache_name" => self.default_ccache_name = value.to_owned(),
                 "default_client_keytab_name" => {
                     self.default_client_keytab_name = value.to_owned();
                 }

@@ -46,6 +46,7 @@ const COMPLEX_KRB5_CONF: &str = r#"
  ;dns_lookup_kdc = true
  ticket_lifetime = 10h ;comment to be ignored
  forwardable = yes #comment to be ignored
+ default_ccache_name = DIR:/tmp/krb5cc_dir
  default_keytab_name = FILE:/etc/krb5.keytab
  default_client_keytab_name = FILE:/home/gokrb5/client.keytab
  default_tkt_enctypes = aes256-cts-hmac-sha1-96 aes128-cts-hmac-sha1-96 # comment
@@ -214,6 +215,10 @@ fn parses_complex_gokrb5_config_semantics() {
     assert_eq!(
         config.libdefaults.default_keytab_name,
         "FILE:/etc/krb5.keytab"
+    );
+    assert_eq!(
+        config.libdefaults.default_ccache_name,
+        "DIR:/tmp/krb5cc_dir"
     );
     assert_eq!(
         config.libdefaults.default_client_keytab_name,
