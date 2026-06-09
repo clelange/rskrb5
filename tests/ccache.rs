@@ -1,5 +1,5 @@
 use pretty_assertions::assert_eq;
-use rskrb5::ccache::{CCache, Error};
+use rskrb5::ccache::{CCache, CacheName, Error};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -96,6 +96,21 @@ fn resolves_file_cache_names() {
         CCache::file_path_from_cache_name("C:\\temp\\krb5cc").expect("Windows path resolves"),
         PathBuf::from("C:\\temp\\krb5cc")
     );
+}
+
+#[test]
+fn parses_typed_file_cache_names() {
+    let parsed = CacheName::parse("FILE:/tmp/krb5cc_1000").expect("FILE cache name parses");
+    assert_eq!(parsed.file_path(), PathBuf::from("/tmp/krb5cc_1000"));
+    assert_eq!(parsed.into_file_path(), PathBuf::from("/tmp/krb5cc_1000"));
+
+    let parsed: CacheName = "WRFILE:relative-cache"
+        .parse()
+        .expect("WRFILE cache name parses through FromStr");
+    assert_eq!(parsed.file_path(), PathBuf::from("relative-cache"));
+
+    let parsed = CacheName::parse("C:\\temp\\krb5cc").expect("Windows path parses");
+    assert_eq!(parsed.file_path(), PathBuf::from("C:\\temp\\krb5cc"));
 }
 
 #[test]

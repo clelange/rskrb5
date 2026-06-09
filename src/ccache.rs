@@ -8,10 +8,56 @@
 use crate::file_name;
 use std::fmt;
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 
 const CCACHE_FIRST_BYTE: u8 = 5;
 const HEADER_FIELD_TAG_KDC_OFFSET: u16 = 1;
 const KRB5CCNAME_ENV: &str = "KRB5CCNAME";
+
+/// Parsed MIT-style credential cache name.
+///
+/// `rskrb5` currently supports file-backed caches only. Keeping the parsed
+/// name explicit gives callers a stable validation point and leaves room for
+/// cache collections and platform stores to grow into separate variants.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum CacheName {
+    /// A file-backed credential cache.
+    File(PathBuf),
+}
+
+impl CacheName {
+    /// Parse a MIT-style credential cache name.
+    ///
+    /// Bare paths, `FILE:path`, and `WRFILE:path` are supported. Cache
+    /// collections and platform stores such as `DIR:`, `KCM:`, `KEYRING:`,
+    /// and `API:` are rejected explicitly.
+    pub fn parse(name: impl AsRef<str>) -> Result<Self, Error> {
+        CCache::file_path_from_cache_name(name.as_ref()).map(Self::File)
+    }
+
+    /// File path for this cache name.
+    pub fn file_path(&self) -> &Path {
+        match self {
+            Self::File(path) => path,
+        }
+    }
+
+    /// Consume this cache name and return its file path.
+    pub fn into_file_path(self) -> PathBuf {
+        match self {
+            Self::File(path) => path,
+        }
+    }
+}
+
+impl FromStr for CacheName {
+    type Err = Error;
+
+    fn from_str(name: &str) -> Result<Self, Self::Err> {
+        Self::parse(name)
+    }
+}
 
 /// Parsed MIT credential cache file.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -54,7 +100,7 @@ impl CCache {
     ///
     /// Bare paths, `FILE:path`, and `WRFILE:path` are supported.
     pub fn load_name(name: impl AsRef<str>) -> Result<Self, Error> {
-        Self::load(Self::file_path_from_cache_name(name.as_ref())?)
+        Self::load(CacheName::parse(name)?.into_file_path())
     }
 
     /// Save this credential cache to a file.
@@ -73,7 +119,7 @@ impl CCache {
     ///
     /// Bare paths, `FILE:path`, and `WRFILE:path` are supported.
     pub fn save_name(&self, name: impl AsRef<str>) -> Result<(), Error> {
-        self.save(Self::file_path_from_cache_name(name.as_ref())?)
+        self.save(CacheName::parse(name)?.into_file_path())
     }
 
     /// Resolve a MIT-style cache name to a file path.
