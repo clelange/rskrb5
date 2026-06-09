@@ -7,19 +7,20 @@ use pretty_assertions::assert_eq;
 use rskrb5::ccache;
 use rskrb5::client::KpasswdRequestOptions;
 use rskrb5::client::{
-    AP_REQ_AUTHENTICATOR_USAGE, AS_REP_ENCPART_USAGE, AS_REQ_PA_ENC_TIMESTAMP_USAGE, ApReqOptions,
-    AsReqOptions, BuiltAsReq, BuiltTgsReq, Error, KDC_ERR_PREAUTH_REQUIRED, KDC_OPTION_RENEW,
-    KDC_OPTION_RENEWABLE, KdcError, KdcTransport, PA_ENC_TIMESTAMP, PA_ETYPE_INFO2,
-    PA_REQ_ENC_PA_REP, PA_TGS_REQ, PreauthKeyInfo, Principal, TGS_REP_ENCPART_SESSION_KEY_USAGE,
-    TGS_REQ_AUTHENTICATOR_CHECKSUM_USAGE, TGS_REQ_AUTHENTICATOR_USAGE, TgsReqOptions,
-    build_ap_req_with_confounder, build_kpasswd_request, build_kpasswd_request_with_confounders,
-    build_preauthenticated_as_req, build_tgs_req_for_realm_with_confounder,
-    build_tgs_req_with_confounder, build_tgt_as_req, build_tgt_renewal_req_with_confounder,
-    build_ticket_renewal_req_with_confounder, default_password_salt, derive_password_reply_key,
-    exchange_as_req, exchange_tgs_req, login_as_service_with_keytab,
-    login_as_service_with_password, login_tgt_with_keytab, login_tgt_with_password,
-    pa_enc_timestamp_with_confounder, process_as_rep, process_kdc_error, process_tgs_rep,
-    process_tgs_rep_with_referral, renew_tgt, renew_ticket, select_preauth_key_info,
+    AP_REP_ENCPART_USAGE, AP_REQ_AUTHENTICATOR_USAGE, AS_REP_ENCPART_USAGE,
+    AS_REQ_PA_ENC_TIMESTAMP_USAGE, ApReqOptions, AsReqOptions, BuiltAsReq, BuiltTgsReq, Error,
+    KDC_ERR_PREAUTH_REQUIRED, KDC_OPTION_RENEW, KDC_OPTION_RENEWABLE, KdcError, KdcTransport,
+    PA_ENC_TIMESTAMP, PA_ETYPE_INFO2, PA_REQ_ENC_PA_REP, PA_TGS_REQ, PreauthKeyInfo, Principal,
+    TGS_REP_ENCPART_SESSION_KEY_USAGE, TGS_REQ_AUTHENTICATOR_CHECKSUM_USAGE,
+    TGS_REQ_AUTHENTICATOR_USAGE, TgsReqOptions, build_ap_req_with_confounder,
+    build_kpasswd_request, build_kpasswd_request_with_confounders, build_preauthenticated_as_req,
+    build_tgs_req_for_realm_with_confounder, build_tgs_req_with_confounder, build_tgt_as_req,
+    build_tgt_renewal_req_with_confounder, build_ticket_renewal_req_with_confounder,
+    default_password_salt, derive_password_reply_key, exchange_as_req, exchange_tgs_req,
+    login_as_service_with_keytab, login_as_service_with_password, login_tgt_with_keytab,
+    login_tgt_with_password, pa_enc_timestamp_with_confounder, process_as_rep, process_kdc_error,
+    process_tgs_rep, process_tgs_rep_with_referral, renew_tgt, renew_ticket,
+    select_preauth_key_info, verify_kpasswd_ap_rep,
 };
 #[cfg(feature = "tokio")]
 use rskrb5::client::{KdcProtocol, TokioClient};
@@ -27,8 +28,8 @@ use rskrb5::client::{KdcProtocol, TokioClient};
 use rskrb5::config::Config;
 use rskrb5::crypto::AesSha1Etype;
 use rskrb5::kadmin::{
-    ChangePasswdData, KPASSWD_SUCCESS, KRB_PRIV_ENCPART_USAGE, Request as KpasswdRequest,
-    ipv4_host_address,
+    ChangePasswdData, KPASSWD_SUCCESS, KRB_PRIV_ENCPART_USAGE, Reply as KpasswdReply,
+    Request as KpasswdRequest, ipv4_host_address,
 };
 use rskrb5::keytab::{EncryptionKey, Entry as KeytabEntry, Keytab, Principal as KeytabPrincipal};
 #[cfg(feature = "tokio")]
@@ -593,6 +594,35 @@ fn builds_kpasswd_request_with_generated_reply_key() {
 
     assert_eq!(decoded_change_data, change_data);
     assert_eq!(enc_part.seq_number, Some(42));
+}
+
+#[test]
+fn verifies_kpasswd_reply_ap_rep_timestamp() {
+    let built = sample_built_kpasswd_request();
+    let ap_rep = kpasswd_ap_rep(&built, 456_789);
+    let reply = KpasswdReply::parse(&kpasswd_reply_with_ap_rep(&built, &ap_rep))
+        .expect("kpasswd reply parses");
+
+    let verified = verify_kpasswd_ap_rep(&reply, &built)
+        .expect("AP-REP verifies")
+        .expect("successful reply has AP-REP");
+
+    assert_eq!(verified.ctime, timestamp(1_893_553_452));
+    assert_eq!(verified.cusec, 456_789);
+    assert_eq!(verified.sequence_number, Some(99));
+}
+
+#[test]
+fn rejects_kpasswd_reply_ap_rep_timestamp_mismatch() {
+    let built = sample_built_kpasswd_request();
+    let ap_rep = kpasswd_ap_rep(&built, 456_790);
+    let reply = KpasswdReply::parse(&kpasswd_reply_with_ap_rep(&built, &ap_rep))
+        .expect("kpasswd reply parses");
+
+    assert!(matches!(
+        verify_kpasswd_ap_rep(&reply, &built).expect_err("timestamp mismatch is rejected"),
+        Error::KpasswdApRepTimestampMismatch { .. }
+    ));
 }
 
 #[test]
@@ -1748,6 +1778,72 @@ fn sample_tgs_request(tgt: &rskrb5::client::AsRepSession) -> BuiltTgsReq {
         &decode_hex(TGS_REQ_CONFOUNDER),
     )
     .expect("sample TGS-REQ builds")
+}
+
+fn sample_built_kpasswd_request() -> rskrb5::client::BuiltKpasswdRequest {
+    let tgt = sample_tgt_session();
+    let request = sample_tgs_request(&tgt);
+    let response = synthetic_tgs_rep(&request, request.nonce, &tgt.session_key);
+    let service_ticket =
+        process_tgs_rep(&request, &response, &tgt.session_key).expect("TGS-REP validates");
+    let reply_key = EncryptionKey {
+        etype: 18,
+        value: vec![0x55; 32],
+    };
+    let change_data = ChangePasswdData::for_target(b"newpassword", 1, ["testuser1"], "TEST.GOKRB5")
+        .expect("ChangePasswdData builds");
+
+    build_kpasswd_request_with_confounders(
+        &service_ticket,
+        &change_data,
+        reply_key,
+        KpasswdRequestOptions::new(
+            timestamp(1_893_553_452),
+            456_789,
+            42,
+            ipv4_host_address([127, 0, 0, 1]),
+        ),
+        &decode_hex(TGS_REQ_CONFOUNDER),
+        &decode_hex(PREAUTH_CONFOUNDER),
+    )
+    .expect("kpasswd request builds")
+}
+
+fn kpasswd_ap_rep(built: &rskrb5::client::BuiltKpasswdRequest, cusec: u32) -> Vec<u8> {
+    let enc_part = rasn_kerberos::EncApRepPart {
+        ctime: kerberos_time(1_893_553_452),
+        cusec: rasn::types::Integer::from(cusec),
+        subkey: None,
+        seq_number: Some(99),
+    };
+    let plaintext = rasn::der::encode(&enc_part).expect("EncApRepPart encodes");
+    let cipher = AesSha1Etype::Aes256
+        .encrypt_message_with_confounder(
+            &built.reply_key.value,
+            &plaintext,
+            AP_REP_ENCPART_USAGE,
+            &decode_hex(AS_REP_CONFOUNDER),
+        )
+        .expect("AP-REP encrypts");
+    let ap_rep = rasn_kerberos::ApRep {
+        pvno: rasn::types::Integer::from(5),
+        msg_type: rasn::types::Integer::from(15),
+        enc_part: rasn_kerberos::EncryptedData {
+            etype: built.reply_key.etype,
+            kvno: None,
+            cipher: cipher.into(),
+        },
+    };
+    rasn::der::encode(&ap_rep).expect("AP-REP encodes")
+}
+
+fn kpasswd_reply_with_ap_rep(
+    built: &rskrb5::client::BuiltKpasswdRequest,
+    ap_rep: &[u8],
+) -> Vec<u8> {
+    let mut body = ap_rep.to_vec();
+    body.extend_from_slice(&rasn::der::encode(&built.request.krb_priv).expect("KRB-PRIV encodes"));
+    kpasswd_reply_frame(ap_rep.len() as u16, &body)
 }
 
 fn sample_service_principal() -> Principal {

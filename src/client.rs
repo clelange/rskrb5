@@ -37,6 +37,7 @@ const KRB_AS_REP_MSG_TYPE: i32 = 11;
 const KRB_TGS_REQ_MSG_TYPE: i32 = 12;
 const KRB_TGS_REP_MSG_TYPE: i32 = 13;
 const KRB_AP_REQ_MSG_TYPE: i32 = 14;
+const KRB_AP_REP_MSG_TYPE: i32 = 15;
 const KRB_ERROR_MSG_TYPE: i32 = 30;
 const KRB_NT_PRINCIPAL: i32 = 1;
 const KRB_NT_SRV_INST: i32 = 2;
@@ -86,6 +87,9 @@ pub const TGS_REQ_AUTHENTICATOR_USAGE: u32 = 7;
 
 /// Key usage for normal AP-REQ authenticators.
 pub const AP_REQ_AUTHENTICATOR_USAGE: u32 = 11;
+
+/// Key usage for AP-REP encrypted parts.
+pub const AP_REP_ENCPART_USAGE: u32 = 12;
 
 /// Key usage for TGS-REP encrypted parts when encrypted with the TGT session key.
 pub const TGS_REP_ENCPART_SESSION_KEY_USAGE: u32 = 8;
@@ -464,6 +468,21 @@ pub struct BuiltKpasswdRequest {
     pub reply_key: EncryptionKey,
     /// Built AP-REQ metadata.
     pub ap_req: BuiltApReq,
+}
+
+/// Verified kpasswd AP-REP reply metadata.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VerifiedKpasswdApRep {
+    /// Reply `ctime` without `cusec`.
+    pub ctime: SystemTime,
+    /// Reply microsecond field.
+    pub cusec: u32,
+    /// Reply timestamp including `cusec`.
+    pub authenticator_time: SystemTime,
+    /// Optional server-selected subkey.
+    pub subkey: Option<EncryptionKey>,
+    /// Optional server sequence number.
+    pub sequence_number: Option<u32>,
 }
 
 /// Successful AS-REP processing result.
@@ -1034,16 +1053,18 @@ impl TokioClient {
             &target.realm,
         )?;
         let request = build_kpasswd_request(&ticket, &change_data, options)?;
-        let result = self
+        let reply = self
             .transport
-            .exchange_kpasswd_result_with_config(
+            .exchange_kpasswd_request_with_config(
                 &self.config,
                 self.protocol,
                 &target.realm,
                 &request.request,
-                &request.reply_key,
             )
             .await?;
+        verify_kpasswd_ap_rep(&reply, &request)?;
+        let result = reply.decrypt_result(&request.reply_key)?;
+        result.ensure_success()?;
 
         if update_password_credential {
             self.credentials = Some(TokioClientCredentials::Password(Zeroizing::new(
@@ -2484,6 +2505,52 @@ pub fn build_kpasswd_request(
     )
 }
 
+/// Verify the AP-REP section of a successful kpasswd reply.
+///
+/// KRB-ERROR replies do not carry AP-REP and return `Ok(None)`. Successful
+/// replies must echo the AP-REQ authenticator timestamp and are encrypted with
+/// the kpasswd request subkey.
+pub fn verify_kpasswd_ap_rep(
+    reply: &crate::kadmin::Reply,
+    request: &BuiltKpasswdRequest,
+) -> Result<Option<VerifiedKpasswdApRep>, Error> {
+    if reply.is_krb_error() {
+        return Ok(None);
+    }
+
+    let ap_rep = reply.ap_rep.as_ref().ok_or(Error::MissingKpasswdApRep)?;
+    validate_integer("pvno", &ap_rep.pvno, KRB5_PVNO)?;
+    validate_integer("msg-type", &ap_rep.msg_type, KRB_AP_REP_MSG_TYPE)?;
+
+    let plaintext = decrypt_encrypted_data(
+        ap_rep.enc_part.etype,
+        &request.reply_key.value,
+        ap_rep.enc_part.cipher.as_ref(),
+        AP_REP_ENCPART_USAGE,
+    )?;
+    let enc_part = decode::<rasn_kerberos::EncApRepPart>("EncApRepPart", &plaintext)?;
+    let ctime = system_time_from_kerberos_time(&enc_part.ctime)?;
+    let cusec = integer_to_u32("ap-rep.cusec", &enc_part.cusec)?;
+    let authenticator_time = ctime
+        .checked_add(Duration::from_micros(cusec.into()))
+        .ok_or(Error::TimeOverflow)?;
+
+    if ctime != request.ap_req.authenticator_ctime || cusec != request.ap_req.authenticator_cusec {
+        return Err(Error::KpasswdApRepTimestampMismatch {
+            expected: request.ap_req.authenticator_time,
+            actual: authenticator_time,
+        });
+    }
+
+    Ok(Some(VerifiedKpasswdApRep {
+        ctime,
+        cusec,
+        authenticator_time,
+        subkey: enc_part.subkey.as_ref().map(encryption_key_from_rasn),
+        sequence_number: enc_part.seq_number,
+    }))
+}
+
 /// Build a TGS-REQ that renews an existing TGT session.
 pub fn build_tgt_renewal_req(
     tgt: &AsRepSession,
@@ -3039,6 +3106,15 @@ pub enum Error {
         actual: String,
     },
 
+    /// Message integer field could not be represented as `u32`.
+    #[error("invalid {field}: expected unsigned 32-bit integer, got {actual}")]
+    InvalidUnsignedInteger {
+        /// Field name.
+        field: &'static str,
+        /// Actual value.
+        actual: String,
+    },
+
     /// No ticket encryption types were requested.
     #[error("ticket request must request at least one encryption type")]
     EmptyEtypes,
@@ -3056,6 +3132,19 @@ pub enum Error {
         key_etype: i32,
         /// KDC-REP encrypted data encryption type.
         encrypted_data_etype: i32,
+    },
+
+    /// A successful kpasswd reply did not contain AP-REP.
+    #[error("kpasswd reply does not contain AP-REP")]
+    MissingKpasswdApRep,
+
+    /// A kpasswd AP-REP did not echo the AP-REQ authenticator timestamp.
+    #[error("kpasswd AP-REP timestamp mismatch: expected {expected:?}, got {actual:?}")]
+    KpasswdApRepTimestampMismatch {
+        /// Timestamp supplied by the AP-REQ authenticator.
+        expected: SystemTime,
+        /// Timestamp supplied by AP-REP.
+        actual: SystemTime,
     },
 
     /// The KDC-REP client principal did not match the KDC-REQ.
@@ -3874,6 +3963,16 @@ fn kerberos_time_from_system_time(time: SystemTime) -> Result<rasn_kerberos::Ker
         chrono::DateTime::<chrono::Utc>::from_timestamp(seconds, 0).ok_or(Error::TimeOverflow)?;
     let offset = chrono::FixedOffset::east_opt(0).ok_or(Error::TimeOverflow)?;
     Ok(rasn_kerberos::KerberosTime(utc.with_timezone(&offset)))
+}
+
+fn integer_to_u32(field: &'static str, value: &rasn::types::Integer) -> Result<u32, Error> {
+    value
+        .to_string()
+        .parse::<u32>()
+        .map_err(|_| Error::InvalidUnsignedInteger {
+            field,
+            actual: value.to_string(),
+        })
 }
 
 fn unix_timestamp_parts(time: SystemTime) -> Result<(i64, u32), Error> {
