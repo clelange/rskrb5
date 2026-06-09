@@ -2409,6 +2409,23 @@ fn tokio_client_tracks_multiple_tgt_sessions() {
 
 #[cfg(feature = "tokio")]
 #[test]
+fn tokio_client_rejects_non_tgt_session_cache_insert() {
+    let tgt = current_tgt_session(5, 180);
+    let service_ticket = sample_service_ticket_session(&tgt);
+    let mut client = TokioClient::from_tgt_session(Config::new(), KdcProtocol::Tcp, tgt);
+
+    let error = client
+        .cache_tgt_session(service_ticket)
+        .expect_err("service ticket is rejected as a TGT session");
+
+    assert!(matches!(
+        error,
+        Error::InvalidTgtSession { service } if service == "HTTP/host.test.gokrb5"
+    ));
+}
+
+#[cfg(feature = "tokio")]
+#[test]
 fn tokio_client_prefers_freshest_cached_tgt_session() {
     let primary_session = |remaining_minutes: u64, ticket: &[u8]| {
         let mut tgt = current_tgt_session(5, remaining_minutes);
