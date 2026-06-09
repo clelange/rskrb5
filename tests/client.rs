@@ -1971,6 +1971,31 @@ fn tokio_client_loads_from_ccache_name() {
     assert_eq!(loaded.cached_service_ticket_count(), 1);
 }
 
+#[cfg(feature = "tokio")]
+#[test]
+fn tokio_client_saves_and_loads_dir_collection_ccache_name() {
+    let tgt = sample_tgt_session();
+    let service_ticket = sample_service_ticket_session(&tgt);
+    let mut client = TokioClient::from_tgt_session(Config::new(), KdcProtocol::Tcp, tgt.clone());
+    client.cache_service_ticket(service_ticket);
+    let directory = temp_client_ccache_dir("dir-collection-name");
+    std::fs::create_dir(&directory).expect("temp DIR collection is created");
+    let name = format!("DIR:{}", directory.display());
+
+    client
+        .save_ccache_name(&name)
+        .expect("client saves ccache to DIR collection");
+    let loaded = TokioClient::from_ccache_name(Config::new(), KdcProtocol::Tcp, &name)
+        .expect("client loads ccache from DIR collection");
+
+    let _ = std::fs::remove_file(directory.join("tkt"));
+    let _ = std::fs::remove_file(directory.join("primary"));
+    let _ = std::fs::remove_dir(&directory);
+
+    assert_eq!(loaded.tgt_session().expect("TGT reloads"), &tgt);
+    assert_eq!(loaded.cached_service_ticket_count(), 1);
+}
+
 #[cfg(all(feature = "tokio", feature = "serde"))]
 #[test]
 fn tokio_client_loads_client_keytab_from_config_name() {
@@ -3285,6 +3310,11 @@ fn temp_client_ccache_file(name: &str) -> std::path::PathBuf {
         "rskrb5-client-{name}-{}-{nanos}",
         std::process::id()
     ))
+}
+
+#[cfg(feature = "tokio")]
+fn temp_client_ccache_dir(name: &str) -> std::path::PathBuf {
+    temp_client_ccache_file(name)
 }
 
 #[cfg(feature = "tokio")]
