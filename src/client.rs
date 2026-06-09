@@ -994,10 +994,36 @@ impl TokioClient {
         let target = self.client.clone();
         let service = Principal::new(
             target.realm.clone(),
-            KRB_NT_SRV_INST,
+            KRB_NT_PRINCIPAL,
             ["kadmin".to_owned(), "changepw".to_owned()],
         );
-        let ticket = self.get_service_ticket(service).await?;
+        let ticket = match self.credentials.clone() {
+            Some(TokioClientCredentials::Password(password)) => {
+                self.transport
+                    .login_as_service_with_password_config(
+                        &self.config,
+                        self.protocol,
+                        target.clone(),
+                        service,
+                        &password,
+                        self.as_req_options()?,
+                    )
+                    .await?
+            }
+            Some(TokioClientCredentials::Keytab(keytab)) => {
+                self.transport
+                    .login_as_service_with_keytab_config(
+                        &self.config,
+                        self.protocol,
+                        target.clone(),
+                        service,
+                        &keytab,
+                        self.as_req_options()?,
+                    )
+                    .await?
+            }
+            None => self.get_service_ticket(service).await?,
+        };
         let change_data = crate::kadmin::ChangePasswdData::for_target(
             new_password,
             target.name_type,
@@ -1680,7 +1706,26 @@ impl TokioKdcTransport {
     where
         A: ToSocketAddrs + Clone,
     {
-        let initial_request = password_initial_as_req(client.clone(), password, options.clone())?;
+        let service = Principal::tgt_service(client.realm.clone());
+        self.login_as_service_with_password(protocol, addr, client, service, password, options)
+            .await
+    }
+
+    /// Perform an AS login for an explicit service using password credentials and KDC preauth hints.
+    pub async fn login_as_service_with_password<A>(
+        &self,
+        protocol: KdcProtocol,
+        addr: A,
+        client: Principal,
+        service: Principal,
+        password: &[u8],
+        options: AsReqOptions,
+    ) -> Result<AsRepSession, Error>
+    where
+        A: ToSocketAddrs + Clone,
+    {
+        let initial_request =
+            password_initial_as_req(client.clone(), service.clone(), password, options.clone())?;
         let initial_response = self
             .send(protocol, addr.clone(), &initial_request.der)
             .await?;
@@ -1690,7 +1735,7 @@ impl TokioKdcTransport {
             return Ok(session);
         }
         let (request, reply_key) =
-            password_preauth_request(client, password, options, &initial_response)?;
+            password_preauth_request(client, service, password, options, &initial_response)?;
         let response = self.send(protocol, addr, &request.der).await?;
         process_as_rep(&request, &response, &reply_key)
     }
@@ -1704,7 +1749,25 @@ impl TokioKdcTransport {
         password: &[u8],
         options: AsReqOptions,
     ) -> Result<AsRepSession, Error> {
-        let initial_request = password_initial_as_req(client.clone(), password, options.clone())?;
+        let service = Principal::tgt_service(client.realm.clone());
+        self.login_as_service_with_password_config(
+            config, protocol, client, service, password, options,
+        )
+        .await
+    }
+
+    /// Perform a password AS login for an explicit service using KDCs discovered from `krb5.conf`.
+    pub async fn login_as_service_with_password_config(
+        &self,
+        config: &Config,
+        protocol: KdcProtocol,
+        client: Principal,
+        service: Principal,
+        password: &[u8],
+        options: AsReqOptions,
+    ) -> Result<AsRepSession, Error> {
+        let initial_request =
+            password_initial_as_req(client.clone(), service.clone(), password, options.clone())?;
         let initial_response = self
             .send_to_realm(config, protocol, &client.realm, &initial_request.der)
             .await?;
@@ -1714,7 +1777,7 @@ impl TokioKdcTransport {
             return Ok(session);
         }
         let (request, reply_key) =
-            password_preauth_request(client, password, options, &initial_response)?;
+            password_preauth_request(client, service, password, options, &initial_response)?;
         let response = self
             .send_to_realm(config, protocol, &request.client.realm, &request.der)
             .await?;
@@ -1733,7 +1796,26 @@ impl TokioKdcTransport {
     where
         A: ToSocketAddrs + Clone,
     {
-        let initial_request = keytab_initial_as_req(client.clone(), keytab, options.clone())?;
+        let service = Principal::tgt_service(client.realm.clone());
+        self.login_as_service_with_keytab(protocol, addr, client, service, keytab, options)
+            .await
+    }
+
+    /// Perform an AS login for an explicit service using keytab credentials and KDC preauth hints.
+    pub async fn login_as_service_with_keytab<A>(
+        &self,
+        protocol: KdcProtocol,
+        addr: A,
+        client: Principal,
+        service: Principal,
+        keytab: &Keytab,
+        options: AsReqOptions,
+    ) -> Result<AsRepSession, Error>
+    where
+        A: ToSocketAddrs + Clone,
+    {
+        let initial_request =
+            keytab_initial_as_req(client.clone(), service.clone(), keytab, options.clone())?;
         let initial_response = self
             .send(protocol, addr.clone(), &initial_request.der)
             .await?;
@@ -1743,7 +1825,7 @@ impl TokioKdcTransport {
             return Ok(session);
         }
         let (request, reply_key) =
-            keytab_preauth_request(client, keytab, options, &initial_response)?;
+            keytab_preauth_request(client, service, keytab, options, &initial_response)?;
         let response = self.send(protocol, addr, &request.der).await?;
         process_as_rep(&request, &response, &reply_key)
     }
@@ -1757,7 +1839,23 @@ impl TokioKdcTransport {
         keytab: &Keytab,
         options: AsReqOptions,
     ) -> Result<AsRepSession, Error> {
-        let initial_request = keytab_initial_as_req(client.clone(), keytab, options.clone())?;
+        let service = Principal::tgt_service(client.realm.clone());
+        self.login_as_service_with_keytab_config(config, protocol, client, service, keytab, options)
+            .await
+    }
+
+    /// Perform a keytab AS login for an explicit service using KDCs discovered from `krb5.conf`.
+    pub async fn login_as_service_with_keytab_config(
+        &self,
+        config: &Config,
+        protocol: KdcProtocol,
+        client: Principal,
+        service: Principal,
+        keytab: &Keytab,
+        options: AsReqOptions,
+    ) -> Result<AsRepSession, Error> {
+        let initial_request =
+            keytab_initial_as_req(client.clone(), service.clone(), keytab, options.clone())?;
         let initial_response = self
             .send_to_realm(config, protocol, &client.realm, &initial_request.der)
             .await?;
@@ -1767,7 +1865,7 @@ impl TokioKdcTransport {
             return Ok(session);
         }
         let (request, reply_key) =
-            keytab_preauth_request(client, keytab, options, &initial_response)?;
+            keytab_preauth_request(client, service, keytab, options, &initial_response)?;
         let response = self
             .send_to_realm(config, protocol, &request.client.realm, &request.der)
             .await?;
@@ -2054,9 +2152,10 @@ pub fn pa_enc_timestamp(
     pa_enc_timestamp_with_confounder(key, timestamp, cusec, &confounder, kvno)
 }
 
-/// Build a TGT AS-REQ with PA-ENC-TIMESTAMP preauthentication.
-pub fn build_preauthenticated_tgt_as_req(
+/// Build an AS-REQ for an explicit service principal with PA-ENC-TIMESTAMP preauthentication.
+pub fn build_preauthenticated_as_req(
     client: Principal,
+    service: Principal,
     mut options: AsReqOptions,
     key: &EncryptionKey,
     kvno: Option<u32>,
@@ -2068,7 +2167,18 @@ pub fn build_preauthenticated_tgt_as_req(
     options
         .padata
         .push(pa_enc_timestamp(key, timestamp, cusec, kvno)?);
-    build_tgt_as_req(client, options)
+    build_as_req(client, service, options)
+}
+
+/// Build a TGT AS-REQ with PA-ENC-TIMESTAMP preauthentication.
+pub fn build_preauthenticated_tgt_as_req(
+    client: Principal,
+    options: AsReqOptions,
+    key: &EncryptionKey,
+    kvno: Option<u32>,
+) -> Result<BuiltAsReq, Error> {
+    let service = Principal::tgt_service(client.realm.clone());
+    build_preauthenticated_as_req(client, service, options, key, kvno)
 }
 
 /// Build a TGS-REQ for a service ticket using the supplied TGT session.
@@ -2494,7 +2604,23 @@ pub fn login_tgt_with_password<T>(
 where
     T: KdcTransport + ?Sized,
 {
-    let initial_request = password_initial_as_req(client.clone(), password, options.clone())?;
+    let service = Principal::tgt_service(client.realm.clone());
+    login_as_service_with_password(transport, client, service, password, options)
+}
+
+/// Perform an AS login for an explicit service using password credentials and KDC preauth hints.
+pub fn login_as_service_with_password<T>(
+    transport: &mut T,
+    client: Principal,
+    service: Principal,
+    password: &[u8],
+    options: AsReqOptions,
+) -> Result<AsRepSession, Error>
+where
+    T: KdcTransport + ?Sized,
+{
+    let initial_request =
+        password_initial_as_req(client.clone(), service.clone(), password, options.clone())?;
     let initial_response = transport.send(&client.realm, &initial_request.der)?;
     if let Some(session) =
         password_initial_as_rep_session(&initial_request, &initial_response, &client, password)?
@@ -2502,7 +2628,7 @@ where
         return Ok(session);
     }
     let (request, reply_key) =
-        password_preauth_request(client, password, options, &initial_response)?;
+        password_preauth_request(client, service, password, options, &initial_response)?;
     let response = transport.send(&request.client.realm, &request.der)?;
     process_as_rep(&request, &response, &reply_key)
 }
@@ -2517,14 +2643,31 @@ pub fn login_tgt_with_keytab<T>(
 where
     T: KdcTransport + ?Sized,
 {
-    let initial_request = keytab_initial_as_req(client.clone(), keytab, options.clone())?;
+    let service = Principal::tgt_service(client.realm.clone());
+    login_as_service_with_keytab(transport, client, service, keytab, options)
+}
+
+/// Perform an AS login for an explicit service using keytab credentials and KDC preauth hints.
+pub fn login_as_service_with_keytab<T>(
+    transport: &mut T,
+    client: Principal,
+    service: Principal,
+    keytab: &Keytab,
+    options: AsReqOptions,
+) -> Result<AsRepSession, Error>
+where
+    T: KdcTransport + ?Sized,
+{
+    let initial_request =
+        keytab_initial_as_req(client.clone(), service.clone(), keytab, options.clone())?;
     let initial_response = transport.send(&client.realm, &initial_request.der)?;
     if let Some(session) =
         keytab_initial_as_rep_session(&initial_request, &initial_response, &client, keytab)?
     {
         return Ok(session);
     }
-    let (request, reply_key) = keytab_preauth_request(client, keytab, options, &initial_response)?;
+    let (request, reply_key) =
+        keytab_preauth_request(client, service, keytab, options, &initial_response)?;
     let response = transport.send(&request.client.realm, &request.der)?;
     process_as_rep(&request, &response, &reply_key)
 }
@@ -3130,6 +3273,7 @@ fn decrypt_encrypted_data(
 
 fn password_preauth_request(
     client: Principal,
+    service: Principal,
     password: &[u8],
     options: AsReqOptions,
     kdc_error_bytes: &[u8],
@@ -3140,12 +3284,13 @@ fn password_preauth_request(
     }
     let key_info = select_preauth_key_info(&error, &options.etypes)?;
     let reply_key = derive_password_reply_key(&client, password, &key_info)?;
-    let request = build_preauthenticated_tgt_as_req(client, options, &reply_key, None)?;
+    let request = build_preauthenticated_as_req(client, service, options, &reply_key, None)?;
     Ok((request, reply_key))
 }
 
 fn password_initial_as_req(
     client: Principal,
+    service: Principal,
     password: &[u8],
     options: AsReqOptions,
 ) -> Result<BuiltAsReq, Error> {
@@ -3153,9 +3298,9 @@ fn password_initial_as_req(
     if options.assume_preauthentication {
         let key_info = assumed_preauth_key_info(&options.etypes)?;
         let reply_key = derive_password_reply_key(&client, password, &key_info)?;
-        build_preauthenticated_tgt_as_req(client, options, &reply_key, None)
+        build_preauthenticated_as_req(client, service, options, &reply_key, None)
     } else {
-        build_tgt_as_req(client, options)
+        build_as_req(client, service, options)
     }
 }
 
@@ -3179,6 +3324,7 @@ fn password_initial_as_rep_session(
 
 fn keytab_preauth_request(
     client: Principal,
+    service: Principal,
     keytab: &Keytab,
     options: AsReqOptions,
     kdc_error_bytes: &[u8],
@@ -3189,21 +3335,22 @@ fn keytab_preauth_request(
     }
     let key_info = select_preauth_key_info(&error, &options.etypes)?;
     let (reply_key, kvno) = select_keytab_reply_key(keytab, &client, &key_info)?;
-    let request = build_preauthenticated_tgt_as_req(client, options, &reply_key, Some(kvno))?;
+    let request = build_preauthenticated_as_req(client, service, options, &reply_key, Some(kvno))?;
     Ok((request, reply_key))
 }
 
 fn keytab_initial_as_req(
     client: Principal,
+    service: Principal,
     keytab: &Keytab,
     options: AsReqOptions,
 ) -> Result<BuiltAsReq, Error> {
     let options = initial_preauth_probe_options(options);
     if options.assume_preauthentication {
         let (reply_key, kvno) = select_assumed_keytab_reply_key(keytab, &client, &options)?;
-        build_preauthenticated_tgt_as_req(client, options, &reply_key, Some(kvno))
+        build_preauthenticated_as_req(client, service, options, &reply_key, Some(kvno))
     } else {
-        build_tgt_as_req(client, options)
+        build_as_req(client, service, options)
     }
 }
 

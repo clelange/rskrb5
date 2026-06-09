@@ -13,12 +13,13 @@ use rskrb5::client::{
     PA_REQ_ENC_PA_REP, PA_TGS_REQ, PreauthKeyInfo, Principal, TGS_REP_ENCPART_SESSION_KEY_USAGE,
     TGS_REQ_AUTHENTICATOR_CHECKSUM_USAGE, TGS_REQ_AUTHENTICATOR_USAGE, TgsReqOptions,
     build_ap_req_with_confounder, build_kpasswd_request, build_kpasswd_request_with_confounders,
-    build_tgs_req_for_realm_with_confounder, build_tgs_req_with_confounder, build_tgt_as_req,
-    build_tgt_renewal_req_with_confounder, build_ticket_renewal_req_with_confounder,
-    default_password_salt, derive_password_reply_key, exchange_as_req, exchange_tgs_req,
-    login_tgt_with_keytab, login_tgt_with_password, pa_enc_timestamp_with_confounder,
-    process_as_rep, process_kdc_error, process_tgs_rep, process_tgs_rep_with_referral, renew_tgt,
-    renew_ticket, select_preauth_key_info,
+    build_preauthenticated_as_req, build_tgs_req_for_realm_with_confounder,
+    build_tgs_req_with_confounder, build_tgt_as_req, build_tgt_renewal_req_with_confounder,
+    build_ticket_renewal_req_with_confounder, default_password_salt, derive_password_reply_key,
+    exchange_as_req, exchange_tgs_req, login_as_service_with_keytab,
+    login_as_service_with_password, login_tgt_with_keytab, login_tgt_with_password,
+    pa_enc_timestamp_with_confounder, process_as_rep, process_kdc_error, process_tgs_rep,
+    process_tgs_rep_with_referral, renew_tgt, renew_ticket, select_preauth_key_info,
 };
 #[cfg(feature = "tokio")]
 use rskrb5::client::{KdcProtocol, TokioClient};
@@ -101,6 +102,35 @@ fn builds_tgt_as_req_with_renew_lifetime_sets_renewable_flag() {
     assert_eq!(
         system_time_from_kerberos_time(body.rtime.as_ref().expect("renew time")),
         timestamp(1_893_589_447)
+    );
+}
+
+#[test]
+fn builds_preauthenticated_as_req_for_explicit_service() {
+    let client = Principal::user("TEST.GOKRB5", "testuser1");
+    let service = change_password_principal();
+    let request = build_preauthenticated_as_req(
+        client.clone(),
+        service.clone(),
+        AsReqOptions::new(timestamp(1_893_553_447), 0x1122_3344).with_etypes(vec![18]),
+        &reply_key(),
+        Some(7),
+    )
+    .expect("AS-REQ builds");
+    let decoded: rasn_kerberos::AsReq = rasn::der::decode(&request.der).expect("AS-REQ decodes");
+
+    assert_eq!(request.client, client);
+    assert_eq!(request.service, service);
+    let body = &decoded.0.req_body;
+    assert_eq!(
+        principal_from_parts(&body.realm, body.sname.as_ref().expect("sname")),
+        change_password_principal()
+    );
+    let padata = decoded.0.padata.as_ref().expect("preauth padata");
+    assert!(
+        padata
+            .iter()
+            .any(|padata| padata.r#type == PA_ENC_TIMESTAMP)
     );
 }
 
@@ -1299,7 +1329,7 @@ fn tokio_client_updates_ccache_file_without_duplicate_tickets() {
 fn tokio_client_changes_password_with_cached_changepw_ticket() {
     runtime().block_on(async {
         let tgt = sample_tgt_session();
-        let changepw = Principal::new("TEST.GOKRB5", 2, ["kadmin", "changepw"]);
+        let changepw = change_password_principal();
         let request = build_tgs_req_with_confounder(
             &tgt,
             changepw,
@@ -1455,6 +1485,30 @@ fn login_tgt_with_password_retries_after_preauth_required() {
 }
 
 #[test]
+fn login_as_service_with_password_retries_for_explicit_service() {
+    let client = Principal::user("TEST.GOKRB5", "testuser1");
+    let service = change_password_principal();
+    let options = AsReqOptions::new(timestamp(1_893_553_447), 0x1122_3344).with_etypes(vec![18]);
+    let key_info = password_key_info();
+    let reply_key = derive_password_reply_key(&client, TESTUSER_PASSWORD, &key_info)
+        .expect("password key derives");
+    let mut transport = PreauthTransport::new(reply_key, None);
+
+    let session = login_as_service_with_password(
+        &mut transport,
+        client.clone(),
+        service.clone(),
+        TESTUSER_PASSWORD,
+        options,
+    )
+    .expect("password login succeeds");
+
+    assert_eq!(transport.calls, 2);
+    assert_eq!(session.client, client);
+    assert_eq!(session.service, service);
+}
+
+#[test]
 fn login_tgt_with_password_can_assume_preauthentication() {
     let client = Principal::user("TEST.GOKRB5", "testuser1");
     let options = AsReqOptions::new(timestamp(1_893_553_447), 0x1122_3344)
@@ -1491,6 +1545,28 @@ fn login_tgt_with_keytab_retries_with_selected_keytab_kvno() {
     assert_eq!(transport.calls, 2);
     assert_eq!(session.client, client);
     assert_eq!(session.service, Principal::tgt_service("TEST.GOKRB5"));
+}
+
+#[test]
+fn login_as_service_with_keytab_retries_for_explicit_service() {
+    let client = Principal::user("TEST.GOKRB5", "testuser1");
+    let service = change_password_principal();
+    let options = AsReqOptions::new(timestamp(1_893_553_447), 0x1122_3344).with_etypes(vec![18]);
+    let keytab = keytab_with_reply_key(7);
+    let mut transport = PreauthTransport::new(reply_key(), Some(7));
+
+    let session = login_as_service_with_keytab(
+        &mut transport,
+        client.clone(),
+        service.clone(),
+        &keytab,
+        options,
+    )
+    .expect("keytab login succeeds");
+
+    assert_eq!(transport.calls, 2);
+    assert_eq!(session.client, client);
+    assert_eq!(session.service, service);
 }
 
 #[test]
@@ -1676,6 +1752,10 @@ fn sample_tgs_request(tgt: &rskrb5::client::AsRepSession) -> BuiltTgsReq {
 
 fn sample_service_principal() -> Principal {
     Principal::new("TEST.GOKRB5", 2, ["HTTP", "host.test.gokrb5"])
+}
+
+fn change_password_principal() -> Principal {
+    Principal::new("TEST.GOKRB5", 1, ["kadmin", "changepw"])
 }
 
 #[cfg(feature = "tokio")]
@@ -2081,7 +2161,7 @@ fn kpasswd_result_krb_error(code: u16, text: &str) -> Vec<u8> {
         crealm: None,
         cname: None,
         realm: realm("TEST.GOKRB5"),
-        sname: rasn_principal(&Principal::new("TEST.GOKRB5", 2, ["kadmin", "changepw"])),
+        sname: rasn_principal(&change_password_principal()),
         e_text: Some(kerberos_string(text)),
         e_data: Some(e_data.into()),
     };
