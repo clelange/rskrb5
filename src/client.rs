@@ -52,6 +52,8 @@ const DEFAULT_TCP_RESPONSE_LIMIT: usize = 16 * 1024 * 1024;
 const MAX_UDP_DATAGRAM: usize = 65_507;
 #[cfg(feature = "tokio")]
 const DEFAULT_MAX_REFERRALS: usize = 5;
+#[cfg(feature = "tokio")]
+const SESSION_REFRESH_DIVISOR: u32 = 6;
 
 /// PA-ENC-TIMESTAMP preauthentication type.
 pub const PA_ENC_TIMESTAMP: i32 = 2;
@@ -1012,6 +1014,13 @@ impl TokioClient {
         self.tgt.as_ref()
     }
 
+    /// Whether the primary TGT is missing, expired, or inside the refresh window.
+    pub fn tgt_refresh_due(&self) -> bool {
+        self.tgt
+            .as_ref()
+            .is_none_or(|tgt| session_refresh_due_at(tgt, SystemTime::now()))
+    }
+
     /// Number of cached TGT sessions keyed by target realm.
     pub fn tgt_session_count(&self) -> usize {
         self.tgt_sessions.len()
@@ -1333,11 +1342,14 @@ impl TokioClient {
     async fn ensure_tgt(&mut self) -> Result<AsRepSession, Error> {
         if let Some(tgt) = self.tgt.clone() {
             let now = SystemTime::now();
-            if session_valid_at(&tgt, now) {
+            if session_valid_at(&tgt, now) && !session_refresh_due_at(&tgt, now) {
                 return Ok(tgt);
             }
             if session_renewable_at(&tgt, now) {
                 return Ok(self.renew_tgt().await?.clone());
+            }
+            if session_valid_at(&tgt, now) && self.credentials.is_none() {
+                return Ok(tgt);
             }
         }
 
@@ -4387,6 +4399,24 @@ fn service_cache_key(service: &Principal) -> String {
 #[cfg(feature = "tokio")]
 fn session_valid_at(session: &AsRepSession, now: SystemTime) -> bool {
     session.start_time <= now && now < session.end_time
+}
+
+#[cfg(feature = "tokio")]
+fn session_refresh_due_at(session: &AsRepSession, now: SystemTime) -> bool {
+    if now >= session.end_time {
+        return true;
+    }
+    let Ok(lifetime) = session.end_time.duration_since(session.auth_time) else {
+        return true;
+    };
+    if lifetime.is_zero() {
+        return true;
+    }
+    let remaining = session
+        .end_time
+        .duration_since(now)
+        .unwrap_or(Duration::ZERO);
+    remaining <= lifetime / SESSION_REFRESH_DIVISOR
 }
 
 #[cfg(feature = "tokio")]

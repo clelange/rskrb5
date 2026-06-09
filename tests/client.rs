@@ -1207,6 +1207,30 @@ fn tokio_client_exposes_assume_preauthentication_setting() {
 
 #[cfg(feature = "tokio")]
 #[test]
+fn tokio_client_reports_tgt_refresh_due_window() {
+    let missing = TokioClient::with_password(
+        Config::new(),
+        KdcProtocol::Tcp,
+        Principal::user("TEST.GOKRB5", "testuser1"),
+        TESTUSER_PASSWORD,
+    );
+    assert!(missing.tgt_refresh_due());
+
+    let fresh =
+        TokioClient::from_tgt_session(Config::new(), KdcProtocol::Tcp, current_tgt_session(10, 50));
+    assert!(!fresh.tgt_refresh_due());
+
+    let due =
+        TokioClient::from_tgt_session(Config::new(), KdcProtocol::Tcp, current_tgt_session(55, 5));
+    assert!(due.tgt_refresh_due());
+
+    let expired =
+        TokioClient::from_tgt_session(Config::new(), KdcProtocol::Tcp, current_tgt_session(70, 0));
+    assert!(expired.tgt_refresh_due());
+}
+
+#[cfg(feature = "tokio")]
+#[test]
 fn tokio_client_validates_configuration() {
     let mut dns_config = Config::new();
     dns_config.libdefaults.dns_lookup_kdc = true;
@@ -2061,6 +2085,32 @@ fn sample_referral_tgt_session(realm: &str) -> rskrb5::client::AsRepSession {
     tgt.service = Principal::new("TEST.GOKRB5", 2, ["krbtgt".to_owned(), realm.to_owned()]);
     tgt.session_key.value = vec![0x9a; 32];
     tgt.ticket = format!("referral-ticket-{realm}").into_bytes();
+    tgt
+}
+
+#[cfg(feature = "tokio")]
+fn current_tgt_session(
+    auth_age_minutes: u64,
+    remaining_minutes: u64,
+) -> rskrb5::client::AsRepSession {
+    let now = SystemTime::now();
+    let mut tgt = sample_tgt_session();
+    tgt.auth_time = now
+        .checked_sub(Duration::from_secs(auth_age_minutes * 60))
+        .expect("auth time");
+    tgt.start_time = tgt.auth_time;
+    tgt.end_time = if remaining_minutes == 0 {
+        now.checked_sub(Duration::from_secs(60))
+            .expect("expired end time")
+    } else {
+        now.checked_add(Duration::from_secs(remaining_minutes * 60))
+            .expect("end time")
+    };
+    tgt.renew_till = Some(
+        now.checked_add(Duration::from_secs(24 * 60 * 60))
+            .expect("renew time"),
+    );
+    tgt.key_expiration = Some(tgt.end_time);
     tgt
 }
 
