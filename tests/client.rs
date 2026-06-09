@@ -1526,6 +1526,15 @@ fn tokio_client_exports_and_saves_ccache() {
     let loaded = ccache::CCache::load(&path).expect("saved ccache loads");
     let _ = std::fs::remove_file(&path);
     assert_eq!(loaded, cache);
+
+    let name_path = temp_client_ccache_file("export-save-name");
+    let name = format!("FILE:{}", name_path.display());
+    client
+        .save_ccache_name(&name)
+        .expect("client saves ccache by name");
+    let loaded_by_name = ccache::CCache::load_name(&name).expect("named ccache loads");
+    let _ = std::fs::remove_file(&name_path);
+    assert_eq!(loaded_by_name, cache);
 }
 
 #[cfg(feature = "tokio")]
@@ -1679,9 +1688,10 @@ fn tokio_client_updates_ccache_file_without_duplicate_tickets() {
 
     let path = temp_client_ccache_file("update-file");
     existing.save(&path).expect("existing ccache saves");
+    let name = format!("FILE:{}", path.display());
     client
-        .update_ccache_file(&path)
-        .expect("client updates ccache file");
+        .update_ccache_name(&name)
+        .expect("client updates ccache name");
     let updated = ccache::CCache::load(&path).expect("updated ccache loads");
     let _ = std::fs::remove_file(&path);
 

@@ -933,6 +933,12 @@ impl TokioClient {
         Ok(())
     }
 
+    /// Save current TGT and service-ticket state to a fresh file-backed ccache name.
+    pub fn save_ccache_name(&self, cache_name: impl AsRef<str>) -> Result<(), Error> {
+        self.to_ccache()?.save_name(cache_name)?;
+        Ok(())
+    }
+
     /// Load an existing ccache when present, update this client's entries, and save it.
     ///
     /// Missing files are created. Existing X-CACHECONF metadata and entries for
@@ -949,6 +955,15 @@ impl TokioClient {
         self.update_ccache(&mut cache)?;
         cache.save(path)?;
         Ok(())
+    }
+
+    /// Load an existing file-backed ccache name, update this client's entries, and save it.
+    ///
+    /// Missing files are created. Existing X-CACHECONF metadata and entries for
+    /// other clients are preserved.
+    pub fn update_ccache_name(&self, cache_name: impl AsRef<str>) -> Result<(), Error> {
+        let path = ccache::CCache::file_path_from_cache_name(cache_name.as_ref())?;
+        self.update_ccache_file(path)
     }
 
     fn new(
