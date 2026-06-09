@@ -16,7 +16,7 @@ use crate::config::Config;
 #[cfg(feature = "tower")]
 use crate::keytab::Keytab;
 #[cfg(feature = "tower")]
-use crate::service::{ApRepOptions, HostAddress};
+use crate::service::{ApRepOptions, HostAddress, SharedReplayCache};
 #[cfg(feature = "tower")]
 use std::borrow::Cow;
 #[cfg(feature = "tower")]
@@ -198,6 +198,18 @@ impl<'a> NegotiateLayer<'a> {
         self
     }
 
+    /// Share replay detection state with validators built from this layer.
+    pub fn with_shared_replay_cache(mut self, replay_cache: SharedReplayCache) -> Self {
+        self.validator.shared_replay_cache = Some(replay_cache);
+        self
+    }
+
+    /// Disable shared replay state for validators built from this layer.
+    pub fn without_shared_replay_cache(mut self) -> Self {
+        self.validator.shared_replay_cache = None;
+        self
+    }
+
     /// Control whether successful requests receive a `WWW-Authenticate` AP-REP token.
     pub fn with_ap_rep(mut self, emit_ap_rep: bool) -> Self {
         self.response.emit_ap_rep = emit_ap_rep;
@@ -332,6 +344,18 @@ impl<'a, S> NegotiateService<'a, S> {
         self
     }
 
+    /// Share replay detection state with other validators.
+    pub fn with_shared_replay_cache(mut self, replay_cache: SharedReplayCache) -> Self {
+        self.validator = self.validator.with_shared_replay_cache(replay_cache);
+        self
+    }
+
+    /// Disable shared replay state and use this service validator's local cache.
+    pub fn without_shared_replay_cache(mut self) -> Self {
+        self.validator = self.validator.without_shared_replay_cache();
+        self
+    }
+
     /// Control whether successful requests receive a `WWW-Authenticate` AP-REP token.
     pub fn with_ap_rep(mut self, emit_ap_rep: bool) -> Self {
         self.response.emit_ap_rep = emit_ap_rep;
@@ -446,13 +470,28 @@ where
 }
 
 #[cfg(feature = "tower")]
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 struct ValidatorOptions {
     max_clock_skew: Option<Duration>,
     now: Option<SystemTime>,
     keytab_principal: Option<Vec<String>>,
     client_address: Option<HostAddress>,
     require_client_address: bool,
+    shared_replay_cache: Option<SharedReplayCache>,
+}
+
+#[cfg(feature = "tower")]
+impl Default for ValidatorOptions {
+    fn default() -> Self {
+        Self {
+            max_clock_skew: None,
+            now: None,
+            keytab_principal: None,
+            client_address: None,
+            require_client_address: false,
+            shared_replay_cache: Some(SharedReplayCache::new()),
+        }
+    }
 }
 
 #[cfg(feature = "tower")]
@@ -470,6 +509,9 @@ impl ValidatorOptions {
         }
         if let Some(client_address) = &self.client_address {
             validator = validator.with_client_address(client_address.clone());
+        }
+        if let Some(shared_replay_cache) = &self.shared_replay_cache {
+            validator = validator.with_shared_replay_cache(shared_replay_cache.clone());
         }
         validator.require_client_address(self.require_client_address)
     }

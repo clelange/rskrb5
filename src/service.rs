@@ -9,6 +9,7 @@
 
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::config::Config;
@@ -245,6 +246,68 @@ impl ReplayCache {
     }
 }
 
+/// Shareable in-memory AP-REQ replay cache.
+///
+/// This is useful when a service framework clones middleware or builds several
+/// service instances from the same acceptor state.
+#[derive(Clone, Debug, Default)]
+pub struct SharedReplayCache {
+    inner: Arc<Mutex<ReplayCache>>,
+}
+
+impl SharedReplayCache {
+    /// Create an empty shared replay cache.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Create a shared replay cache from an existing in-memory cache.
+    pub fn from_cache(cache: ReplayCache) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(cache)),
+        }
+    }
+
+    /// Remove all cached replay entries.
+    pub fn clear(&self) -> Result<(), Error> {
+        self.with_cache_mut(ReplayCache::clear)
+    }
+
+    /// Number of cached replay entries.
+    pub fn len(&self) -> Result<usize, Error> {
+        self.with_cache(ReplayCache::len)
+    }
+
+    /// Whether the replay cache is empty.
+    pub fn is_empty(&self) -> Result<bool, Error> {
+        self.with_cache(ReplayCache::is_empty)
+    }
+
+    /// Remove entries presented more than `max_age` ago.
+    pub fn clear_older_than(&self, max_age: Duration) -> Result<usize, Error> {
+        self.with_cache_mut(|cache| cache.clear_older_than(max_age))
+    }
+
+    /// Remove entries presented more than `max_age` before `now`.
+    pub fn clear_older_than_at(&self, max_age: Duration, now: SystemTime) -> Result<usize, Error> {
+        self.with_cache_mut(|cache| cache.clear_older_than_at(max_age, now))
+    }
+
+    fn insert(&self, key: ReplayKey, presented_at: SystemTime) -> Result<bool, Error> {
+        self.with_cache_mut(|cache| cache.insert(key, presented_at))
+    }
+
+    fn with_cache<R>(&self, f: impl FnOnce(&ReplayCache) -> R) -> Result<R, Error> {
+        let cache = self.inner.lock().map_err(|_| Error::ReplayCachePoisoned)?;
+        Ok(f(&cache))
+    }
+
+    fn with_cache_mut<R>(&self, f: impl FnOnce(&mut ReplayCache) -> R) -> Result<R, Error> {
+        let mut cache = self.inner.lock().map_err(|_| Error::ReplayCachePoisoned)?;
+        Ok(f(&mut cache))
+    }
+}
+
 /// AP-REQ validator backed by a service keytab.
 #[derive(Debug)]
 pub struct ServiceValidator<'a> {
@@ -255,6 +318,7 @@ pub struct ServiceValidator<'a> {
     client_address: Option<HostAddress>,
     require_client_address: bool,
     replay_cache: ReplayCache,
+    shared_replay_cache: Option<SharedReplayCache>,
 }
 
 impl<'a> ServiceValidator<'a> {
@@ -272,6 +336,7 @@ impl<'a> ServiceValidator<'a> {
             client_address: None,
             require_client_address: false,
             replay_cache: ReplayCache::new(),
+            shared_replay_cache: None,
         }
     }
 
@@ -312,7 +377,27 @@ impl<'a> ServiceValidator<'a> {
         self
     }
 
+    /// Share replay detection state with other validators.
+    pub fn with_shared_replay_cache(mut self, replay_cache: SharedReplayCache) -> Self {
+        self.shared_replay_cache = Some(replay_cache);
+        self
+    }
+
+    /// Remove any shared replay cache and use this validator's local cache.
+    pub fn without_shared_replay_cache(mut self) -> Self {
+        self.shared_replay_cache = None;
+        self
+    }
+
+    /// Shared replay cache used by this validator, if any.
+    pub fn shared_replay_cache(&self) -> Option<&SharedReplayCache> {
+        self.shared_replay_cache.as_ref()
+    }
+
     /// Mutable replay cache for tests and integration with service state.
+    ///
+    /// If a shared replay cache has been installed, validation uses the shared
+    /// cache instead of this local cache.
     pub fn replay_cache_mut(&mut self) -> &mut ReplayCache {
         &mut self.replay_cache
     }
@@ -398,9 +483,7 @@ impl<'a> ServiceValidator<'a> {
             ctime_seconds: authenticator.ctime.0.timestamp(),
             cusec,
         };
-        if !self.replay_cache.insert(replay_key, now) {
-            return Err(Error::Replay);
-        }
+        self.record_replay(replay_key, now)?;
 
         Ok(ValidatedApReq {
             client: authenticator_client,
@@ -423,6 +506,15 @@ impl<'a> ServiceValidator<'a> {
 
     fn now(&self) -> SystemTime {
         self.now.unwrap_or_else(SystemTime::now)
+    }
+
+    fn record_replay(&mut self, replay_key: ReplayKey, now: SystemTime) -> Result<(), Error> {
+        let inserted = if let Some(replay_cache) = &self.shared_replay_cache {
+            replay_cache.insert(replay_key, now)?
+        } else {
+            self.replay_cache.insert(replay_key, now)
+        };
+        if inserted { Ok(()) } else { Err(Error::Replay) }
     }
 
     fn validate_ticket_times(
@@ -620,6 +712,10 @@ pub enum Error {
     /// AP-REQ replay detected.
     #[error("AP-REQ replay detected")]
     Replay,
+
+    /// Shared replay cache lock could not be acquired.
+    #[error("shared replay cache lock is poisoned")]
+    ReplayCachePoisoned,
 
     /// AP-REP did not echo the AP-REQ authenticator timestamp.
     #[error("AP-REP timestamp mismatch: expected {expected:?}, got {actual:?}")]
