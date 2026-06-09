@@ -216,6 +216,23 @@ fn entries_filter_out_x_cacheconf_credentials() {
 
     let entries = cache.entries();
     assert_eq!(entries.len(), 2);
+    let config_entries = cache.config_entries();
+    assert_eq!(config_entries.len(), 1);
+    assert_eq!(config_entries[0].key, "fast_avail");
+    assert_eq!(
+        config_entries[0].principal,
+        Some("krbtgt/TEST.GOKRB5@TEST.GOKRB5")
+    );
+    assert_eq!(config_entries[0].value, b"yes");
+    assert_eq!(
+        cache.config_entry_value("fast_avail", Some("krbtgt/TEST.GOKRB5@TEST.GOKRB5")),
+        Some(b"yes".as_slice())
+    );
+    assert!(
+        cache
+            .config_entry_value("fast_avail", Some("krbtgt/OTHER.GOKRB5@OTHER.GOKRB5"))
+            .is_none()
+    );
     assert!(
         cache
             .credentials()

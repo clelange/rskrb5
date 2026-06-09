@@ -13,6 +13,8 @@ use std::str::FromStr;
 const CCACHE_FIRST_BYTE: u8 = 5;
 const HEADER_FIELD_TAG_KDC_OFFSET: u16 = 1;
 const KRB5CCNAME_ENV: &str = "KRB5CCNAME";
+const X_CACHECONF_REALM: &str = "X-CACHECONF:";
+const X_CACHECONF_COMPONENT: &str = "krb5_ccache_conf_data";
 
 /// Parsed MIT-style credential cache name.
 ///
@@ -24,6 +26,20 @@ const KRB5CCNAME_ENV: &str = "KRB5CCNAME";
 pub enum CacheName {
     /// A file-backed credential cache.
     File(PathBuf),
+}
+
+/// Credential cache configuration entry.
+///
+/// MIT stores cache metadata as synthetic credentials with realm
+/// `X-CACHECONF:`. The configuration value is the credential's ticket field.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ConfigEntry<'a> {
+    /// Configuration key.
+    pub key: &'a str,
+    /// Optional associated principal string.
+    pub principal: Option<&'a str>,
+    /// Raw configuration value bytes.
+    pub value: &'a [u8],
 }
 
 impl CacheName {
@@ -255,10 +271,7 @@ impl CCache {
         let mut index = 0;
         while index < self.credentials.len() {
             if same_principal_identity(&self.credentials[index].client, client)
-                && !self.credentials[index]
-                    .server
-                    .realm
-                    .starts_with("X-CACHECONF")
+                && !is_config_credential(&self.credentials[index])
             {
                 removed.push(self.credentials.remove(index));
             } else {
@@ -272,8 +285,21 @@ impl CCache {
     pub fn entries(&self) -> Vec<&Credential> {
         self.credentials
             .iter()
-            .filter(|credential| !credential.server.realm.starts_with("X-CACHECONF"))
+            .filter(|credential| !is_config_credential(credential))
             .collect()
+    }
+
+    /// Return parsed cache configuration entries.
+    pub fn config_entries(&self) -> Vec<ConfigEntry<'_>> {
+        self.credentials.iter().filter_map(config_entry).collect()
+    }
+
+    /// Return a cache configuration value by key and optional associated principal.
+    pub fn config_entry_value(&self, key: &str, principal: Option<&str>) -> Option<&[u8]> {
+        self.config_entries()
+            .into_iter()
+            .find(|entry| entry.key == key && entry.principal == principal)
+            .map(|entry| entry.value)
     }
 
     /// Redacted credential metadata, suitable for diagnostics and JSON rendering.
@@ -310,6 +336,27 @@ impl CCache {
 
 fn same_principal_identity(left: &Principal, right: &Principal) -> bool {
     left.realm == right.realm && left.components == right.components
+}
+
+fn is_config_credential(credential: &Credential) -> bool {
+    config_entry(credential).is_some()
+}
+
+fn config_entry(credential: &Credential) -> Option<ConfigEntry<'_>> {
+    if credential.server.realm != X_CACHECONF_REALM {
+        return None;
+    }
+    let components = &credential.server.components;
+    if !(2..=3).contains(&components.len())
+        || components.first().map(String::as_str) != Some(X_CACHECONF_COMPONENT)
+    {
+        return None;
+    }
+    Some(ConfigEntry {
+        key: &components[1],
+        principal: components.get(2).map(String::as_str),
+        value: &credential.ticket,
+    })
 }
 
 /// Version 4 ccache header.
@@ -644,7 +691,7 @@ impl CredentialMetadata {
             auth_data_count: credential.auth_data.len(),
             ticket_length: credential.ticket.len(),
             second_ticket_length: credential.second_ticket.len(),
-            is_config_entry: credential.server.realm.starts_with("X-CACHECONF"),
+            is_config_entry: is_config_credential(credential),
         }
     }
 }
