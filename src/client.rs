@@ -705,6 +705,26 @@ impl TokioClient {
         )
     }
 
+    /// Attach or replace password credentials on an existing client.
+    ///
+    /// This is useful when starting from a ccache-loaded client and keeping
+    /// live credentials available for later refreshes.
+    pub fn with_password_credential(mut self, password: impl Into<Vec<u8>>) -> Self {
+        self.credentials = Some(TokioClientCredentials::Password(Zeroizing::new(
+            password.into(),
+        )));
+        self
+    }
+
+    /// Attach or replace keytab credentials on an existing client.
+    ///
+    /// This is useful when starting from a ccache-loaded client and keeping
+    /// live credentials available for later refreshes.
+    pub fn with_keytab_credential(mut self, keytab: Keytab) -> Self {
+        self.credentials = Some(TokioClientCredentials::Keytab(keytab));
+        self
+    }
+
     /// Create a cache-only client from a ccache.
     ///
     /// Cached TGTs and service tickets are reused and renewed when possible.
@@ -886,6 +906,21 @@ impl TokioClient {
         let ticket =
             preferred_session_at(self.service_tickets.remove(&key), ticket, SystemTime::now());
         self.service_tickets.insert(key, ticket);
+    }
+
+    /// Ensure this client has a valid TGT, reusing an existing TGT when possible.
+    pub async fn affirm_login(&mut self) -> Result<&AsRepSession, Error> {
+        if let Some(tgt) = self.tgt.clone() {
+            let now = SystemTime::now();
+            if session_valid_at(&tgt, now) {
+                return Ok(self.tgt.as_ref().expect("TGT was just checked"));
+            }
+            if session_renewable_at(&tgt, now) {
+                return self.renew_tgt().await;
+            }
+        }
+
+        self.login().await
     }
 
     /// Perform AS login with the configured long-term credential.

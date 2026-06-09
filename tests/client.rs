@@ -1111,6 +1111,63 @@ fn tokio_client_login_returns_current_cache_only_tgt() {
 
 #[cfg(feature = "tokio")]
 #[test]
+fn tokio_client_affirm_login_returns_current_cache_only_tgt() {
+    let tgt = sample_tgt_session();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("current time is after unix epoch")
+        .as_secs() as u32;
+
+    let mut cache = ccache::CCache::new(ccache::Principal::new(
+        "TEST.GOKRB5",
+        1,
+        vec!["testuser1".to_owned()],
+    ));
+    let mut tgt_credential = tgt.to_ccache_credential().expect("TGT converts");
+    make_credential_current(&mut tgt_credential, now);
+    cache.credentials_mut().push(tgt_credential);
+
+    let mut client = TokioClient::from_ccache(Config::new(), KdcProtocol::Tcp, &cache);
+    let session = runtime()
+        .block_on(client.affirm_login())
+        .expect("current cache-only TGT is returned");
+
+    assert_eq!(session.client, tgt.client);
+    assert_eq!(session.service, tgt.service);
+    assert_eq!(session.session_key, tgt.session_key);
+}
+
+#[cfg(feature = "tokio")]
+#[test]
+fn tokio_client_affirm_login_reuses_valid_tgt_with_attached_credentials() {
+    let mut tgt = sample_tgt_session();
+    let now = SystemTime::now();
+    tgt.auth_time = now
+        .checked_sub(Duration::from_secs(2 * 60))
+        .expect("auth time");
+    tgt.start_time = now
+        .checked_sub(Duration::from_secs(60))
+        .expect("start time");
+    tgt.end_time = now
+        .checked_add(Duration::from_secs(60 * 60))
+        .expect("end time");
+    tgt.renew_till = Some(
+        now.checked_add(Duration::from_secs(2 * 60 * 60))
+            .expect("renew time"),
+    );
+    let mut client = TokioClient::from_tgt_session(config_without_kdcs(), KdcProtocol::Tcp, tgt)
+        .with_password_credential(TESTUSER_PASSWORD);
+
+    let session = runtime()
+        .block_on(client.affirm_login())
+        .expect("valid TGT is reused without KDC endpoints");
+
+    assert_eq!(session.service, Principal::tgt_service("TEST.GOKRB5"));
+    assert_eq!(session.session_key.value, decode_hex(SESSION_KEY));
+}
+
+#[cfg(feature = "tokio")]
+#[test]
 fn tokio_client_exposes_assume_preauthentication_setting() {
     let client = TokioClient::with_password(
         Config::new(),
