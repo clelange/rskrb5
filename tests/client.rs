@@ -510,9 +510,16 @@ fn builds_s4u2self_tgs_req_with_pa_for_user() {
     .expect("S4U2Self TGS-REQ builds");
     let decoded: rasn_kerberos::TgsReq = rasn::der::decode(&request.der).expect("TGS-REQ decodes");
 
-    assert_eq!(request.client, service_tgt.client);
+    assert_eq!(request.client, user);
     assert_eq!(request.service, service_tgt.client);
     assert_eq!(request.kdc_realm, "TEST.GOKRB5");
+    assert_eq!(
+        principal_from_parts(
+            &decoded.0.req_body.realm,
+            decoded.0.req_body.cname.as_ref().expect("cname")
+        ),
+        service_tgt.client
+    );
     assert_eq!(
         principal_from_parts(
             &decoded.0.req_body.realm,
@@ -939,13 +946,13 @@ fn s4u2self_uses_transport_boundary() {
     let session = s4u2self(
         &mut transport,
         &service_tgt,
-        user,
+        user.clone(),
         TgsReqOptions::new(timestamp(1_893_553_450), 0x6677_8899).with_etypes(vec![18]),
     )
     .expect("S4U2Self exchange succeeds");
 
     assert_eq!(transport.calls, 1);
-    assert_eq!(session.client, service_tgt.client);
+    assert_eq!(session.client, user);
     assert_eq!(session.service, service_tgt.client);
 }
 
@@ -3117,7 +3124,8 @@ impl KdcTransport for S4uTransport {
         );
 
         self.calls += 1;
-        let built = built_tgs_request_from_der(decoded, request);
+        let mut built = built_tgs_request_from_der(decoded, request);
+        built.client = self.expected_user.clone();
         Ok(synthetic_tgs_rep(
             &built,
             built.nonce,

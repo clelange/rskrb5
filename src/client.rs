@@ -357,7 +357,10 @@ pub struct BuiltTgsReq {
     pub message: rasn_kerberos::TgsReq,
     /// DER-encoded TGS-REQ bytes suitable for KDC transport.
     pub der: Vec<u8>,
-    /// Request client principal.
+    /// Expected client principal in the KDC reply.
+    ///
+    /// This is normally the same principal that authenticated the TGS-REQ, but
+    /// S4U2Self replies carry the impersonated user as the client.
     pub client: Principal,
     /// Requested service principal.
     pub service: Principal,
@@ -3168,7 +3171,7 @@ pub fn build_s4u2self_req_with_confounder(
         .padata
         .push(pa_for_user_padata(&user, &service_tgt.session_key)?);
     let service = service_tgt.client.clone();
-    build_tgs_req_for_realm_with_confounder(
+    let mut request = build_tgs_req_for_realm_with_confounder(
         service_tgt,
         service.realm.clone(),
         service,
@@ -3176,7 +3179,9 @@ pub fn build_s4u2self_req_with_confounder(
         timestamp,
         cusec,
         confounder,
-    )
+    )?;
+    request.client = user;
+    Ok(request)
 }
 
 /// Build a TGS-REQ for an explicit KDC realm, timestamp, and confounder.
