@@ -524,6 +524,49 @@ fn maps_rc4_hmac_enctype_aliases() {
     assert_eq!(config.libdefaults.default_tgs_enctype_ids, [23]);
 }
 
+#[cfg(feature = "serde")]
+#[test]
+fn config_json_matches_gokrb5_shape() {
+    let mut config = Config::parse(COMPLEX_KRB5_CONF).expect("config parses");
+    config.libdefaults.k5login_directory = "/home/test".to_owned();
+
+    let json = config.json().expect("config JSON renders");
+    let value: serde_json::Value = serde_json::from_str(&json).expect("config JSON parses");
+
+    assert!(json.contains(r#""LibDefaults""#));
+    assert!(json.contains(r#""DefaultTGSEnctypes""#));
+    assert!(json.contains(r#""DefaultTktEnctypeIDs""#));
+    assert_eq!(
+        value["LibDefaults"]["Clockskew"],
+        serde_json::json!(300_000_000_000u64)
+    );
+    assert_eq!(
+        value["LibDefaults"]["TicketLifetime"],
+        serde_json::json!(36_000_000_000_000u64)
+    );
+    assert_eq!(
+        value["LibDefaults"]["KDCDefaultOptions"]["Bytes"],
+        serde_json::json!("AAAAEA==")
+    );
+    assert_eq!(
+        value["LibDefaults"]["KDCDefaultOptions"]["BitLength"],
+        serde_json::json!(32)
+    );
+    assert_eq!(
+        value["LibDefaults"]["K5LoginDirectory"],
+        serde_json::json!("/home/test")
+    );
+    assert_eq!(
+        value["Realms"][0]["KPasswdServer"][0],
+        serde_json::json!("10.80.88.88:464")
+    );
+    assert_eq!(value["Realms"][0]["MasterKDC"], serde_json::Value::Null);
+    assert_eq!(
+        value["DomainRealm"]["hostname1.example.com"],
+        serde_json::json!("EXAMPLE.COM")
+    );
+}
+
 #[test]
 fn rejects_v4_realm_directives() {
     let err = Config::parse(

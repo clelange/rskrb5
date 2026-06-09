@@ -123,6 +123,12 @@ impl Config {
         Ok(config)
     }
 
+    /// Render a gokrb5-style JSON snapshot of the parsed configuration.
+    #[cfg(feature = "serde")]
+    pub fn json(&self) -> std::result::Result<String, serde_json::Error> {
+        serde_json::to_string_pretty(&ConfigJson::from(self))
+    }
+
     /// Return the configured realm with this name.
     pub fn realm(&self, realm: &str) -> Option<&Realm> {
         self.realms.iter().find(|entry| entry.realm == realm)
@@ -727,6 +733,244 @@ pub fn parse_supported_enctype_ids(enctypes: &[String], allow_weak_crypto: bool)
         .filter(|name| allow_weak_crypto || !is_weak_enctype(name))
         .filter_map(|name| supported_enctype_id(name))
         .collect()
+}
+
+#[cfg(feature = "serde")]
+#[derive(serde::Serialize)]
+struct ConfigJson<'a> {
+    #[serde(rename = "LibDefaults")]
+    libdefaults: LibDefaultsJson<'a>,
+    #[serde(rename = "Realms")]
+    realms: Vec<RealmJson<'a>>,
+    #[serde(rename = "DomainRealm")]
+    domain_realm: &'a BTreeMap<String, String>,
+}
+
+#[cfg(feature = "serde")]
+impl<'a> From<&'a Config> for ConfigJson<'a> {
+    fn from(config: &'a Config) -> Self {
+        Self {
+            libdefaults: LibDefaultsJson::from(&config.libdefaults),
+            realms: config.realms.iter().map(RealmJson::from).collect(),
+            domain_realm: &config.domain_realm,
+        }
+    }
+}
+
+#[cfg(feature = "serde")]
+#[derive(serde::Serialize)]
+struct LibDefaultsJson<'a> {
+    #[serde(rename = "AllowWeakCrypto")]
+    allow_weak_crypto: bool,
+    #[serde(rename = "Canonicalize")]
+    canonicalize: bool,
+    #[serde(rename = "CCacheType")]
+    ccache_type: i32,
+    #[serde(rename = "Clockskew")]
+    clockskew: u128,
+    #[serde(rename = "DefaultCCacheName")]
+    default_ccache_name: &'a str,
+    #[serde(rename = "DefaultClientKeytabName")]
+    default_client_keytab_name: &'a str,
+    #[serde(rename = "DefaultKeytabName")]
+    default_keytab_name: &'a str,
+    #[serde(rename = "DefaultRealm")]
+    default_realm: &'a str,
+    #[serde(rename = "DefaultTGSEnctypes")]
+    default_tgs_enctypes: &'a [String],
+    #[serde(rename = "DefaultTktEnctypes")]
+    default_tkt_enctypes: &'a [String],
+    #[serde(rename = "DefaultTGSEnctypeIDs")]
+    default_tgs_enctype_ids: &'a [i32],
+    #[serde(rename = "DefaultTktEnctypeIDs")]
+    default_tkt_enctype_ids: &'a [i32],
+    #[serde(rename = "DNSCanonicalizeHostname")]
+    dns_canonicalize_hostname: bool,
+    #[serde(rename = "DNSLookupKDC")]
+    dns_lookup_kdc: bool,
+    #[serde(rename = "DNSLookupRealm")]
+    dns_lookup_realm: bool,
+    #[serde(rename = "ExtraAddresses")]
+    extra_addresses: Option<Vec<String>>,
+    #[serde(rename = "Forwardable")]
+    forwardable: bool,
+    #[serde(rename = "IgnoreAcceptorHostname")]
+    ignore_acceptor_hostname: bool,
+    #[serde(rename = "K5LoginAuthoritative")]
+    k5login_authoritative: bool,
+    #[serde(rename = "K5LoginDirectory")]
+    k5login_directory: &'a str,
+    #[serde(rename = "KDCDefaultOptions")]
+    kdc_default_options: KerberosBitStringJson,
+    #[serde(rename = "KDCTimeSync")]
+    kdc_time_sync: i32,
+    #[serde(rename = "NoAddresses")]
+    no_addresses: bool,
+    #[serde(rename = "PermittedEnctypes")]
+    permitted_enctypes: &'a [String],
+    #[serde(rename = "PermittedEnctypeIDs")]
+    permitted_enctype_ids: &'a [i32],
+    #[serde(rename = "PreferredPreauthTypes")]
+    preferred_preauth_types: &'a [i32],
+    #[serde(rename = "Proxiable")]
+    proxiable: bool,
+    #[serde(rename = "RDNS")]
+    rdns: bool,
+    #[serde(rename = "RealmTryDomains")]
+    realm_try_domains: i32,
+    #[serde(rename = "RenewLifetime")]
+    renew_lifetime: u128,
+    #[serde(rename = "SafeChecksumType")]
+    safe_checksum_type: i32,
+    #[serde(rename = "TicketLifetime")]
+    ticket_lifetime: u128,
+    #[serde(rename = "UDPPreferenceLimit")]
+    udp_preference_limit: i32,
+    #[serde(rename = "VerifyAPReqNofail")]
+    verify_ap_req_nofail: bool,
+}
+
+#[cfg(feature = "serde")]
+impl<'a> From<&'a LibDefaults> for LibDefaultsJson<'a> {
+    fn from(libdefaults: &'a LibDefaults) -> Self {
+        Self {
+            allow_weak_crypto: libdefaults.allow_weak_crypto,
+            canonicalize: libdefaults.canonicalize,
+            ccache_type: libdefaults.ccache_type,
+            clockskew: duration_nanos(libdefaults.clockskew),
+            default_ccache_name: &libdefaults.default_ccache_name,
+            default_client_keytab_name: &libdefaults.default_client_keytab_name,
+            default_keytab_name: &libdefaults.default_keytab_name,
+            default_realm: &libdefaults.default_realm,
+            default_tgs_enctypes: &libdefaults.default_tgs_enctypes,
+            default_tkt_enctypes: &libdefaults.default_tkt_enctypes,
+            default_tgs_enctype_ids: &libdefaults.default_tgs_enctype_ids,
+            default_tkt_enctype_ids: &libdefaults.default_tkt_enctype_ids,
+            dns_canonicalize_hostname: libdefaults.dns_canonicalize_hostname,
+            dns_lookup_kdc: libdefaults.dns_lookup_kdc,
+            dns_lookup_realm: libdefaults.dns_lookup_realm,
+            extra_addresses: optional_ip_addresses(&libdefaults.extra_addresses),
+            forwardable: libdefaults.forwardable,
+            ignore_acceptor_hostname: libdefaults.ignore_acceptor_hostname,
+            k5login_authoritative: libdefaults.k5login_authoritative,
+            k5login_directory: &libdefaults.k5login_directory,
+            kdc_default_options: KerberosBitStringJson::from_u32(libdefaults.kdc_default_options),
+            kdc_time_sync: libdefaults.kdc_time_sync,
+            no_addresses: libdefaults.no_addresses,
+            permitted_enctypes: &libdefaults.permitted_enctypes,
+            permitted_enctype_ids: &libdefaults.permitted_enctype_ids,
+            preferred_preauth_types: &libdefaults.preferred_preauth_types,
+            proxiable: libdefaults.proxiable,
+            rdns: libdefaults.rdns,
+            realm_try_domains: libdefaults.realm_try_domains,
+            renew_lifetime: duration_nanos(libdefaults.renew_lifetime),
+            safe_checksum_type: libdefaults.safe_checksum_type,
+            ticket_lifetime: duration_nanos(libdefaults.ticket_lifetime),
+            udp_preference_limit: libdefaults.udp_preference_limit,
+            verify_ap_req_nofail: libdefaults.verify_ap_req_nofail,
+        }
+    }
+}
+
+#[cfg(feature = "serde")]
+#[derive(serde::Serialize)]
+struct RealmJson<'a> {
+    #[serde(rename = "Realm")]
+    realm: &'a str,
+    #[serde(rename = "AdminServer")]
+    admin_server: Option<&'a [String]>,
+    #[serde(rename = "DefaultDomain")]
+    default_domain: &'a str,
+    #[serde(rename = "KDC")]
+    kdc: Option<&'a [String]>,
+    #[serde(rename = "KPasswdServer")]
+    kpasswd_server: Option<&'a [String]>,
+    #[serde(rename = "MasterKDC")]
+    master_kdc: Option<&'a [String]>,
+}
+
+#[cfg(feature = "serde")]
+impl<'a> From<&'a Realm> for RealmJson<'a> {
+    fn from(realm: &'a Realm) -> Self {
+        Self {
+            realm: &realm.realm,
+            admin_server: optional_slice(&realm.admin_server),
+            default_domain: &realm.default_domain,
+            kdc: optional_slice(&realm.kdc),
+            kpasswd_server: optional_slice(&realm.kpasswd_server),
+            master_kdc: optional_slice(&realm.master_kdc),
+        }
+    }
+}
+
+#[cfg(feature = "serde")]
+#[derive(serde::Serialize)]
+struct KerberosBitStringJson {
+    #[serde(rename = "Bytes")]
+    bytes: String,
+    #[serde(rename = "BitLength")]
+    bit_length: usize,
+}
+
+#[cfg(feature = "serde")]
+impl KerberosBitStringJson {
+    fn from_u32(value: u32) -> Self {
+        Self {
+            bytes: base64_standard(&value.to_be_bytes()),
+            bit_length: u32::BITS as usize,
+        }
+    }
+}
+
+#[cfg(feature = "serde")]
+fn optional_slice<T>(values: &[T]) -> Option<&[T]> {
+    if values.is_empty() {
+        None
+    } else {
+        Some(values)
+    }
+}
+
+#[cfg(feature = "serde")]
+fn optional_ip_addresses(values: &[IpAddr]) -> Option<Vec<String>> {
+    if values.is_empty() {
+        None
+    } else {
+        Some(values.iter().map(ToString::to_string).collect())
+    }
+}
+
+#[cfg(feature = "serde")]
+fn duration_nanos(duration: Duration) -> u128 {
+    duration.as_nanos()
+}
+
+#[cfg(feature = "serde")]
+fn base64_standard(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut output = String::with_capacity(bytes.len().div_ceil(3) * 4);
+
+    for chunk in bytes.chunks(3) {
+        let first = chunk[0];
+        let second = chunk.get(1).copied().unwrap_or(0);
+        let third = chunk.get(2).copied().unwrap_or(0);
+        let value = ((first as u32) << 16) | ((second as u32) << 8) | third as u32;
+
+        output.push(TABLE[((value >> 18) & 0x3f) as usize] as char);
+        output.push(TABLE[((value >> 12) & 0x3f) as usize] as char);
+        if chunk.len() > 1 {
+            output.push(TABLE[((value >> 6) & 0x3f) as usize] as char);
+        } else {
+            output.push('=');
+        }
+        if chunk.len() > 2 {
+            output.push(TABLE[(value & 0x3f) as usize] as char);
+        } else {
+            output.push('=');
+        }
+    }
+
+    output
 }
 
 fn parse_unit_duration(input: &str, original: &str) -> Result<Duration, Error> {
