@@ -4,6 +4,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use pretty_assertions::assert_eq;
 use rskrb5::config::{Config, Error, parse_duration};
 
+mod common;
+
 const KRB5_CONF: &str = r#"[libdefaults]
   default_realm = TEST.GOKRB5
   dns_lookup_realm = false
@@ -192,6 +194,37 @@ fn loads_config_path_list_in_order() {
 }
 
 #[test]
+fn loads_config_path_list_from_env() {
+    let first = temp_file("load-env-first");
+    let second = temp_file("load-env-second");
+    std::fs::write(
+        &first,
+        r#"
+[libdefaults]
+ default_realm = FIRST.GOKRB5
+"#,
+    )
+    .expect("first config writes");
+    std::fs::write(
+        &second,
+        r#"
+[libdefaults]
+ default_realm = SECOND.GOKRB5
+"#,
+    )
+    .expect("second config writes");
+    let paths =
+        std::env::join_paths([first.as_os_str(), second.as_os_str()]).expect("config paths join");
+    let _env = common::EnvVarGuard::set_krb5_config(&paths);
+
+    let config = Config::load_from_env().expect("config loads from KRB5_CONFIG");
+    let _ = std::fs::remove_file(&first);
+    let _ = std::fs::remove_file(&second);
+
+    assert_eq!(config.libdefaults.default_realm, "SECOND.GOKRB5");
+}
+
+#[test]
 fn rejects_empty_config_path_list() {
     assert!(matches!(
         Config::load_paths(Vec::<PathBuf>::new()).expect_err("empty path list rejected"),
@@ -200,6 +233,16 @@ fn rejects_empty_config_path_list() {
     assert!(matches!(
         Config::load_paths([PathBuf::new()]).expect_err("empty path rejected"),
         Error::EmptyConfigPathList
+    ));
+}
+
+#[test]
+fn rejects_missing_config_env() {
+    let _env = common::EnvVarGuard::remove_krb5_config();
+
+    assert!(matches!(
+        Config::load_from_env().expect_err("missing KRB5_CONFIG rejected"),
+        Error::DefaultConfigName
     ));
 }
 

@@ -5,9 +5,11 @@ use std::sync::{Mutex, MutexGuard};
 const KRB5_KTNAME_ENV: &str = "KRB5_KTNAME";
 const KRB5_CLIENT_KTNAME_ENV: &str = "KRB5_CLIENT_KTNAME";
 const KRB5CCNAME_ENV: &str = "KRB5CCNAME";
+const KRB5_CONFIG_ENV: &str = "KRB5_CONFIG";
 static KRB5_KTNAME_LOCK: Mutex<()> = Mutex::new(());
 static KRB5_CLIENT_KTNAME_LOCK: Mutex<()> = Mutex::new(());
 static KRB5CCNAME_LOCK: Mutex<()> = Mutex::new(());
+static KRB5_CONFIG_LOCK: Mutex<()> = Mutex::new(());
 
 pub struct EnvVarGuard {
     key: &'static str,
@@ -38,6 +40,14 @@ impl EnvVarGuard {
 
     pub fn remove_krb5ccname() -> Self {
         Self::remove(KRB5CCNAME_ENV, &KRB5CCNAME_LOCK)
+    }
+
+    pub fn set_krb5_config(value: impl AsRef<std::ffi::OsStr>) -> Self {
+        Self::set(KRB5_CONFIG_ENV, &KRB5_CONFIG_LOCK, value)
+    }
+
+    pub fn remove_krb5_config() -> Self {
+        Self::remove(KRB5_CONFIG_ENV, &KRB5_CONFIG_LOCK)
     }
 
     fn set(
