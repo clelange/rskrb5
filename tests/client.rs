@@ -1665,6 +1665,84 @@ fn tokio_client_renews_expired_renewable_cached_service_ticket() {
 
 #[cfg(feature = "tokio")]
 #[test]
+fn tokio_client_renews_ccache_loaded_renewable_service_ticket() {
+    runtime().block_on(async {
+        let tgt = sample_tgt_session();
+        let mut service_ticket = sample_service_ticket_session(&tgt);
+        service_ticket.session_key.value = vec![0x46; 32];
+        let cached_session_key = service_ticket.session_key.clone();
+        let renewal_reply_key = service_ticket.session_key.clone();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("current time is after unix epoch")
+            .as_secs() as u32;
+
+        let mut cache = ccache::CCache::new(ccache::Principal::new(
+            "TEST.GOKRB5",
+            1,
+            vec!["testuser1".to_owned()],
+        ));
+        let mut tgt_credential = tgt.to_ccache_credential().expect("TGT converts");
+        make_credential_current(&mut tgt_credential, now);
+        let mut service_credential = service_ticket
+            .to_ccache_credential()
+            .expect("service ticket converts");
+        service_credential.times.auth_time = now - 2 * 60 * 60;
+        service_credential.times.start_time = now - 2 * 60 * 60;
+        service_credential.times.end_time = now - 60 * 60;
+        service_credential.times.renew_till = now + 60 * 60;
+        cache.credentials_mut().push(tgt_credential);
+        cache.credentials_mut().push(service_credential);
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind local KDC listener");
+        let addr = listener.local_addr().expect("local listener address");
+        let mut client = TokioClient::from_ccache(
+            config_with_kdc_server(addr.to_string()),
+            KdcProtocol::Tcp,
+            &cache,
+        );
+        assert_eq!(client.cached_service_ticket_count(), 1);
+
+        let task = tokio::spawn(async move {
+            let (request, mut socket) = read_tcp_kdc_request(&listener).await;
+            let decoded: rasn_kerberos::TgsReq =
+                rasn::der::decode(&request).expect("TGS-REQ decodes");
+            let body = &decoded.0.req_body;
+            let expected_options = 0x0000_0010 | KDC_OPTION_RENEWABLE | KDC_OPTION_RENEW;
+            assert_eq!(
+                body.kdc_options.0.as_raw_slice(),
+                expected_options.to_be_bytes().as_slice()
+            );
+            assert_eq!(
+                principal_from_parts(&body.realm, body.sname.as_ref().expect("sname")),
+                sample_service_principal()
+            );
+
+            let built = built_tgs_request_from_der(decoded, &request);
+            let response = synthetic_tgs_rep(&built, built.nonce, &renewal_reply_key);
+            write_tcp_kdc_response(&mut socket, &response).await;
+        });
+
+        let renewed = client
+            .get_service_ticket(sample_service_principal())
+            .await
+            .expect("ccache-loaded renewable service ticket renews");
+        task.await.expect("KDC task succeeds");
+
+        assert_eq!(renewed.service, sample_service_principal());
+        assert_eq!(hex_encode(&renewed.session_key.value), SERVICE_SESSION_KEY);
+        let cached = client
+            .remove_cached_service_ticket(sample_service_principal())
+            .expect("renewed service ticket is cached");
+        assert_eq!(cached.session_key, renewed.session_key);
+        assert_ne!(cached.session_key, cached_session_key);
+    });
+}
+
+#[cfg(feature = "tokio")]
+#[test]
 fn tokio_client_renews_cached_referral_tgt_before_reusing_it() {
     runtime().block_on(async {
         let primary_tgt = current_tgt_session(10, 50);
