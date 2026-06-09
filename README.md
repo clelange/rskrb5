@@ -76,6 +76,19 @@ pure-Rust Kerberos library.
   unless they are explicitly isolated behind non-default optional features.
 - The crate is marked `publish = false` until the decision gate is complete.
 
+## Supported Scope During The Spike
+
+The implemented preview scope is a pure-Rust Kerberos v5 client/service core
+with file-backed keytab and ccache support, krb5.conf parsing, AES-SHA1,
+AES-SHA2, DES3, and RC4-HMAC crypto, AS/TGS and kpasswd exchanges, AP-REQ
+service validation, SPNEGO/GSSAPI HTTP helpers, Tower adapters, and PAC parsing
+for the translated gokrb5 fixtures and Docker MIT KDC tests in this repository.
+
+Known gaps before a public crates.io preview include non-FILE credential stores
+such as DIR, API, KCM, and MSLSA; FAST, PKINIT, S4U2Self/S4U2Proxy client
+flows; full Active Directory live-test coverage; system GSSAPI/SSPI facade
+integration; and a declared stable API surface.
+
 Generate the compatibility report:
 
 ```sh
