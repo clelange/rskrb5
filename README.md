@@ -43,7 +43,7 @@ pure-Rust Kerberos library.
   Tokio client with password/keytab/ccache credential sources,
   credential attachment, configuration validation, TGT/session renewal, affirm-login reuse,
   destroy semantics, service-ticket caching/lookup/removal, and gokrb5-shaped JSON
-  session/cache snapshots; service validation covers
+  session/cache snapshots plus structured diagnostics; service validation covers
   gokrb5-generated AP-REQ fixtures, service-ticket decryption, authenticator
   decryption, client matching, ticket time checks, clock skew, replay, and
   replay-cache aging, address-required behavior, plus AP-REP mutual-auth reply generation and

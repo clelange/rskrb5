@@ -1266,6 +1266,46 @@ fn tokio_client_validates_configuration() {
     ));
 }
 
+#[cfg(all(feature = "tokio", feature = "serde"))]
+#[test]
+fn tokio_client_diagnostics_reports_keytab_and_kdc_state() {
+    let client = TokioClient::with_keytab(
+        config_with_kdc(),
+        KdcProtocol::Auto,
+        Principal::user("TEST.GOKRB5", "testuser1"),
+        keytab_with_reply_key(1),
+    );
+
+    let diagnostics = runtime().block_on(client.diagnostics());
+
+    assert_eq!(diagnostics.client, "testuser1");
+    assert_eq!(diagnostics.realm, "TEST.GOKRB5");
+    assert_eq!(diagnostics.protocol, "Auto");
+    assert_eq!(diagnostics.credential_source, "keytab");
+    assert!(!diagnostics.has_tgt);
+    assert_eq!(diagnostics.service_ticket_cache_count, 0);
+    assert_eq!(diagnostics.default_tkt_enctypes, [18, 17]);
+    assert_eq!(diagnostics.preferred_preauth_types, [18, 17]);
+    assert_eq!(diagnostics.keytab_enctypes, [18]);
+    assert_eq!(diagnostics.udp_kdcs, ["kdc.test.gokrb5:88"]);
+    assert_eq!(diagnostics.tcp_kdcs, ["kdc.test.gokrb5:88"]);
+    assert_eq!(
+        diagnostics.errors,
+        [
+            "default_tkt_enctypes specifies 17 but this enctype is not available in the client's keytab",
+            "preferred_preauth_types specifies 17 but this enctype is not available in the client's keytab",
+        ]
+    );
+    assert!(!diagnostics.is_ok());
+
+    let json = runtime()
+        .block_on(client.diagnostics_json())
+        .expect("diagnostics JSON renders");
+    assert!(json.contains(r#""CredentialSource": "keytab""#));
+    assert!(json.contains(r#""UDPKDCs": ["#));
+    assert!(json.contains(r#""TCPKDCs": ["#));
+}
+
 #[cfg(feature = "tokio")]
 #[test]
 fn tokio_client_login_rejects_expired_cache_only_tgt() {
@@ -2412,6 +2452,24 @@ fn config_without_kdcs() -> Config {
 
 [realms]
  TEST.GOKRB5 = {
+ }
+"#,
+    )
+    .expect("config parses")
+}
+
+#[cfg(feature = "tokio")]
+fn config_with_kdc() -> Config {
+    Config::parse(
+        r#"
+[libdefaults]
+ dns_lookup_kdc = false
+ default_tkt_enctypes = aes256-cts-hmac-sha1-96 aes128-cts-hmac-sha1-96
+ preferred_preauth_types = 18 17
+
+[realms]
+ TEST.GOKRB5 = {
+  kdc = kdc.test.gokrb5
  }
 "#,
     )

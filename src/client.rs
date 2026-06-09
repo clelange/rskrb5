@@ -641,6 +641,52 @@ impl fmt::Debug for TokioClientCredentials {
     }
 }
 
+/// Client configuration and runtime-state diagnostics.
+///
+/// This is the structured equivalent of gokrb5's client diagnostics output:
+/// callers can inspect local credential state, KDC discovery results, and
+/// configuration/keytab mismatches without parsing a formatted text block.
+#[cfg(feature = "tokio")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "PascalCase"))]
+pub struct TokioClientDiagnostics {
+    /// Client principal name.
+    pub client: String,
+    /// Client realm.
+    pub realm: String,
+    /// Selected high-level transport protocol.
+    pub protocol: String,
+    /// Configured credential source: `password`, `keytab`, or `none`.
+    pub credential_source: String,
+    /// Whether the client currently holds a TGT session.
+    pub has_tgt: bool,
+    /// Number of cached service tickets.
+    pub service_ticket_cache_count: usize,
+    /// Configured default ticket enctype IDs.
+    pub default_tkt_enctypes: Vec<i32>,
+    /// Configured preferred preauthentication type IDs.
+    pub preferred_preauth_types: Vec<i32>,
+    /// Key encryption type IDs present for the client realm in the keytab.
+    pub keytab_enctypes: Vec<i32>,
+    /// UDP KDC endpoints discovered from config or DNS.
+    #[cfg_attr(feature = "serde", serde(rename = "UDPKDCs"))]
+    pub udp_kdcs: Vec<String>,
+    /// TCP KDC endpoints discovered from config or DNS.
+    #[cfg_attr(feature = "serde", serde(rename = "TCPKDCs"))]
+    pub tcp_kdcs: Vec<String>,
+    /// Configuration and discovery errors found by diagnostics.
+    pub errors: Vec<String>,
+}
+
+#[cfg(feature = "tokio")]
+impl TokioClientDiagnostics {
+    /// Whether diagnostics found no errors.
+    pub fn is_ok(&self) -> bool {
+        self.errors.is_empty()
+    }
+}
+
 /// High-level Tokio Kerberos client with TGT and service-ticket caching.
 #[cfg(feature = "tokio")]
 #[derive(Clone, Eq, PartialEq)]
@@ -883,6 +929,62 @@ impl TokioClient {
     /// Whether the client has enough local state for KDC operations.
     pub fn is_configured(&self) -> bool {
         self.validate_configuration().is_ok()
+    }
+
+    /// Run structured client diagnostics.
+    pub async fn diagnostics(&self) -> TokioClientDiagnostics {
+        let mut errors = Vec::new();
+        if let Err(error) = self.validate_configuration() {
+            errors.push(error.to_string());
+        }
+
+        let keytab_enctypes = match self.credentials.as_ref() {
+            Some(TokioClientCredentials::Keytab(keytab)) => {
+                let enctypes = keytab_realm_enctypes(keytab, &self.client.realm);
+                record_keytab_enctype_diagnostics(
+                    &mut errors,
+                    &enctypes,
+                    &self.config.libdefaults.default_tkt_enctype_ids,
+                    "default_tkt_enctypes",
+                );
+                record_keytab_enctype_diagnostics(
+                    &mut errors,
+                    &enctypes,
+                    &self.config.libdefaults.preferred_preauth_types,
+                    "preferred_preauth_types",
+                );
+                enctypes
+            }
+            _ => Vec::new(),
+        };
+
+        let udp_kdcs = self
+            .diagnostic_kdc_endpoints(KdcProtocol::Udp, &mut errors)
+            .await;
+        let tcp_kdcs = self
+            .diagnostic_kdc_endpoints(KdcProtocol::Tcp, &mut errors)
+            .await;
+
+        TokioClientDiagnostics {
+            client: self.client.name(),
+            realm: self.client.realm.clone(),
+            protocol: protocol_label(self.protocol).to_owned(),
+            credential_source: credential_source(self.credentials.as_ref()).to_owned(),
+            has_tgt: self.tgt.is_some(),
+            service_ticket_cache_count: self.service_tickets.len(),
+            default_tkt_enctypes: self.config.libdefaults.default_tkt_enctype_ids.clone(),
+            preferred_preauth_types: self.config.libdefaults.preferred_preauth_types.clone(),
+            keytab_enctypes,
+            udp_kdcs,
+            tcp_kdcs,
+            errors,
+        }
+    }
+
+    /// Run diagnostics and return pretty-printed JSON.
+    #[cfg(feature = "serde")]
+    pub async fn diagnostics_json(&self) -> Result<String, serde_json::Error> {
+        serde_json::to_string_pretty(&self.diagnostics().await)
     }
 
     /// Whether AS login sends PA-ENC-TIMESTAMP in the first AS-REQ.
@@ -1223,6 +1325,27 @@ impl TokioClient {
         }
         Ok(credentials)
     }
+
+    async fn diagnostic_kdc_endpoints(
+        &self,
+        protocol: KdcProtocol,
+        errors: &mut Vec<String>,
+    ) -> Vec<String> {
+        match self
+            .transport
+            .discover_kdcs(&self.config, &self.client.realm, protocol)
+            .await
+        {
+            Ok(endpoints) => endpoints.iter().map(KdcEndpoint::authority).collect(),
+            Err(error) => {
+                errors.push(format!(
+                    "error when resolving KDCs for {} communication: {error}",
+                    protocol_label(protocol)
+                ));
+                Vec::new()
+            }
+        }
+    }
 }
 
 #[cfg(all(feature = "tokio", feature = "serde"))]
@@ -1274,6 +1397,53 @@ fn service_ticket_json_entry(ticket: &TgsRepSession) -> ServiceTicketJsonEntry {
 fn json_time(time: SystemTime) -> String {
     let timestamp: chrono::DateTime<chrono::Utc> = time.into();
     timestamp.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+}
+
+#[cfg(feature = "tokio")]
+fn credential_source(credentials: Option<&TokioClientCredentials>) -> &'static str {
+    match credentials {
+        Some(TokioClientCredentials::Password(_)) => "password",
+        Some(TokioClientCredentials::Keytab(_)) => "keytab",
+        None => "none",
+    }
+}
+
+#[cfg(feature = "tokio")]
+fn keytab_realm_enctypes(keytab: &Keytab, realm: &str) -> Vec<i32> {
+    let mut enctypes = keytab
+        .entries()
+        .iter()
+        .filter(|entry| entry.principal.realm == realm)
+        .map(|entry| entry.key.etype)
+        .collect::<Vec<_>>();
+    enctypes.sort_unstable();
+    enctypes.dedup();
+    enctypes
+}
+
+#[cfg(feature = "tokio")]
+fn record_keytab_enctype_diagnostics(
+    errors: &mut Vec<String>,
+    keytab_enctypes: &[i32],
+    configured: &[i32],
+    field: &str,
+) {
+    for etype in configured {
+        if !keytab_enctypes.contains(etype) {
+            errors.push(format!(
+                "{field} specifies {etype} but this enctype is not available in the client's keytab"
+            ));
+        }
+    }
+}
+
+#[cfg(feature = "tokio")]
+fn protocol_label(protocol: KdcProtocol) -> &'static str {
+    match protocol {
+        KdcProtocol::Udp => "UDP",
+        KdcProtocol::Tcp => "TCP",
+        KdcProtocol::Auto => "Auto",
+    }
 }
 
 #[cfg(feature = "tokio")]
