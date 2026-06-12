@@ -1966,6 +1966,20 @@ fn tokio_client_exposes_assume_preauthentication_setting() {
 
 #[cfg(feature = "tokio")]
 #[test]
+fn tokio_client_exposes_fast_negotiation_setting() {
+    let client = TokioClient::with_password(
+        Config::new(),
+        KdcProtocol::Tcp,
+        Principal::user("TEST.GOKRB5", "testuser1"),
+        TESTUSER_PASSWORD,
+    )
+    .with_fast_negotiation(false);
+
+    assert!(!client.fast_negotiation());
+}
+
+#[cfg(feature = "tokio")]
+#[test]
 fn tokio_client_reports_tgt_refresh_due_window() {
     let missing = TokioClient::with_password(
         Config::new(),
@@ -3459,6 +3473,26 @@ fn login_tgt_with_password_retries_after_preauth_required() {
 }
 
 #[test]
+fn login_tgt_with_password_can_disable_fast_negotiation_marker() {
+    let client = Principal::user("TEST.GOKRB5", "testuser1");
+    let options = AsReqOptions::new(timestamp(1_893_553_447), 0x1122_3344)
+        .with_etypes(vec![18])
+        .with_fast_negotiation(false);
+    let key_info = password_key_info();
+    let reply_key = derive_password_reply_key(&client, TESTUSER_PASSWORD, &key_info)
+        .expect("password key derives");
+    let mut transport = PreauthTransport::new(reply_key, None).with_fast_negotiation(false);
+
+    let session =
+        login_tgt_with_password(&mut transport, client.clone(), TESTUSER_PASSWORD, options)
+            .expect("password login succeeds");
+
+    assert_eq!(transport.calls, 2);
+    assert_eq!(session.client, client);
+    assert_eq!(session.service, Principal::tgt_service("TEST.GOKRB5"));
+}
+
+#[test]
 fn login_as_service_with_password_retries_for_explicit_service() {
     let client = Principal::user("TEST.GOKRB5", "testuser1");
     let service = change_password_principal();
@@ -3512,6 +3546,23 @@ fn login_tgt_with_keytab_retries_with_selected_keytab_kvno() {
     let options = AsReqOptions::new(timestamp(1_893_553_447), 0x1122_3344).with_etypes(vec![18]);
     let keytab = keytab_with_reply_key(7);
     let mut transport = PreauthTransport::new(reply_key(), Some(7));
+
+    let session = login_tgt_with_keytab(&mut transport, client.clone(), &keytab, options)
+        .expect("keytab login succeeds");
+
+    assert_eq!(transport.calls, 2);
+    assert_eq!(session.client, client);
+    assert_eq!(session.service, Principal::tgt_service("TEST.GOKRB5"));
+}
+
+#[test]
+fn login_tgt_with_keytab_can_disable_fast_negotiation_marker() {
+    let client = Principal::user("TEST.GOKRB5", "testuser1");
+    let options = AsReqOptions::new(timestamp(1_893_553_447), 0x1122_3344)
+        .with_etypes(vec![18])
+        .with_fast_negotiation(false);
+    let keytab = keytab_with_reply_key(7);
+    let mut transport = PreauthTransport::new(reply_key(), Some(7)).with_fast_negotiation(false);
 
     let session = login_tgt_with_keytab(&mut transport, client.clone(), &keytab, options)
         .expect("keytab login succeeds");
@@ -3700,6 +3751,7 @@ impl KdcTransport for RenewalTransport {
 struct PreauthTransport {
     reply_key: EncryptionKey,
     expected_pa_kvno: Option<u32>,
+    expect_fast_negotiation: bool,
     calls: usize,
 }
 
@@ -3708,8 +3760,14 @@ impl PreauthTransport {
         Self {
             reply_key,
             expected_pa_kvno,
+            expect_fast_negotiation: true,
             calls: 0,
         }
+    }
+
+    fn with_fast_negotiation(mut self, fast_negotiation: bool) -> Self {
+        self.expect_fast_negotiation = fast_negotiation;
+        self
     }
 }
 
@@ -3720,13 +3778,11 @@ impl KdcTransport for PreauthTransport {
         self.calls += 1;
         match self.calls {
             1 => {
-                let padata = decoded.0.padata.as_ref().expect("initial probe has padata");
-                assert_eq!(padata.len(), 1);
-                assert_eq!(padata[0].r#type, PA_REQ_ENC_PA_REP);
-                assert!(padata[0].value.as_ref().is_empty());
+                assert_fast_negotiation_marker(&decoded, self.expect_fast_negotiation);
                 Ok(synthetic_preauth_required_error())
             }
             2 => {
+                assert_fast_negotiation_marker(&decoded, self.expect_fast_negotiation);
                 assert_pa_enc_timestamp(&decoded, self.expected_pa_kvno);
                 let built = built_request_from_der(decoded, request);
                 Ok(synthetic_as_rep_with_reply_key(
@@ -4237,6 +4293,23 @@ fn assert_pa_enc_timestamp(request: &rasn_kerberos::AsReq, expected_kvno: Option
     assert_eq!(encrypted.etype, 18);
     assert_eq!(encrypted.kvno, expected_kvno);
     assert!(!encrypted.cipher.as_ref().is_empty());
+}
+
+fn assert_fast_negotiation_marker(request: &rasn_kerberos::AsReq, expected: bool) {
+    let marker = request.0.padata.as_ref().and_then(|padata| {
+        padata
+            .iter()
+            .find(|padata| padata.r#type == PA_REQ_ENC_PA_REP)
+    });
+    if expected {
+        let marker = marker.expect("AS-REQ has PA-REQ-ENC-PA-REP");
+        assert!(marker.value.as_ref().is_empty());
+    } else {
+        assert!(
+            marker.is_none(),
+            "AS-REQ omits PA-REQ-ENC-PA-REP when fast negotiation is disabled"
+        );
+    }
 }
 
 fn built_request_from_der(message: rasn_kerberos::AsReq, der: &[u8]) -> BuiltAsReq {

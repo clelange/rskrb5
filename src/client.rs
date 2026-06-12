@@ -384,6 +384,8 @@ pub struct AsReqOptions {
     pub padata: Vec<rasn_kerberos::PaData>,
     /// Send PA-ENC-TIMESTAMP in the first AS-REQ using requested etype defaults.
     pub assume_preauthentication: bool,
+    /// Advertise support for AS-REP encrypted padata negotiation.
+    pub fast_negotiation: bool,
 }
 
 impl AsReqOptions {
@@ -398,6 +400,7 @@ impl AsReqOptions {
             kdc_option_bits: 0,
             padata: Vec::new(),
             assume_preauthentication: false,
+            fast_negotiation: true,
         }
     }
 
@@ -452,6 +455,12 @@ impl AsReqOptions {
     /// Send PA-ENC-TIMESTAMP in the first AS-REQ.
     pub fn with_assume_preauthentication(mut self, assume_preauthentication: bool) -> Self {
         self.assume_preauthentication = assume_preauthentication;
+        self
+    }
+
+    /// Configure whether high-level AS login advertises PA-REQ-ENC-PA-REP.
+    pub fn with_fast_negotiation(mut self, fast_negotiation: bool) -> Self {
+        self.fast_negotiation = fast_negotiation;
         self
     }
 }
@@ -1021,6 +1030,7 @@ pub struct TokioClient {
     tgt_sessions: BTreeMap<String, AsRepSession>,
     service_tickets: BTreeMap<String, TgsRepSession>,
     assume_preauthentication: bool,
+    fast_negotiation: bool,
 }
 
 #[cfg(feature = "tokio")]
@@ -1036,6 +1046,7 @@ impl fmt::Debug for TokioClient {
             .field("tgt_sessions", &self.tgt_sessions.len())
             .field("cached_service_tickets", &self.service_tickets.len())
             .field("assume_preauthentication", &self.assume_preauthentication)
+            .field("fast_negotiation", &self.fast_negotiation)
             .finish()
     }
 }
@@ -1329,6 +1340,7 @@ impl TokioClient {
             tgt_sessions: BTreeMap::new(),
             service_tickets: BTreeMap::new(),
             assume_preauthentication: false,
+            fast_negotiation: true,
         }
     }
 
@@ -1341,6 +1353,12 @@ impl TokioClient {
     /// Configure whether AS login sends PA-ENC-TIMESTAMP in the first AS-REQ.
     pub fn with_assume_preauthentication(mut self, assume_preauthentication: bool) -> Self {
         self.assume_preauthentication = assume_preauthentication;
+        self
+    }
+
+    /// Configure whether AS login advertises PA-REQ-ENC-PA-REP.
+    pub fn with_fast_negotiation(mut self, fast_negotiation: bool) -> Self {
+        self.fast_negotiation = fast_negotiation;
         self
     }
 
@@ -1500,6 +1518,11 @@ impl TokioClient {
     /// Whether AS login sends PA-ENC-TIMESTAMP in the first AS-REQ.
     pub fn assume_preauthentication(&self) -> bool {
         self.assume_preauthentication
+    }
+
+    /// Whether AS login advertises PA-REQ-ENC-PA-REP.
+    pub fn fast_negotiation(&self) -> bool {
+        self.fast_negotiation
     }
 
     /// Current TGT session, when logged in or loaded from cache.
@@ -1982,7 +2005,8 @@ impl TokioClient {
             random_nonce()?,
             &self.config.libdefaults,
         )
-        .with_assume_preauthentication(self.assume_preauthentication))
+        .with_assume_preauthentication(self.assume_preauthentication)
+        .with_fast_negotiation(self.fast_negotiation))
     }
 
     fn tgs_req_options(&self) -> Result<TgsReqOptions, Error> {
@@ -5059,6 +5083,7 @@ fn password_preauth_request(
     }
     let key_info = select_preauth_key_info(&error, &options.etypes)?;
     let reply_key = derive_password_reply_key(&client, password, &key_info)?;
+    let options = initial_preauth_probe_options(options);
     let request = build_preauthenticated_as_req(client, service, options, &reply_key, None)?;
     Ok((request, reply_key))
 }
@@ -5110,6 +5135,7 @@ fn keytab_preauth_request(
     }
     let key_info = select_preauth_key_info(&error, &options.etypes)?;
     let (reply_key, kvno) = select_keytab_reply_key(keytab, &client, &key_info)?;
+    let options = initial_preauth_probe_options(options);
     let request = build_preauthenticated_as_req(client, service, options, &reply_key, Some(kvno))?;
     Ok((request, reply_key))
 }
@@ -5201,10 +5227,11 @@ fn select_keytab_reply_key_for_etype(
 }
 
 fn initial_preauth_probe_options(mut options: AsReqOptions) -> AsReqOptions {
-    if !options
-        .padata
-        .iter()
-        .any(|padata| padata.r#type == PA_REQ_ENC_PA_REP)
+    if options.fast_negotiation
+        && !options
+            .padata
+            .iter()
+            .any(|padata| padata.r#type == PA_REQ_ENC_PA_REP)
     {
         options.padata.push(rasn_kerberos::PaData {
             r#type: PA_REQ_ENC_PA_REP,
