@@ -6,11 +6,12 @@ use rskrb5::crypto::KerberosEtype;
 use rskrb5::keytab::EncryptionKey;
 use rskrb5::krb_cred::{
     Error, KRB_CRED_ENCPART_USAGE, KRB_CRED_MSG_TYPE, decode_enc_krb_cred_part, decode_krb_cred,
-    decrypt_krb_cred_enc_part,
+    decrypt_krb_cred_enc_part, decrypted_krb_cred_to_ccache_credentials,
 };
 
 const REPLY_KEY: &str = "9cad00bbc72d703258e911dc18e6d5487cf737bf67fd111f0c2463ad6033bf51";
 const CONFOUNDER: &str = "101112131415161718191a1b1c1d1e1f";
+const TEST_TIME_SECONDS: u32 = 771_228_197;
 const KRB_CRED: &str = concat!(
     "7681F63081F3A003020105A103020116A281BF3081BC615C305AA003020105A110",
     "1B0E415448454E412E4D49542E454455A21A3018A003020101A111300F1B066866",
@@ -91,6 +92,58 @@ fn decrypts_krb_cred_encrypted_part() {
         decrypt_krb_cred_enc_part(&krb_cred, &key).expect("KRB-CRED encrypted part decrypts");
 
     assert_eq!(decrypted, enc_part);
+}
+
+#[test]
+fn converts_decrypted_krb_cred_to_ccache_credentials() {
+    let krb_cred = decode_krb_cred(&decode_hex(KRB_CRED)).expect("KRB-CRED decodes");
+    let enc_part =
+        decode_enc_krb_cred_part(&decode_hex(ENC_KRB_CRED_PART)).expect("EncKrbCredPart decodes");
+
+    let credentials = decrypted_krb_cred_to_ccache_credentials(&krb_cred, &enc_part)
+        .expect("KRB-CRED converts to ccache credentials");
+
+    assert_eq!(credentials.len(), 2);
+    let credential = &credentials[0];
+    assert_eq!(credential.client.realm, "ATHENA.MIT.EDU");
+    assert_eq!(credential.client.components, ["hftsai", "extra"]);
+    assert_eq!(credential.server.realm, "ATHENA.MIT.EDU");
+    assert_eq!(credential.server.components, ["hftsai", "extra"]);
+    assert_eq!(credential.key.etype, 1);
+    assert_eq!(credential.key.value, b"12345678");
+    assert_eq!(credential.times.auth_time, TEST_TIME_SECONDS);
+    assert_eq!(credential.times.start_time, TEST_TIME_SECONDS);
+    assert_eq!(credential.times.end_time, TEST_TIME_SECONDS);
+    assert_eq!(credential.times.renew_till, TEST_TIME_SECONDS);
+    assert_eq!(credential.ticket_flags, [0xfe, 0xdc, 0xba, 0x98]);
+    assert_eq!(credential.addresses.len(), 2);
+    assert_eq!(credential.addresses[0].addr_type, 2);
+    assert_eq!(credential.addresses[0].address, decode_hex("12d00023"));
+    assert_eq!(
+        credential.ticket,
+        rasn::der::encode(&krb_cred.tickets[0]).expect("ticket encodes")
+    );
+    assert!(credential.auth_data.is_empty());
+    assert!(credential.second_ticket.is_empty());
+}
+
+#[test]
+fn rejects_krb_cred_ticket_info_count_mismatch() {
+    let krb_cred = decode_krb_cred(&decode_hex(KRB_CRED)).expect("KRB-CRED decodes");
+    let mut enc_part =
+        decode_enc_krb_cred_part(&decode_hex(ENC_KRB_CRED_PART)).expect("EncKrbCredPart decodes");
+    enc_part.ticket_info.pop();
+
+    let error = decrypted_krb_cred_to_ccache_credentials(&krb_cred, &enc_part)
+        .expect_err("ticket-info count mismatch is rejected");
+
+    assert!(matches!(
+        error,
+        Error::TicketInfoCountMismatch {
+            ticket_count: 2,
+            info_count: 1,
+        }
+    ));
 }
 
 #[test]
