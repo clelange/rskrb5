@@ -7,15 +7,16 @@ use pretty_assertions::assert_eq;
 use rskrb5::ccache;
 use rskrb5::client::KpasswdRequestOptions;
 use rskrb5::client::{
-    AP_REP_ENCPART_USAGE, AP_REQ_AUTHENTICATOR_USAGE, AS_REP_ENCPART_USAGE,
+    AP_REP_ENCPART_USAGE, AP_REQ_AUTHENTICATOR_USAGE, AS_REP_ENCPART_USAGE, AS_REQ_CHECKSUM_USAGE,
     AS_REQ_PA_ENC_TIMESTAMP_USAGE, ApReqOptions, AsReqOptions, BuiltAsReq, BuiltTgsReq, Error,
     KDC_ERR_PREAUTH_REQUIRED, KDC_OPTION_CANONICALIZE, KDC_OPTION_CNAME_IN_ADDL_TKT,
     KDC_OPTION_RENEW, KDC_OPTION_RENEWABLE, KdcError, KdcTransport, PA_ENC_TIMESTAMP,
-    PA_ETYPE_INFO2, PA_FOR_USER, PA_FOR_USER_CHECKSUM_USAGE, PA_PAC_OPTIONS, PA_REQ_ENC_PA_REP,
-    PA_TGS_REQ, PAC_OPTION_RESOURCE_BASED_CONSTRAINED_DELEGATION, PreauthKeyInfo, Principal,
-    TGS_REP_ENCPART_SESSION_KEY_USAGE, TGS_REQ_AUTHENTICATOR_CHECKSUM_USAGE,
-    TGS_REQ_AUTHENTICATOR_USAGE, TgsReqOptions, build_ap_req_with_confounder,
-    build_kpasswd_request, build_kpasswd_request_with_confounders, build_preauthenticated_as_req,
+    PA_ETYPE_INFO2, PA_FOR_USER, PA_FOR_USER_CHECKSUM_USAGE, PA_FX_FAST, PA_PAC_OPTIONS,
+    PA_REQ_ENC_PA_REP, PA_TGS_REQ, PAC_OPTION_RESOURCE_BASED_CONSTRAINED_DELEGATION,
+    PreauthKeyInfo, Principal, TGS_REP_ENCPART_SESSION_KEY_USAGE,
+    TGS_REQ_AUTHENTICATOR_CHECKSUM_USAGE, TGS_REQ_AUTHENTICATOR_USAGE, TICKET_FLAG_ENC_PA_REP,
+    TgsReqOptions, build_ap_req_with_confounder, build_kpasswd_request,
+    build_kpasswd_request_with_confounders, build_preauthenticated_as_req,
     build_s4u2proxy_req_with_confounder, build_s4u2self_req_with_confounder,
     build_tgs_req_for_realm_with_confounder, build_tgs_req_with_confounder, build_tgt_as_req,
     build_tgt_renewal_req_with_confounder, build_ticket_renewal_req_with_confounder,
@@ -32,12 +33,13 @@ use rskrb5::client::{BlockingNegotiateClient, NegotiateClient};
 use rskrb5::client::{KdcProtocol, PrunedSessions, TokioClient, TokioKdcTransport};
 #[cfg(feature = "tokio")]
 use rskrb5::config::Config;
-use rskrb5::crypto::{AesSha1Etype, kerb_checksum_hmac_md5};
+use rskrb5::crypto::{AesSha1Etype, KerberosEtype, kerb_checksum_hmac_md5};
 use rskrb5::kadmin::{
     ChangePasswdData, KPASSWD_SUCCESS, KRB_PRIV_ENCPART_USAGE, Reply as KpasswdReply,
     Request as KpasswdRequest, ipv4_host_address,
 };
 use rskrb5::keytab::{EncryptionKey, Entry as KeytabEntry, Keytab, Principal as KeytabPrincipal};
+use rskrb5::messages::PaReqEncPaRep;
 #[cfg(feature = "tokio")]
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 #[cfg(feature = "tokio")]
@@ -362,6 +364,66 @@ fn processes_as_rep_and_exports_ccache_credential() {
     assert_eq!(credential.times.renew_till, 1_894_071_845);
     assert_eq!(credential.ticket, session.ticket);
     assert!(credential.second_ticket.is_empty());
+}
+
+#[test]
+fn process_as_rep_validates_pa_req_enc_pa_rep_checksum() {
+    let request = sample_request_with_pa_req_enc_pa_rep();
+    let reply_key = reply_key();
+    assert_eq!(
+        u32::from_be_bytes(*TICKET_FLAGS) & TICKET_FLAG_ENC_PA_REP,
+        TICKET_FLAG_ENC_PA_REP
+    );
+    let response = synthetic_as_rep_with_reply_key(
+        &request,
+        request.nonce,
+        request.service.clone(),
+        &reply_key,
+    );
+
+    let session = process_as_rep(&request, &response, &reply_key)
+        .expect("AS-REP encrypted padata checksum validates");
+
+    assert_eq!(session.client, Principal::user("TEST.GOKRB5", "testuser1"));
+    assert_eq!(session.service, Principal::tgt_service("TEST.GOKRB5"));
+}
+
+#[test]
+fn process_as_rep_rejects_invalid_pa_req_enc_pa_rep_checksum() {
+    let request = sample_request_with_pa_req_enc_pa_rep();
+    let reply_key = reply_key();
+    let response = synthetic_as_rep_with_reply_key_and_encrypted_padata(
+        &request,
+        request.nonce,
+        request.service.clone(),
+        &reply_key,
+        Some(fast_negotiation_encrypted_padata(
+            &request, &reply_key, true,
+        )),
+    );
+
+    let error = process_as_rep(&request, &response, &reply_key)
+        .expect_err("invalid AS-REP encrypted padata checksum fails");
+
+    assert!(matches!(error, Error::FastNegotiationChecksumMismatch));
+}
+
+#[test]
+fn process_as_rep_requires_fast_marker_with_pa_req_enc_pa_rep_checksum() {
+    let request = sample_request_with_pa_req_enc_pa_rep();
+    let reply_key = reply_key();
+    let response = synthetic_as_rep_with_reply_key_and_encrypted_padata(
+        &request,
+        request.nonce,
+        request.service.clone(),
+        &reply_key,
+        Some(vec![pa_req_enc_pa_rep_padata(&request, &reply_key, false)]),
+    );
+
+    let error = process_as_rep(&request, &response, &reply_key)
+        .expect_err("missing PA-FX-FAST marker fails");
+
+    assert!(matches!(error, Error::InvalidFastNegotiationResponse));
 }
 
 #[test]
@@ -3733,6 +3795,19 @@ fn sample_request() -> BuiltAsReq {
     .expect("sample request builds")
 }
 
+fn sample_request_with_pa_req_enc_pa_rep() -> BuiltAsReq {
+    build_tgt_as_req(
+        Principal::user("TEST.GOKRB5", "testuser1"),
+        AsReqOptions::new(timestamp(1_893_553_447), 0x1122_3344).with_padata(vec![
+            rasn_kerberos::PaData {
+                r#type: PA_REQ_ENC_PA_REP,
+                value: Vec::new().into(),
+            },
+        ]),
+    )
+    .expect("sample request builds")
+}
+
 fn sample_tgt_session() -> rskrb5::client::AsRepSession {
     let request = sample_request();
     let response = synthetic_as_rep(&request, request.nonce);
@@ -3907,6 +3982,24 @@ fn synthetic_as_rep_with_reply_key(
     ticket_service: Principal,
     reply_key: &EncryptionKey,
 ) -> Vec<u8> {
+    let encrypted_pa_data = request_has_padata(request, PA_REQ_ENC_PA_REP)
+        .then(|| fast_negotiation_encrypted_padata(request, reply_key, false));
+    synthetic_as_rep_with_reply_key_and_encrypted_padata(
+        request,
+        nonce,
+        ticket_service,
+        reply_key,
+        encrypted_pa_data,
+    )
+}
+
+fn synthetic_as_rep_with_reply_key_and_encrypted_padata(
+    request: &BuiltAsReq,
+    nonce: u32,
+    ticket_service: Principal,
+    reply_key: &EncryptionKey,
+    encrypted_pa_data: Option<Vec<rasn_kerberos::PaData>>,
+) -> Vec<u8> {
     let session_key = EncryptionKey {
         etype: 18,
         value: decode_hex(SESSION_KEY),
@@ -3927,7 +4020,7 @@ fn synthetic_as_rep_with_reply_key(
         srealm: realm(&request.service.realm),
         sname: rasn_principal(&request.service),
         caddr: None,
-        encrypted_pa_data: None,
+        encrypted_pa_data,
     });
     let encrypted = encrypt_message(
         reply_key,
@@ -3958,6 +4051,54 @@ fn synthetic_as_rep_with_reply_key(
         },
     });
     rasn::der::encode(&as_rep).expect("AS-REP encodes")
+}
+
+fn fast_negotiation_encrypted_padata(
+    request: &BuiltAsReq,
+    reply_key: &EncryptionKey,
+    corrupt_checksum: bool,
+) -> Vec<rasn_kerberos::PaData> {
+    vec![
+        rasn_kerberos::PaData {
+            r#type: PA_FX_FAST,
+            value: Vec::new().into(),
+        },
+        pa_req_enc_pa_rep_padata(request, reply_key, corrupt_checksum),
+    ]
+}
+
+fn pa_req_enc_pa_rep_padata(
+    request: &BuiltAsReq,
+    reply_key: &EncryptionKey,
+    corrupt_checksum: bool,
+) -> rasn_kerberos::PaData {
+    let etype = KerberosEtype::from_etype_id(reply_key.etype).expect("supported reply key etype");
+    let mut checksum = etype
+        .checksum(&reply_key.value, &request.der, AS_REQ_CHECKSUM_USAGE)
+        .expect("AS-REQ checksum computes");
+    if corrupt_checksum {
+        checksum[0] ^= 0xff;
+    }
+    let value = PaReqEncPaRep {
+        checksum_type: etype.checksum_type_id(),
+        checksum: checksum.into(),
+    };
+    rasn_kerberos::PaData {
+        r#type: PA_REQ_ENC_PA_REP,
+        value: value
+            .encode_der()
+            .expect("PA-REQ-ENC-PA-REP encodes")
+            .into(),
+    }
+}
+
+fn request_has_padata(request: &BuiltAsReq, padata_type: i32) -> bool {
+    request
+        .message
+        .0
+        .padata
+        .as_ref()
+        .is_some_and(|padata| padata.iter().any(|padata| padata.r#type == padata_type))
 }
 
 fn synthetic_tgs_rep(

@@ -73,6 +73,9 @@ pub const PA_ETYPE_INFO2: i32 = 19;
 /// PA-REQ-ENC-PA-REP marker used by modern gokrb5-compatible AS exchanges.
 pub const PA_REQ_ENC_PA_REP: i32 = 149;
 
+/// PA-FX-FAST padata type used to signal FAST negotiation support.
+pub const PA_FX_FAST: i32 = 136;
+
 /// PA-PAC-OPTIONS preauthentication type used by MS-KILE.
 pub const PA_PAC_OPTIONS: i32 = 167;
 
@@ -89,6 +92,9 @@ pub const AS_REQ_PA_ENC_TIMESTAMP_USAGE: u32 = 1;
 
 /// Key usage for AS-REP encrypted parts.
 pub const AS_REP_ENCPART_USAGE: u32 = 3;
+
+/// Key usage for PA-REQ-ENC-PA-REP checksums over the original AS-REQ.
+pub const AS_REQ_CHECKSUM_USAGE: u32 = 56;
 
 /// Key usage for the TGS-REQ request-body checksum inside the authenticator.
 pub const TGS_REQ_AUTHENTICATOR_CHECKSUM_USAGE: u32 = 6;
@@ -119,6 +125,9 @@ pub const PAC_OPTION_FORWARD_TO_FULL_DC: u32 = 0x2000_0000;
 
 /// Raw PAC option mask for `resource-based constrained delegation`.
 pub const PAC_OPTION_RESOURCE_BASED_CONSTRAINED_DELEGATION: u32 = 0x1000_0000;
+
+/// Ticket flag bit indicating the AS-REP carries encrypted padata.
+pub const TICKET_FLAG_ENC_PA_REP: u32 = 0x0001_0000;
 
 /// Raw KDC option mask for `renewable` in RFC 4120 bit-string order.
 pub const KDC_OPTION_RENEWABLE: u32 = 0x0080_0000;
@@ -4354,6 +4363,7 @@ pub fn process_as_rep(
         AS_REP_ENCPART_USAGE,
     )?;
     let enc_part = decode_as_rep_enc_part(&plaintext)?;
+    validate_as_rep_encrypted_padata(request, &enc_part, reply_key)?;
 
     if enc_part.nonce != request.nonce {
         return Err(Error::NonceMismatch {
@@ -4401,6 +4411,59 @@ pub fn process_as_rep(
             .map(system_time_from_kerberos_time)
             .transpose()?,
     })
+}
+
+fn validate_as_rep_encrypted_padata(
+    request: &BuiltAsReq,
+    enc_part: &rasn_kerberos::EncKdcRepPart,
+    reply_key: &EncryptionKey,
+) -> Result<(), Error> {
+    if !as_req_contains_padata(request, PA_REQ_ENC_PA_REP)
+        || !ticket_flags_contain_bits(&enc_part.flags, TICKET_FLAG_ENC_PA_REP)
+    {
+        return Ok(());
+    }
+
+    let encrypted_pa_data = enc_part
+        .encrypted_pa_data
+        .as_ref()
+        .ok_or(Error::InvalidFastNegotiationResponse)?;
+    if encrypted_pa_data.len() < 2 || !padata_contains(encrypted_pa_data, PA_FX_FAST) {
+        return Err(Error::InvalidFastNegotiationResponse);
+    }
+    let pa_req_enc_pa_rep = encrypted_pa_data
+        .iter()
+        .find(|padata| padata.r#type == PA_REQ_ENC_PA_REP)
+        .ok_or(Error::InvalidFastNegotiationResponse)?;
+    let checksum = crate::messages::PaReqEncPaRep::decode_der(pa_req_enc_pa_rep.value.as_ref())?;
+    let etype = KerberosEtype::from_checksum_type_id(checksum.checksum_type)
+        .ok_or(Error::UnsupportedChecksumType(checksum.checksum_type))?;
+    if !etype.verify_checksum(
+        &reply_key.value,
+        &request.der,
+        checksum.checksum.as_ref(),
+        AS_REQ_CHECKSUM_USAGE,
+    ) {
+        return Err(Error::FastNegotiationChecksumMismatch);
+    }
+    Ok(())
+}
+
+fn as_req_contains_padata(request: &BuiltAsReq, padata_type: i32) -> bool {
+    request
+        .message
+        .0
+        .padata
+        .as_ref()
+        .is_some_and(|padata| padata_contains(padata, padata_type))
+}
+
+fn padata_contains(padata: &[rasn_kerberos::PaData], padata_type: i32) -> bool {
+    padata.iter().any(|padata| padata.r#type == padata_type)
+}
+
+fn ticket_flags_contain_bits(flags: &rasn_kerberos::TicketFlags, bits: u32) -> bool {
+    u32::from_be_bytes(ticket_flags_to_bytes(flags)) & bits == bits
 }
 
 /// Decrypt and validate a TGS-REP against the original TGS-REQ.
@@ -4740,6 +4803,18 @@ pub enum Error {
         /// Actual reply nonce.
         actual: u32,
     },
+
+    /// The AS-REP did not include the encrypted padata required by FAST negotiation.
+    #[error("KDC did not respond appropriately to FAST negotiation")]
+    InvalidFastNegotiationResponse,
+
+    /// The AS-REP FAST negotiation checksum used an unsupported checksum type.
+    #[error("unsupported Kerberos checksum type: {0}")]
+    UnsupportedChecksumType(i32),
+
+    /// The AS-REP FAST negotiation checksum was invalid.
+    #[error("KDC FAST negotiation response checksum invalid")]
+    FastNegotiationChecksumMismatch,
 
     /// A TGS referral chain exceeded the configured limit.
     #[error("TGS referral depth exceeded maximum {max}")]

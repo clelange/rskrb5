@@ -3,7 +3,8 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rskrb5::messages::{
-    EncryptedData, Error, KrbErrorInfo, PaForUser, PaPacOptions, decode_der, encode_der,
+    EncryptedData, Error, KrbErrorInfo, PaForUser, PaPacOptions, PaReqEncPaRep, decode_der,
+    encode_der,
 };
 
 const ENCRYPTED_DATA: &str =
@@ -31,6 +32,7 @@ const PA_FOR_USER: &str = concat!(
     "086B72623564617461",
 );
 const PA_PAC_OPTIONS_CLAIMS_AND_RBCD: &str = "3009A00703050090000000";
+const PA_REQ_ENC_PA_REP: &str = "300DA00302010FA106040431323334";
 const TEST_CIPHER: &[u8] = b"krbASN.1 test message";
 const TEST_TIME_SECONDS: u64 = 771_228_197;
 
@@ -160,6 +162,27 @@ fn pa_pac_options_decodes_and_roundtrips_flags() {
     assert_eq!(PaPacOptions::from_bits(0x9000_0000), decoded);
 }
 
+#[test]
+fn pa_req_enc_pa_rep_decodes_and_roundtrips_gokrb5_shape() {
+    let bytes = decode_hex(PA_REQ_ENC_PA_REP);
+    let decoded = PaReqEncPaRep::decode_der(&bytes).expect("PA-REQ-ENC-PA-REP decodes");
+
+    assert_eq!(decoded.checksum_type, 15);
+    assert_eq!(decoded.checksum.as_ref(), b"1234");
+    assert_eq!(
+        decoded.to_checksum(),
+        rasn_kerberos::Checksum {
+            r#type: 15,
+            checksum: b"1234".as_slice().into(),
+        }
+    );
+    assert_eq!(PaReqEncPaRep::from_checksum(decoded.to_checksum()), decoded);
+    assert_eq!(
+        decoded.encode_der().expect("PA-REQ-ENC-PA-REP encodes"),
+        bytes
+    );
+}
+
 fn decode_encrypted_data(fixture: &str) -> EncryptedData {
     rasn::der::decode(&decode_hex(fixture)).expect("EncryptedData fixture decodes")
 }
@@ -169,5 +192,23 @@ fn timestamp(seconds: u64) -> SystemTime {
 }
 
 fn decode_hex(input: &str) -> Vec<u8> {
-    hex::decode(input).expect("fixture hex decodes")
+    assert_eq!(input.len() % 2, 0, "hex input has even length");
+    input
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|chunk| {
+            let high = decode_hex_digit(chunk[0]);
+            let low = decode_hex_digit(chunk[1]);
+            (high << 4) | low
+        })
+        .collect()
+}
+
+fn decode_hex_digit(byte: u8) -> u8 {
+    match byte {
+        b'0'..=b'9' => byte - b'0',
+        b'a'..=b'f' => byte - b'a' + 10,
+        b'A'..=b'F' => byte - b'A' + 10,
+        _ => panic!("invalid hex byte: {byte}"),
+    }
 }

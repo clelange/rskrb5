@@ -50,6 +50,17 @@ pub struct PaPacOptions {
     pub flags: rasn_kerberos::KerberosFlags,
 }
 
+/// RFC 6806 `PA-REQ-ENC-PA-REP` encrypted padata value.
+#[derive(AsnType, Clone, Debug, Decode, Encode, Eq, PartialEq)]
+pub struct PaReqEncPaRep {
+    /// Checksum type used to protect the original AS-REQ bytes.
+    #[rasn(tag(explicit(0)))]
+    pub checksum_type: i32,
+    /// Checksum over the DER-encoded AS-REQ.
+    #[rasn(tag(explicit(1)))]
+    pub checksum: OctetString,
+}
+
 impl PaForUser {
     /// Decode a DER-encoded `PA-FOR-USER` value.
     pub fn decode_der(bytes: &[u8]) -> Result<Self, Error> {
@@ -89,6 +100,34 @@ impl PaPacOptions {
     /// Encode the value as DER.
     pub fn encode_der(&self) -> Result<Vec<u8>, Error> {
         encode_der("PA-PAC-OPTIONS", self)
+    }
+}
+
+impl PaReqEncPaRep {
+    /// Build the value from a Kerberos checksum.
+    pub fn from_checksum(checksum: rasn_kerberos::Checksum) -> Self {
+        Self {
+            checksum_type: checksum.r#type,
+            checksum: checksum.checksum,
+        }
+    }
+
+    /// Convert the value to a Kerberos checksum.
+    pub fn to_checksum(&self) -> rasn_kerberos::Checksum {
+        rasn_kerberos::Checksum {
+            r#type: self.checksum_type,
+            checksum: self.checksum.clone(),
+        }
+    }
+
+    /// Decode a DER-encoded `PA-REQ-ENC-PA-REP` value.
+    pub fn decode_der(bytes: &[u8]) -> Result<Self, Error> {
+        decode_der("PA-REQ-ENC-PA-REP", bytes)
+    }
+
+    /// Encode the value as DER.
+    pub fn encode_der(&self) -> Result<Vec<u8>, Error> {
+        encode_der("PA-REQ-ENC-PA-REP", self)
     }
 }
 

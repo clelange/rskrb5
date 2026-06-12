@@ -29,11 +29,11 @@ continues in the lower-level modules and tests.
   AES128/AES256-CTS-HMAC-SHA1-96, RFC8009
   AES128/AES256-CTS-HMAC-SHA2, DES3-CBC-SHA1-KD, and RC4-HMAC string-to-key,
   KDF, checksums, and deterministic encrypted-message vectors; message helpers
-  preserve gokrb5 EncryptedData signed-kvno DER edge fixtures, PA-FOR-USER, PA-PAC-OPTIONS, and KRB-ERROR timing diagnostics; kadmin covers
+  preserve gokrb5 EncryptedData signed-kvno DER edge fixtures, PA-FOR-USER, PA-PAC-OPTIONS, PA-REQ-ENC-PA-REP, and KRB-ERROR timing diagnostics; kadmin covers
   ChangePasswdData builders, DER decode, exact fixture round-trip, KRB-PRIV payload building, and kpasswd request
   and reply frame parsing plus reply result handling and result-code checks; client AS/TGS exchange primitives
   cover deterministic TGT AS-REQ construction, KRB-ERROR preauthentication
-  negotiation and structured timing diagnostics, PA-ENC-TIMESTAMP encryption, PA-FOR-USER, PA-PAC-OPTIONS, runtime-neutral and Tokio S4U2Self exchange helpers, and runtime-neutral and Tokio S4U2Proxy request/exchange helpers with impersonated-user reply validation, assumed
+  negotiation and structured timing diagnostics, PA-ENC-TIMESTAMP encryption, PA-FOR-USER, PA-PAC-OPTIONS, PA-REQ-ENC-PA-REP encrypted-padata validation, runtime-neutral and Tokio S4U2Self exchange helpers, and runtime-neutral and Tokio S4U2Proxy request/exchange helpers with impersonated-user reply validation, assumed
   preauthentication, password/keytab TGT and explicit-service AS login helpers, PA-TGS-REQ
   service-ticket acquisition, a KDC transport boundary, Tokio TCP/UDP/auto
   KDC transport with response-too-big fallback and Docker auto-protocol AS/TGS
