@@ -36,7 +36,6 @@ const KRB_AS_REQ_MSG_TYPE: i32 = 10;
 const KRB_AS_REP_MSG_TYPE: i32 = 11;
 const KRB_TGS_REQ_MSG_TYPE: i32 = 12;
 const KRB_TGS_REP_MSG_TYPE: i32 = 13;
-const KRB_AP_REQ_MSG_TYPE: i32 = 14;
 const KRB_NT_PRINCIPAL: i32 = 1;
 const KRB_NT_SRV_INST: i32 = 2;
 const DEFAULT_TICKET_LIFETIME: Duration = Duration::from_secs(24 * 60 * 60);
@@ -3894,28 +3893,22 @@ pub fn build_tgs_req_for_realm_with_confounder(
         seq_number: None,
         authorization_data: None,
     };
-    let authenticator_der = encode("Authenticator", &authenticator)?;
-    let cipher = etype.encrypt_message_with_confounder(
-        &tgt.session_key.value,
-        &authenticator_der,
-        TGS_REQ_AUTHENTICATOR_USAGE,
-        confounder,
-    )?;
     let authenticator_kvno = ticket.enc_part.kvno;
-    let ap_req = rasn_kerberos::ApReq {
-        pvno: rasn::types::Integer::from(KRB5_PVNO),
-        msg_type: rasn::types::Integer::from(KRB_AP_REQ_MSG_TYPE),
-        ap_options: rasn_kerberos::ApOptions(zero_kerberos_flags()),
+    let ap_req = crate::ap_req::build_ap_req_with_confounder(
         ticket,
-        authenticator: rasn_kerberos::EncryptedData {
-            etype: tgt.session_key.etype,
-            kvno: authenticator_kvno,
-            cipher: cipher.into(),
-        },
-    };
+        crate::ap_req::ap_options_from_bits(0),
+        &authenticator,
+        &tgt.session_key,
+        TGS_REQ_AUTHENTICATOR_USAGE,
+        authenticator_kvno,
+        confounder,
+    )
+    .map_err(ap_req_error)?;
     let pa_tgs_req = rasn_kerberos::PaData {
         r#type: PA_TGS_REQ,
-        value: encode("PA-TGS-REQ AP-REQ", &ap_req)?.into(),
+        value: crate::ap_req::encode_ap_req(&ap_req)
+            .map_err(ap_req_error)?
+            .into(),
     };
     let mut padata = Vec::with_capacity(options.padata.len() + 1);
     padata.push(pa_tgs_req);
@@ -3958,28 +3951,19 @@ pub fn build_ap_req_with_confounder(
         seq_number: options.sequence_number,
         authorization_data: None,
     };
-    let authenticator_der = encode("Authenticator", &authenticator)?;
-    let etype = KerberosEtype::from_etype_id(service_ticket.session_key.etype)
-        .ok_or(Error::UnsupportedEtype(service_ticket.session_key.etype))?;
-    let cipher = etype.encrypt_message_with_confounder(
-        &service_ticket.session_key.value,
-        &authenticator_der,
-        authenticator_usage(&ticket.sname),
-        confounder,
-    )?;
+    let authenticator_usage = crate::ap_req::authenticator_usage_for_ticket(&ticket);
     let authenticator_kvno = ticket.enc_part.kvno;
-    let message = rasn_kerberos::ApReq {
-        pvno: rasn::types::Integer::from(KRB5_PVNO),
-        msg_type: rasn::types::Integer::from(KRB_AP_REQ_MSG_TYPE),
-        ap_options: rasn_kerberos::ApOptions(kerberos_flags_from_bits(options.ap_option_bits)),
+    let message = crate::ap_req::build_ap_req_with_confounder(
         ticket,
-        authenticator: rasn_kerberos::EncryptedData {
-            etype: service_ticket.session_key.etype,
-            kvno: authenticator_kvno,
-            cipher: cipher.into(),
-        },
-    };
-    let der = encode("AP-REQ", &message)?;
+        crate::ap_req::ap_options_from_bits(options.ap_option_bits),
+        &authenticator,
+        &service_ticket.session_key,
+        authenticator_usage,
+        authenticator_kvno,
+        confounder,
+    )
+    .map_err(ap_req_error)?;
+    let der = crate::ap_req::encode_ap_req(&message).map_err(ap_req_error)?;
     let authenticator_time = timestamp
         .checked_add(Duration::from_micros(cusec.into()))
         .ok_or(Error::TimeOverflow)?;
@@ -4791,6 +4775,17 @@ pub enum Error {
         encrypted_data_etype: i32,
     },
 
+    /// A key did not match the encrypted AP-REQ authenticator etype.
+    #[error(
+        "key etype {key_etype} does not match AP-REQ authenticator etype {encrypted_data_etype}"
+    )]
+    ApReqKeyEtypeMismatch {
+        /// Reply key encryption type.
+        key_etype: i32,
+        /// AP-REQ authenticator encryption type.
+        encrypted_data_etype: i32,
+    },
+
     /// A successful kpasswd reply did not contain AP-REP.
     #[error("kpasswd reply does not contain AP-REP")]
     MissingKpasswdApRep,
@@ -5071,6 +5066,32 @@ fn decrypt_encrypted_data(
     let etype = KerberosEtype::from_etype_id(etype_id).ok_or(Error::UnsupportedEtype(etype_id))?;
     let plaintext = etype.decrypt_message(key, ciphertext, usage)?;
     Ok(crate::der::trim_zero_padded_der(&plaintext).to_vec())
+}
+
+fn ap_req_error(error: crate::ap_req::Error) -> Error {
+    match error {
+        crate::ap_req::Error::Decode { target, message } => Error::Decode { target, message },
+        crate::ap_req::Error::Encode { target, message } => Error::Encode { target, message },
+        crate::ap_req::Error::InvalidMessage {
+            field,
+            expected,
+            actual,
+        } => Error::InvalidMessage {
+            field,
+            expected,
+            actual,
+        },
+        crate::ap_req::Error::UnsupportedEtype(etype) => Error::UnsupportedEtype(etype),
+        crate::ap_req::Error::KeyEtypeMismatch {
+            key_etype,
+            encrypted_data_etype,
+        } => Error::ApReqKeyEtypeMismatch {
+            key_etype,
+            encrypted_data_etype,
+        },
+        crate::ap_req::Error::Random(source) => Error::Random(source),
+        crate::ap_req::Error::Crypto(source) => Error::Crypto(source),
+    }
 }
 
 fn ap_rep_error(error: crate::ap_rep::Error) -> Error {
@@ -5530,18 +5551,6 @@ fn encryption_key_to_rasn(value: &EncryptionKey) -> rasn_kerberos::EncryptionKey
     }
 }
 
-fn authenticator_usage(service: &rasn_kerberos::PrincipalName) -> u32 {
-    if service
-        .string
-        .first()
-        .is_some_and(|component| component.as_bytes() == b"krbtgt")
-    {
-        TGS_REQ_AUTHENTICATOR_USAGE
-    } else {
-        AP_REQ_AUTHENTICATOR_USAGE
-    }
-}
-
 fn kdc_options_from_bits(bits: u32) -> rasn_kerberos::KdcOptions {
     rasn_kerberos::KdcOptions(rasn_kerberos::KerberosFlags::from_slice(
         &bits.to_be_bytes(),
@@ -5558,14 +5567,6 @@ fn request_kdc_option_bits(bits: u32, renew_lifetime: Option<Duration>) -> u32 {
 
 fn renewal_kdc_option_bits(bits: u32) -> u32 {
     bits | KDC_OPTION_RENEWABLE | KDC_OPTION_RENEW
-}
-
-fn zero_kerberos_flags() -> rasn_kerberos::KerberosFlags {
-    rasn_kerberos::KerberosFlags::repeat(false, 32)
-}
-
-fn kerberos_flags_from_bits(bits: u32) -> rasn_kerberos::KerberosFlags {
-    rasn_kerberos::KerberosFlags::from_slice(&bits.to_be_bytes())
 }
 
 fn ticket_flags_to_bytes(flags: &rasn_kerberos::TicketFlags) -> [u8; 4] {

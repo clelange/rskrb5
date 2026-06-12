@@ -262,14 +262,15 @@ impl Request {
             });
         }
 
-        let ap_req = decode::<rasn_kerberos::ApReq>("AP-REQ", &frame.body[..ap_req_end])?;
+        let ap_req =
+            crate::ap_req::decode_ap_req(&frame.body[..ap_req_end]).map_err(ap_req_error)?;
         let krb_priv = decode::<rasn_kerberos::KrbPriv>("KRB-PRIV", &frame.body[ap_req_end..])?;
         Ok(Self { ap_req, krb_priv })
     }
 
     /// Encode a password-change request frame.
     pub fn encode(&self) -> Result<Vec<u8>, Error> {
-        let ap_req = encode("AP-REQ", &self.ap_req)?;
+        let ap_req = crate::ap_req::encode_ap_req(&self.ap_req).map_err(ap_req_error)?;
         let krb_priv = encode("KRB-PRIV", &self.krb_priv)?;
         if ap_req.len() > usize::from(u16::MAX) {
             return Err(Error::ApReqTooLarge {
@@ -571,6 +572,26 @@ where
         target,
         message: source.to_string(),
     })
+}
+
+fn ap_req_error(error: crate::ap_req::Error) -> Error {
+    match error {
+        crate::ap_req::Error::Decode { target, message } => Error::Decode { target, message },
+        crate::ap_req::Error::Encode { target, message } => Error::Encode { target, message },
+        crate::ap_req::Error::InvalidMessage {
+            field,
+            expected,
+            actual,
+        } => Error::InvalidKerberosMessage {
+            field,
+            expected,
+            actual,
+        },
+        other => Error::Decode {
+            target: "AP-REQ",
+            message: other.to_string(),
+        },
+    }
 }
 
 fn validate_integer(

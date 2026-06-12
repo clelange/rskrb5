@@ -17,11 +17,7 @@ use crate::crypto::KerberosEtype;
 use crate::keytab::{EncryptionKey, Keytab};
 use crate::pac::{self, Pac};
 
-const KRB5_PVNO: i32 = 5;
-const KRB_AP_REQ_MSG_TYPE: i32 = 14;
 const KDC_REP_TICKET_USAGE: u32 = 2;
-const TGS_REQ_AP_REQ_AUTHENTICATOR_USAGE: u32 = 7;
-const AP_REQ_AUTHENTICATOR_USAGE: u32 = 11;
 const DEFAULT_MAX_CLOCK_SKEW: Duration = Duration::from_secs(5 * 60);
 const INVALID_TICKET_FLAG: usize = 7;
 
@@ -383,9 +379,7 @@ impl<'a> ServiceValidator<'a> {
 
     /// Decode and validate an AP-REQ.
     pub fn validate_ap_req(&mut self, bytes: &[u8]) -> Result<ValidatedApReq, Error> {
-        let ap_req = decode::<rasn_kerberos::ApReq>("AP-REQ", bytes)?;
-        validate_integer("pvno", &ap_req.pvno, KRB5_PVNO)?;
-        validate_integer("msg-type", &ap_req.msg_type, KRB_AP_REQ_MSG_TYPE)?;
+        let ap_req = crate::ap_req::decode_ap_req(bytes).map_err(ap_req_error)?;
 
         let ticket_service = principal_from_parts(&ap_req.ticket.realm, &ap_req.ticket.sname)?;
         let ticket_etype = ap_req.ticket.enc_part.etype;
@@ -424,15 +418,10 @@ impl<'a> ServiceValidator<'a> {
         }
 
         let session_key = encryption_key_from_rasn(&enc_ticket.key)?;
-        let authenticator_usage = authenticator_usage(&ap_req.ticket.sname)?;
-        let decrypted_authenticator = decrypt_encrypted_data(
-            session_key.etype,
-            &session_key.value,
-            ap_req.authenticator.cipher.as_ref(),
-            authenticator_usage,
-        )?;
+        let authenticator_usage = crate::ap_req::authenticator_usage_for_ticket(&ap_req.ticket);
         let authenticator =
-            decode::<rasn_kerberos::Authenticator>("Authenticator", &decrypted_authenticator)?;
+            crate::ap_req::decrypt_ap_req_authenticator(&ap_req, &session_key, authenticator_usage)
+                .map_err(ap_req_error)?;
 
         let ticket_client = principal_from_parts(&enc_ticket.crealm, &enc_ticket.cname)?;
         let authenticator_client =
@@ -653,6 +642,17 @@ pub enum Error {
         encrypted_data_etype: i32,
     },
 
+    /// A key did not match the encrypted AP-REQ authenticator etype.
+    #[error(
+        "key etype {key_etype} does not match AP-REQ authenticator etype {encrypted_data_etype}"
+    )]
+    ApReqKeyEtypeMismatch {
+        /// Reply key encryption type.
+        key_etype: i32,
+        /// AP-REQ authenticator encryption type.
+        encrypted_data_etype: i32,
+    },
+
     /// Keytab lookup failed.
     #[error("keytab error: {0}")]
     Keytab(#[from] crate::keytab::Error),
@@ -772,6 +772,32 @@ fn decrypt_encrypted_data(
     Ok(crate::der::trim_zero_padded_der(&plaintext).to_vec())
 }
 
+fn ap_req_error(error: crate::ap_req::Error) -> Error {
+    match error {
+        crate::ap_req::Error::Decode { target, message } => Error::Decode { target, message },
+        crate::ap_req::Error::Encode { target, message } => Error::Encode { target, message },
+        crate::ap_req::Error::InvalidMessage {
+            field,
+            expected,
+            actual,
+        } => Error::InvalidMessage {
+            field,
+            expected,
+            actual,
+        },
+        crate::ap_req::Error::UnsupportedEtype(etype) => Error::UnsupportedEtype(etype),
+        crate::ap_req::Error::KeyEtypeMismatch {
+            key_etype,
+            encrypted_data_etype,
+        } => Error::ApReqKeyEtypeMismatch {
+            key_etype,
+            encrypted_data_etype,
+        },
+        crate::ap_req::Error::Random(source) => Error::Random(source),
+        crate::ap_req::Error::Crypto(source) => Error::Crypto(source),
+    }
+}
+
 fn ap_rep_error(error: crate::ap_rep::Error) -> Error {
     match error {
         crate::ap_rep::Error::Decode { target, message } => Error::Decode { target, message },
@@ -796,21 +822,6 @@ fn ap_rep_error(error: crate::ap_rep::Error) -> Error {
         crate::ap_rep::Error::Random(source) => Error::Random(source),
         crate::ap_rep::Error::Crypto(source) => Error::Crypto(source),
     }
-}
-
-fn validate_integer(
-    field: &'static str,
-    actual: &rasn::types::Integer,
-    expected: i32,
-) -> Result<(), Error> {
-    if actual != &rasn::types::Integer::from(expected) {
-        return Err(Error::InvalidMessage {
-            field,
-            expected,
-            actual: actual.to_string(),
-        });
-    }
-    Ok(())
 }
 
 fn principal_from_parts(
@@ -843,19 +854,6 @@ fn encryption_key_to_rasn(value: &EncryptionKey) -> rasn_kerberos::EncryptionKey
     rasn_kerberos::EncryptionKey {
         r#type: value.etype,
         value: value.value.clone().into(),
-    }
-}
-
-fn authenticator_usage(sname: &rasn_kerberos::PrincipalName) -> Result<u32, Error> {
-    let first_component = sname
-        .string
-        .first()
-        .map(kerberos_string_to_string)
-        .transpose()?;
-    if first_component.as_deref() == Some("krbtgt") {
-        Ok(TGS_REQ_AP_REQ_AUTHENTICATOR_USAGE)
-    } else {
-        Ok(AP_REQ_AUTHENTICATOR_USAGE)
     }
 }
 
