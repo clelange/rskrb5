@@ -5,8 +5,9 @@ use rasn::types::Integer;
 use rskrb5::crypto::KerberosEtype;
 use rskrb5::kadmin::{
     ChangePasswdData, ChangePasswordResult, EncKrbPrivPartOptions, Error as KadminError,
-    KPASSWD_AUTHERROR, KPASSWD_SUCCESS, KRB_PRIV_ENCPART_USAGE, KRB_PRIV_MSG_TYPE, KRB_PRIV_PVNO,
-    Reply, Request, build_krb_priv_with_confounder, ipv4_host_address, ipv6_host_address,
+    KPASSWD_AUTHERROR, KPASSWD_SUCCESS, KRB_PRIV_MSG_TYPE, KRB_PRIV_PVNO, Reply, Request,
+    build_krb_priv_with_confounder, decode_enc_krb_priv_part, decode_krb_priv,
+    decrypt_krb_priv_enc_part, encode_krb_priv, ipv4_host_address, ipv6_host_address,
 };
 use rskrb5::keytab::EncryptionKey;
 
@@ -14,6 +15,20 @@ const MARSHALLED_CHANGE_PASSWD_DATA: &str = "3036a00d040b6e657770617373776f7264a
 const MARSHALLED_KPASSWD_REQ: &str = include_str!("fixtures/kpasswd-request.hex");
 const MARSHALLED_KPASSWD_REP: &str = "00ec0001008c6f8189308186a003020105a10302010fa27a3078a003020112a271046f57cb442fd321312aff0b2dcda70fe436812f9805611adf3403ab6cd7708604e86e77f765a8486864f0dbf8d5d065a63790370bc110ed1e3c7eae9890e02407e8a8b349703fed1e7f165e1261a822c5b3e6823c282884f59afeb9f84f2a9845994135dd307eb2f544874393c1c455d475583056a003020105a103020115a34a3048a003020112a241043fdd3edaf0b6cbcab5b663189bafc0a19e6cc03b3c59d989c403735748ebc36088bad852add0f62581eed515fc1f297324df4fa12cb94b7ad5db257165369db5";
 const KRB_ERROR_WITH_EDATA: &str = "7E81BA3081B7A003020105A10302011EA211180F31393934303631303036303331375AA305020301E240A411180F31393934303631303036303331375AA505020301E240A60302013CA7101B0E415448454E412E4D49542E454455A81A3018A003020101A111300F1B066866747361691B056578747261A9101B0E415448454E412E4D49542E454455AA1A3018A003020101A111300F1B066866747361691B056578747261AB0A1B086B72623564617461AC0A04086B72623564617461";
+const MARSHALLED_KRB_PRIV: &str = concat!(
+    "75333031A003020105A103020115A3253023A003020100A103020105A217",
+    "04156B726241534E2E312074657374206D657373616765",
+);
+const MARSHALLED_ENC_KRB_PRIV_PART: &str = concat!(
+    "7C4F304DA00A04086B72623564617461A111180F31393934303631303036",
+    "303331375AA205020301E240A303020111A40F300DA003020102A10604",
+    "0412D00023A50F300DA003020102A106040412D00023",
+);
+const MARSHALLED_ENC_KRB_PRIV_PART_OPTIONALS_NULL: &str = concat!(
+    "7C1F301DA00A04086B72623564617461A40F300DA003020102A10604",
+    "0412D00023",
+);
+const TEST_TIME_SECONDS: i64 = 771_228_197;
 
 #[test]
 fn change_passwd_data_matches_gokrb5_fixture() {
@@ -45,6 +60,71 @@ fn change_passwd_data_builds_password_only_payload() {
 }
 
 #[test]
+fn krb_priv_decodes_and_roundtrips_gokrb5_fixture() {
+    let bytes = decode_hex(MARSHALLED_KRB_PRIV);
+
+    let krb_priv = decode_krb_priv(&bytes).expect("KRB-PRIV decodes");
+
+    assert_eq!(krb_priv.pvno, Integer::from(KRB_PRIV_PVNO));
+    assert_eq!(krb_priv.msg_type, Integer::from(KRB_PRIV_MSG_TYPE));
+    assert_eq!(krb_priv.enc_part.etype, 0);
+    assert_eq!(krb_priv.enc_part.kvno, Some(5));
+    assert_eq!(krb_priv.enc_part.cipher.as_ref(), b"krbASN.1 test message");
+    assert_eq!(encode_krb_priv(&krb_priv).expect("KRB-PRIV encodes"), bytes);
+}
+
+#[test]
+fn enc_krb_priv_part_decodes_gokrb5_fixture() {
+    let enc_part = decode_enc_krb_priv_part(&decode_hex(MARSHALLED_ENC_KRB_PRIV_PART))
+        .expect("EncKrbPrivPart decodes");
+
+    assert_eq!(enc_part.user_data.as_ref(), b"krb5data");
+    assert_eq!(
+        enc_part
+            .timestamp
+            .as_ref()
+            .expect("timestamp")
+            .0
+            .timestamp(),
+        TEST_TIME_SECONDS
+    );
+    assert_eq!(enc_part.usec, Some(Integer::from(123_456)));
+    assert_eq!(enc_part.seq_number, Some(17));
+    assert_eq!(enc_part.sender_address.addr_type, 2);
+    assert_eq!(
+        enc_part.sender_address.address.as_ref(),
+        decode_hex("12d00023")
+    );
+    assert_eq!(
+        enc_part
+            .recipient_address
+            .as_ref()
+            .expect("recipient address")
+            .address
+            .as_ref(),
+        decode_hex("12d00023")
+    );
+}
+
+#[test]
+fn enc_krb_priv_part_decodes_gokrb5_optionals_null_fixture() {
+    let enc_part =
+        decode_enc_krb_priv_part(&decode_hex(MARSHALLED_ENC_KRB_PRIV_PART_OPTIONALS_NULL))
+            .expect("EncKrbPrivPart decodes");
+
+    assert_eq!(enc_part.user_data.as_ref(), b"krb5data");
+    assert!(enc_part.timestamp.is_none());
+    assert!(enc_part.usec.is_none());
+    assert!(enc_part.seq_number.is_none());
+    assert_eq!(enc_part.sender_address.addr_type, 2);
+    assert_eq!(
+        enc_part.sender_address.address.as_ref(),
+        decode_hex("12d00023")
+    );
+    assert!(enc_part.recipient_address.is_none());
+}
+
+#[test]
 fn krb_priv_builder_encrypts_change_password_payload() {
     let data = ChangePasswdData::new(b"newpassword")
         .encode_der()
@@ -69,15 +149,8 @@ fn krb_priv_builder_encrypts_change_password_payload() {
     assert_eq!(krb_priv.enc_part.etype, key.etype);
     assert!(krb_priv.enc_part.kvno.is_none());
 
-    let plaintext = etype
-        .decrypt_message(
-            &key.value,
-            krb_priv.enc_part.cipher.as_ref(),
-            KRB_PRIV_ENCPART_USAGE,
-        )
-        .expect("KRB-PRIV decrypts");
-    let enc_part: rasn_kerberos::EncKrbPrivPart =
-        rasn::der::decode(&plaintext).expect("EncKrbPrivPart decodes");
+    let enc_part =
+        decrypt_krb_priv_enc_part(&krb_priv, &key).expect("KRB-PRIV decrypts and decodes");
     let decoded_data =
         ChangePasswdData::decode_der(enc_part.user_data.as_ref()).expect("payload decodes");
 

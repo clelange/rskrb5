@@ -193,6 +193,50 @@ pub fn build_krb_priv_with_confounder(
     })
 }
 
+/// Decode and validate a DER-encoded KRB-PRIV message.
+pub fn decode_krb_priv(bytes: &[u8]) -> Result<rasn_kerberos::KrbPriv, Error> {
+    let krb_priv = decode::<rasn_kerberos::KrbPriv>("KRB-PRIV", bytes)?;
+    validate_integer("pvno", &krb_priv.pvno, KRB_PRIV_PVNO)?;
+    validate_integer("msg-type", &krb_priv.msg_type, KRB_PRIV_MSG_TYPE)?;
+    Ok(krb_priv)
+}
+
+/// Encode a KRB-PRIV message as DER.
+pub fn encode_krb_priv(krb_priv: &rasn_kerberos::KrbPriv) -> Result<Vec<u8>, Error> {
+    encode("KRB-PRIV", krb_priv)
+}
+
+/// Decode a DER-encoded EncKrbPrivPart.
+pub fn decode_enc_krb_priv_part(bytes: &[u8]) -> Result<rasn_kerberos::EncKrbPrivPart, Error> {
+    decode("EncKrbPrivPart", bytes)
+}
+
+/// Decrypt and decode a KRB-PRIV encrypted part.
+pub fn decrypt_krb_priv_enc_part(
+    krb_priv: &rasn_kerberos::KrbPriv,
+    key: &EncryptionKey,
+) -> Result<rasn_kerberos::EncKrbPrivPart, Error> {
+    if krb_priv.enc_part.etype != key.etype {
+        return Err(Error::KeyEtypeMismatch {
+            key_etype: key.etype,
+            encrypted_data_etype: krb_priv.enc_part.etype,
+        });
+    }
+
+    let etype = KerberosEtype::from_etype_id(krb_priv.enc_part.etype)
+        .ok_or(Error::UnsupportedEtype(krb_priv.enc_part.etype))?;
+    let plaintext = etype
+        .decrypt_message(
+            &key.value,
+            krb_priv.enc_part.cipher.as_ref(),
+            KRB_PRIV_ENCPART_USAGE,
+        )
+        .map_err(|source| Error::Crypto {
+            message: source.to_string(),
+        })?;
+    decode_enc_krb_priv_part(crate::der::trim_zero_padded_der(&plaintext))
+}
+
 /// Password-change request frame containing AP-REQ and KRB-PRIV messages.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Request {
@@ -332,26 +376,7 @@ impl Reply {
         }
 
         let krb_priv = self.krb_priv.as_ref().ok_or(Error::MissingKrbPriv)?;
-        if krb_priv.enc_part.etype != key.etype {
-            return Err(Error::KeyEtypeMismatch {
-                key_etype: key.etype,
-                encrypted_data_etype: krb_priv.enc_part.etype,
-            });
-        }
-
-        let etype = KerberosEtype::from_etype_id(krb_priv.enc_part.etype)
-            .ok_or(Error::UnsupportedEtype(krb_priv.enc_part.etype))?;
-        let plaintext = etype
-            .decrypt_message(
-                &key.value,
-                krb_priv.enc_part.cipher.as_ref(),
-                KRB_PRIV_ENCPART_USAGE,
-            )
-            .map_err(|source| Error::Crypto {
-                message: source.to_string(),
-            })?;
-        let plaintext = crate::der::trim_zero_padded_der(&plaintext);
-        let enc_part = decode::<rasn_kerberos::EncKrbPrivPart>("EncKrbPrivPart", plaintext)?;
+        let enc_part = decrypt_krb_priv_enc_part(krb_priv, key)?;
         ChangePasswordResult::parse(enc_part.user_data.as_ref())
     }
 }
@@ -409,6 +434,16 @@ pub enum Error {
     /// The frame prefix length is smaller than the fixed kpasswd header.
     #[error("invalid kadmin reply message length: {0}")]
     InvalidMessageLength(u16),
+    /// Kerberos message field did not contain the expected value.
+    #[error("invalid {field}: expected {expected}, got {actual}")]
+    InvalidKerberosMessage {
+        /// Field name.
+        field: &'static str,
+        /// Expected value.
+        expected: i32,
+        /// Actual value.
+        actual: String,
+    },
     /// The frame prefix length exceeds the supplied byte slice.
     #[error("truncated kadmin reply frame: expected {expected} bytes, got {actual}")]
     TruncatedFrame {
@@ -536,6 +571,21 @@ where
         target,
         message: source.to_string(),
     })
+}
+
+fn validate_integer(
+    field: &'static str,
+    actual: &rasn::types::Integer,
+    expected: i32,
+) -> Result<(), Error> {
+    if actual != &rasn::types::Integer::from(expected) {
+        return Err(Error::InvalidKerberosMessage {
+            field,
+            expected,
+            actual: actual.to_string(),
+        });
+    }
+    Ok(())
 }
 
 fn principal_name<I, S>(

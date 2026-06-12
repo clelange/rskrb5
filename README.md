@@ -30,7 +30,7 @@ continues in the lower-level modules and tests.
   AES128/AES256-CTS-HMAC-SHA2, DES3-CBC-SHA1-KD, and RC4-HMAC string-to-key,
   KDF, checksums, and deterministic encrypted-message vectors; message helpers
   preserve gokrb5 EncryptedData signed-kvno DER edge fixtures, PA-FOR-USER, PA-PAC-OPTIONS, PA-REQ-ENC-PA-REP, and KRB-ERROR timing diagnostics; KRB-SAFE decodes gokrb5 fixtures and verifies keyed checksums; KRB-CRED helpers decode gokrb5 fixtures, decrypt EncKrbCredPart, and round-trip ccache credentials through encrypted KRB-CRED import/export; kadmin covers
-  ChangePasswdData builders, DER decode, exact fixture round-trip, KRB-PRIV payload building, and kpasswd request
+  ChangePasswdData builders, DER decode, exact fixture round-trip, KRB-PRIV decode/decrypt/payload building, and kpasswd request
   and reply frame parsing plus reply result handling and result-code checks; client AS/TGS exchange primitives
   cover deterministic TGT AS-REQ construction, KRB-ERROR preauthentication
   negotiation and structured timing diagnostics, PA-ENC-TIMESTAMP encryption, PA-FOR-USER, PA-PAC-OPTIONS, PA-REQ-ENC-PA-REP encrypted-padata validation, a disable-fast-negotiation AS login switch, runtime-neutral and Tokio S4U2Self exchange helpers, and runtime-neutral and Tokio S4U2Proxy request/exchange helpers with impersonated-user reply validation, assumed
