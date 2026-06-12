@@ -33,7 +33,7 @@ continues in the lower-level modules and tests.
   ChangePasswdData builders, DER decode, exact fixture round-trip, KRB-PRIV payload building, and kpasswd request
   and reply frame parsing plus reply result handling and result-code checks; client AS/TGS exchange primitives
   cover deterministic TGT AS-REQ construction, KRB-ERROR preauthentication
-  negotiation and structured timing diagnostics, PA-ENC-TIMESTAMP encryption, PA-FOR-USER and runtime-neutral S4U2Self exchange construction with impersonated-user reply validation, assumed
+  negotiation and structured timing diagnostics, PA-ENC-TIMESTAMP encryption, PA-FOR-USER and runtime-neutral and Tokio S4U2Self exchange helpers with impersonated-user reply validation, assumed
   preauthentication, password/keytab TGT and explicit-service AS login helpers, PA-TGS-REQ
   service-ticket acquisition, a KDC transport boundary, Tokio TCP/UDP/auto
   KDC transport with response-too-big fallback and Docker auto-protocol AS/TGS
@@ -50,7 +50,7 @@ continues in the lower-level modules and tests.
   Tokio client with password/keytab/ccache credential sources,
   credential attachment, file-name constructors/write-back, configuration validation, multi-realm TGT/session caching/removal,
   gokrb5-style refresh-window checks, explicit primary/realm TGT renewal, cancellable Tokio auto-renewal, affirm-login reuse,
-  Docker-backed destroy semantics, service-ticket caching/lookup/removal, unusable-session pruning, redacted key debug output,
+  Docker-backed destroy semantics, service-ticket caching/lookup/removal, S4U2Self acquisition from a current service TGT, unusable-session pruning, redacted key debug output,
   zeroized key material, and gokrb5-shaped JSON
   session/cache snapshots plus structured diagnostics; service validation covers
   gokrb5-generated AP-REQ fixtures, service-ticket decryption, authenticator

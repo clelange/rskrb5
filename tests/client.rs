@@ -27,7 +27,7 @@ use rskrb5::client::{
 #[cfg(all(feature = "tokio", feature = "spnego"))]
 use rskrb5::client::{BlockingNegotiateClient, NegotiateClient};
 #[cfg(feature = "tokio")]
-use rskrb5::client::{KdcProtocol, PrunedSessions, TokioClient};
+use rskrb5::client::{KdcProtocol, PrunedSessions, TokioClient, TokioKdcTransport};
 #[cfg(feature = "tokio")]
 use rskrb5::config::Config;
 use rskrb5::crypto::{AesSha1Etype, kerb_checksum_hmac_md5};
@@ -1043,6 +1043,81 @@ fn s4u2self_uses_transport_boundary() {
     assert_eq!(transport.calls, 1);
     assert_eq!(session.client, user);
     assert_eq!(session.service, service_tgt.client);
+}
+
+#[cfg(feature = "tokio")]
+#[test]
+fn tokio_transport_s4u2self_uses_tcp_kdc() {
+    runtime().block_on(async {
+        let mut service_tgt = current_tgt_session(5, 180);
+        service_tgt.client = sample_service_principal();
+        let user = Principal::user("TEST.GOKRB5", "delegated-user");
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind local KDC listener");
+        let addr = listener.local_addr().expect("local listener address");
+
+        let task = tokio::spawn(serve_s4u2self_tcp_request(
+            listener,
+            service_tgt.session_key.clone(),
+            service_tgt.client.clone(),
+            user.clone(),
+        ));
+
+        let session = TokioKdcTransport::new()
+            .s4u2self(
+                KdcProtocol::Tcp,
+                addr,
+                &service_tgt,
+                user.clone(),
+                TgsReqOptions::new(timestamp(1_893_553_450), 0x6677_8899).with_etypes(vec![18]),
+            )
+            .await
+            .expect("Tokio transport S4U2Self succeeds");
+        task.await.expect("KDC task succeeds");
+
+        assert_eq!(session.client, user);
+        assert_eq!(session.service, service_tgt.client);
+    });
+}
+
+#[cfg(feature = "tokio")]
+#[test]
+fn tokio_client_s4u2self_uses_current_service_tgt_without_service_cache() {
+    runtime().block_on(async {
+        let mut service_tgt = current_tgt_session(5, 180);
+        service_tgt.client = sample_service_principal();
+        let user = Principal::user("TEST.GOKRB5", "delegated-user");
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind local KDC listener");
+        let addr = listener.local_addr().expect("local listener address");
+        let mut client = TokioClient::from_tgt_session(
+            config_with_kdc_server(addr.to_string()),
+            KdcProtocol::Tcp,
+            service_tgt.clone(),
+        );
+
+        let task = tokio::spawn(serve_s4u2self_tcp_request(
+            listener,
+            service_tgt.session_key.clone(),
+            service_tgt.client.clone(),
+            user.clone(),
+        ));
+
+        let session = client
+            .s4u2self_with_options(
+                user.clone(),
+                TgsReqOptions::new(timestamp(1_893_553_450), 0x7766_5544).with_etypes(vec![18]),
+            )
+            .await
+            .expect("Tokio client S4U2Self succeeds");
+        task.await.expect("KDC task succeeds");
+
+        assert_eq!(session.client, user);
+        assert_eq!(session.service, service_tgt.client);
+        assert_eq!(client.cached_service_ticket_count(), 0);
+    });
 }
 
 #[test]
@@ -4012,6 +4087,42 @@ async fn read_tcp_kdc_request(listener: &TcpListener) -> (Vec<u8>, tokio::net::T
     let mut request = vec![0; request_len];
     socket.read_exact(&mut request).await.expect("read request");
     (request, socket)
+}
+
+#[cfg(feature = "tokio")]
+async fn serve_s4u2self_tcp_request(
+    listener: TcpListener,
+    reply_key: EncryptionKey,
+    expected_service: Principal,
+    expected_user: Principal,
+) {
+    let (request, mut socket) = read_tcp_kdc_request(&listener).await;
+    let decoded: rasn_kerberos::TgsReq = rasn::der::decode(&request).expect("TGS-REQ decodes");
+    let body = &decoded.0.req_body;
+    assert_eq!(
+        principal_from_parts(&body.realm, body.cname.as_ref().expect("cname")),
+        expected_service
+    );
+    assert_eq!(
+        principal_from_parts(&body.realm, body.sname.as_ref().expect("sname")),
+        expected_service
+    );
+
+    let padata = decoded.0.padata.as_ref().expect("S4U TGS-REQ padata");
+    assert_eq!(padata.len(), 2);
+    assert_eq!(padata[0].r#type, PA_TGS_REQ);
+    assert_eq!(padata[1].r#type, PA_FOR_USER);
+    let pa_for_user = rskrb5::messages::PaForUser::decode_der(padata[1].value.as_ref())
+        .expect("PA-FOR-USER decodes");
+    assert_eq!(
+        principal_from_parts(&pa_for_user.user_realm, &pa_for_user.user_name),
+        expected_user
+    );
+
+    let mut built = built_tgs_request_from_der(decoded, &request);
+    built.client = expected_user;
+    let response = synthetic_tgs_rep(&built, built.nonce, &reply_key);
+    write_tcp_kdc_response(&mut socket, &response).await;
 }
 
 #[cfg(feature = "tokio")]

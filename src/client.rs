@@ -1764,6 +1764,24 @@ impl TokioClient {
         Ok(ticket)
     }
 
+    /// Acquire an S4U2Self ticket for an impersonated user using the current service TGT.
+    pub async fn s4u2self(&mut self, user: Principal) -> Result<TgsRepSession, Error> {
+        let options = self.tgs_req_options()?;
+        self.s4u2self_with_options(user, options).await
+    }
+
+    /// Acquire an S4U2Self ticket using explicit TGS request options.
+    pub async fn s4u2self_with_options(
+        &mut self,
+        user: Principal,
+        options: TgsReqOptions,
+    ) -> Result<TgsRepSession, Error> {
+        let service_tgt = self.ensure_tgt().await?;
+        self.transport
+            .s4u2self_with_config(&self.config, self.protocol, &service_tgt, user, options)
+            .await
+    }
+
     /// Build a SPNEGO HTTP `Authorization` header for a service.
     #[cfg(feature = "spnego")]
     pub async fn spnego_header(&mut self, service: Principal) -> Result<String, Error> {
@@ -2720,6 +2738,37 @@ impl TokioKdcTransport {
             .send_to_realm(config, protocol, &request.kdc_realm, &request.der)
             .await?;
         process_tgs_rep(request, &response, tgs_session_key)
+    }
+
+    /// Perform S4U2Self through an explicit KDC endpoint.
+    pub async fn s4u2self<A>(
+        &self,
+        protocol: KdcProtocol,
+        addr: A,
+        service_tgt: &AsRepSession,
+        user: Principal,
+        options: TgsReqOptions,
+    ) -> Result<TgsRepSession, Error>
+    where
+        A: ToSocketAddrs + Clone,
+    {
+        let request = build_s4u2self_req(service_tgt, user, options)?;
+        self.exchange_tgs_req(protocol, addr, &request, &service_tgt.session_key)
+            .await
+    }
+
+    /// Perform S4U2Self through a config-discovered KDC.
+    pub async fn s4u2self_with_config(
+        &self,
+        config: &Config,
+        protocol: KdcProtocol,
+        service_tgt: &AsRepSession,
+        user: Principal,
+        options: TgsReqOptions,
+    ) -> Result<TgsRepSession, Error> {
+        let request = build_s4u2self_req(service_tgt, user, options)?;
+        self.exchange_tgs_req_with_config(config, protocol, &request, &service_tgt.session_key)
+            .await
     }
 
     /// Renew an existing TGT through an explicit KDC endpoint.
