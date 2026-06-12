@@ -19,11 +19,9 @@ use crate::pac::{self, Pac};
 
 const KRB5_PVNO: i32 = 5;
 const KRB_AP_REQ_MSG_TYPE: i32 = 14;
-const KRB_AP_REP_MSG_TYPE: i32 = 15;
 const KDC_REP_TICKET_USAGE: u32 = 2;
 const TGS_REQ_AP_REQ_AUTHENTICATOR_USAGE: u32 = 7;
 const AP_REQ_AUTHENTICATOR_USAGE: u32 = 11;
-const AP_REP_ENCPART_USAGE: u32 = 12;
 const DEFAULT_MAX_CLOCK_SKEW: Duration = Duration::from_secs(5 * 60);
 const INVALID_TICKET_FLAG: usize = 7;
 
@@ -108,25 +106,14 @@ impl ValidatedApReq {
             subkey: options.subkey.as_ref().map(encryption_key_to_rasn),
             seq_number: options.sequence_number,
         };
-        let plaintext = encode("EncApRepPart", &enc_part)?;
-        let etype = KerberosEtype::from_etype_id(self.session_key.etype)
-            .ok_or(Error::UnsupportedEtype(self.session_key.etype))?;
-        let cipher = etype.encrypt_message_with_confounder(
-            &self.session_key.value,
-            &plaintext,
-            AP_REP_ENCPART_USAGE,
+        let ap_rep = crate::ap_rep::build_ap_rep_with_confounder(
+            &enc_part,
+            &self.session_key,
+            options.kvno,
             confounder,
-        )?;
-        let ap_rep = rasn_kerberos::ApRep {
-            pvno: rasn::types::Integer::from(KRB5_PVNO),
-            msg_type: rasn::types::Integer::from(KRB_AP_REP_MSG_TYPE),
-            enc_part: rasn_kerberos::EncryptedData {
-                etype: self.session_key.etype,
-                kvno: options.kvno,
-                cipher: cipher.into(),
-            },
-        };
-        encode("AP-REP", &ap_rep)
+        )
+        .map_err(ap_rep_error)?;
+        crate::ap_rep::encode_ap_rep(&ap_rep).map_err(ap_rep_error)
     }
 
     /// Verify an AP-REP mutual-auth reply against this AP-REQ.
@@ -135,17 +122,9 @@ impl ValidatedApReq {
     /// authenticator. A verified AP-REP may carry a server-selected subkey and
     /// sequence number.
     pub fn verify_ap_rep(&self, bytes: &[u8]) -> Result<VerifiedApRep, Error> {
-        let ap_rep = decode::<rasn_kerberos::ApRep>("AP-REP", bytes)?;
-        validate_integer("pvno", &ap_rep.pvno, KRB5_PVNO)?;
-        validate_integer("msg-type", &ap_rep.msg_type, KRB_AP_REP_MSG_TYPE)?;
-
-        let plaintext = decrypt_encrypted_data(
-            ap_rep.enc_part.etype,
-            &self.session_key.value,
-            ap_rep.enc_part.cipher.as_ref(),
-            AP_REP_ENCPART_USAGE,
-        )?;
-        let enc_part = decode::<rasn_kerberos::EncApRepPart>("EncApRepPart", &plaintext)?;
+        let ap_rep = crate::ap_rep::decode_ap_rep(bytes).map_err(ap_rep_error)?;
+        let enc_part = crate::ap_rep::decrypt_ap_rep_enc_part(&ap_rep, &self.session_key)
+            .map_err(ap_rep_error)?;
         let ctime = system_time_from_kerberos_time(&enc_part.ctime)?;
         let cusec = integer_to_u32("ap-rep.cusec", &enc_part.cusec)?;
         let authenticator_time = ctime
@@ -663,6 +642,17 @@ pub enum Error {
     #[error("unsupported encryption type: {0}")]
     UnsupportedEtype(i32),
 
+    /// A key did not match the encrypted AP-REP data etype.
+    #[error(
+        "key etype {key_etype} does not match AP-REP encrypted data etype {encrypted_data_etype}"
+    )]
+    ApRepKeyEtypeMismatch {
+        /// Reply key encryption type.
+        key_etype: i32,
+        /// AP-REP encrypted data encryption type.
+        encrypted_data_etype: i32,
+    },
+
     /// Keytab lookup failed.
     #[error("keytab error: {0}")]
     Keytab(#[from] crate::keytab::Error),
@@ -670,6 +660,10 @@ pub enum Error {
     /// Crypto operation failed.
     #[error("crypto error: {0}")]
     Crypto(#[from] crate::crypto::Error),
+
+    /// Random byte generation failed.
+    #[error("random byte generation failed: {0}")]
+    Random(#[from] getrandom::Error),
 
     /// PAC parsing or verification failed.
     #[error("PAC error: {0}")]
@@ -767,16 +761,6 @@ where
     })
 }
 
-fn encode<T>(target: &'static str, value: &T) -> Result<Vec<u8>, Error>
-where
-    T: rasn::Encode,
-{
-    rasn::der::encode(value).map_err(|source| Error::Encode {
-        target,
-        message: source.to_string(),
-    })
-}
-
 fn decrypt_encrypted_data(
     etype_id: i32,
     key: &[u8],
@@ -786,6 +770,32 @@ fn decrypt_encrypted_data(
     let etype = KerberosEtype::from_etype_id(etype_id).ok_or(Error::UnsupportedEtype(etype_id))?;
     let plaintext = etype.decrypt_message(key, ciphertext, usage)?;
     Ok(crate::der::trim_zero_padded_der(&plaintext).to_vec())
+}
+
+fn ap_rep_error(error: crate::ap_rep::Error) -> Error {
+    match error {
+        crate::ap_rep::Error::Decode { target, message } => Error::Decode { target, message },
+        crate::ap_rep::Error::Encode { target, message } => Error::Encode { target, message },
+        crate::ap_rep::Error::InvalidMessage {
+            field,
+            expected,
+            actual,
+        } => Error::InvalidMessage {
+            field,
+            expected,
+            actual,
+        },
+        crate::ap_rep::Error::UnsupportedEtype(etype) => Error::UnsupportedEtype(etype),
+        crate::ap_rep::Error::KeyEtypeMismatch {
+            key_etype,
+            encrypted_data_etype,
+        } => Error::ApRepKeyEtypeMismatch {
+            key_etype,
+            encrypted_data_etype,
+        },
+        crate::ap_rep::Error::Random(source) => Error::Random(source),
+        crate::ap_rep::Error::Crypto(source) => Error::Crypto(source),
+    }
 }
 
 fn validate_integer(

@@ -14,9 +14,14 @@ pub const AP_REP_ENCPART_USAGE: u32 = 12;
 /// Decode and validate a DER-encoded AP-REP message.
 pub fn decode_ap_rep(bytes: &[u8]) -> Result<rasn_kerberos::ApRep, Error> {
     let ap_rep = decode::<rasn_kerberos::ApRep>("AP-REP", bytes)?;
-    validate_integer("pvno", &ap_rep.pvno, KRB5_PVNO)?;
-    validate_integer("msg-type", &ap_rep.msg_type, KRB_AP_REP_MSG_TYPE)?;
+    validate_ap_rep(&ap_rep)?;
     Ok(ap_rep)
+}
+
+/// Validate AP-REP protocol version and message type on an already decoded value.
+pub fn validate_ap_rep(ap_rep: &rasn_kerberos::ApRep) -> Result<(), Error> {
+    validate_integer("pvno", &ap_rep.pvno, KRB5_PVNO)?;
+    validate_integer("msg-type", &ap_rep.msg_type, KRB_AP_REP_MSG_TYPE)
 }
 
 /// Encode an AP-REP message as DER.

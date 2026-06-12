@@ -37,7 +37,6 @@ const KRB_AS_REP_MSG_TYPE: i32 = 11;
 const KRB_TGS_REQ_MSG_TYPE: i32 = 12;
 const KRB_TGS_REP_MSG_TYPE: i32 = 13;
 const KRB_AP_REQ_MSG_TYPE: i32 = 14;
-const KRB_AP_REP_MSG_TYPE: i32 = 15;
 const KRB_NT_PRINCIPAL: i32 = 1;
 const KRB_NT_SRV_INST: i32 = 2;
 const DEFAULT_TICKET_LIFETIME: Duration = Duration::from_secs(24 * 60 * 60);
@@ -4089,16 +4088,9 @@ pub fn verify_kpasswd_ap_rep(
     }
 
     let ap_rep = reply.ap_rep.as_ref().ok_or(Error::MissingKpasswdApRep)?;
-    validate_integer("pvno", &ap_rep.pvno, KRB5_PVNO)?;
-    validate_integer("msg-type", &ap_rep.msg_type, KRB_AP_REP_MSG_TYPE)?;
-
-    let plaintext = decrypt_encrypted_data(
-        ap_rep.enc_part.etype,
-        &request.reply_key.value,
-        ap_rep.enc_part.cipher.as_ref(),
-        AP_REP_ENCPART_USAGE,
-    )?;
-    let enc_part = decode::<rasn_kerberos::EncApRepPart>("EncApRepPart", &plaintext)?;
+    crate::ap_rep::validate_ap_rep(ap_rep).map_err(ap_rep_error)?;
+    let enc_part =
+        crate::ap_rep::decrypt_ap_rep_enc_part(ap_rep, &request.reply_key).map_err(ap_rep_error)?;
     let ctime = system_time_from_kerberos_time(&enc_part.ctime)?;
     let cusec = integer_to_u32("ap-rep.cusec", &enc_part.cusec)?;
     let authenticator_time = ctime
@@ -4788,6 +4780,17 @@ pub enum Error {
         encrypted_data_etype: i32,
     },
 
+    /// A key did not match the encrypted AP-REP data etype.
+    #[error(
+        "key etype {key_etype} does not match AP-REP encrypted data etype {encrypted_data_etype}"
+    )]
+    ApRepKeyEtypeMismatch {
+        /// Reply key encryption type.
+        key_etype: i32,
+        /// AP-REP encrypted data encryption type.
+        encrypted_data_etype: i32,
+    },
+
     /// A successful kpasswd reply did not contain AP-REP.
     #[error("kpasswd reply does not contain AP-REP")]
     MissingKpasswdApRep,
@@ -5068,6 +5071,32 @@ fn decrypt_encrypted_data(
     let etype = KerberosEtype::from_etype_id(etype_id).ok_or(Error::UnsupportedEtype(etype_id))?;
     let plaintext = etype.decrypt_message(key, ciphertext, usage)?;
     Ok(crate::der::trim_zero_padded_der(&plaintext).to_vec())
+}
+
+fn ap_rep_error(error: crate::ap_rep::Error) -> Error {
+    match error {
+        crate::ap_rep::Error::Decode { target, message } => Error::Decode { target, message },
+        crate::ap_rep::Error::Encode { target, message } => Error::Encode { target, message },
+        crate::ap_rep::Error::InvalidMessage {
+            field,
+            expected,
+            actual,
+        } => Error::InvalidMessage {
+            field,
+            expected,
+            actual,
+        },
+        crate::ap_rep::Error::UnsupportedEtype(etype) => Error::UnsupportedEtype(etype),
+        crate::ap_rep::Error::KeyEtypeMismatch {
+            key_etype,
+            encrypted_data_etype,
+        } => Error::ApRepKeyEtypeMismatch {
+            key_etype,
+            encrypted_data_etype,
+        },
+        crate::ap_rep::Error::Random(source) => Error::Random(source),
+        crate::ap_rep::Error::Crypto(source) => Error::Crypto(source),
+    }
 }
 
 fn password_preauth_request(

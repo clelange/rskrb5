@@ -30,9 +30,6 @@ const TOK_ID_KRB_AP_REP: [u8; 2] = [0x02, 0x00];
 const TOK_ID_KRB_ERROR: [u8; 2] = [0x03, 0x00];
 const TOK_ID_GSS_MIC: [u8; 2] = [0x04, 0x04];
 const TOK_ID_GSS_WRAP: [u8; 2] = [0x05, 0x04];
-const KRB5_PVNO: i32 = 5;
-const KRB_AP_REP_MSG_TYPE: i32 = 15;
-const AP_REP_ENCPART_USAGE: u32 = 12;
 const GSSAPI_CHECKSUM_TYPE: i32 = 32_771;
 const GSS_MIC_HEADER_LEN: usize = 16;
 const GSS_WRAP_HEADER_LEN: usize = 16;
@@ -1093,16 +1090,9 @@ impl InitiatorContext {
 
     /// Verify an AP-REP message against this initiator's AP-REQ timestamp.
     pub fn verify_ap_rep(&self, bytes: &[u8]) -> Result<VerifiedApRep, Error> {
-        let ap_rep = decode::<rasn_kerberos::ApRep>("AP-REP", bytes)?;
-        validate_integer("pvno", &ap_rep.pvno, KRB5_PVNO)?;
-        validate_integer("msg-type", &ap_rep.msg_type, KRB_AP_REP_MSG_TYPE)?;
-        let plaintext = decrypt_encrypted_data(
-            ap_rep.enc_part.etype,
-            &self.session_key.value,
-            ap_rep.enc_part.cipher.as_ref(),
-            AP_REP_ENCPART_USAGE,
-        )?;
-        let enc_part = decode::<rasn_kerberos::EncApRepPart>("EncApRepPart", &plaintext)?;
+        let ap_rep = crate::ap_rep::decode_ap_rep(bytes).map_err(ap_rep_error)?;
+        let enc_part = crate::ap_rep::decrypt_ap_rep_enc_part(&ap_rep, &self.session_key)
+            .map_err(ap_rep_error)?;
         let ctime = system_time_from_kerberos_time(&enc_part.ctime)?;
         let cusec = integer_to_u32("ap-rep.cusec", &enc_part.cusec)?;
         let authenticator_time = ctime
@@ -1643,6 +1633,17 @@ pub enum Error {
     #[error("unsupported encryption type: {0}")]
     UnsupportedEtype(i32),
 
+    /// A key did not match the encrypted AP-REP data etype.
+    #[error(
+        "key etype {key_etype} does not match AP-REP encrypted data etype {encrypted_data_etype}"
+    )]
+    ApRepKeyEtypeMismatch {
+        /// Reply key encryption type.
+        key_etype: i32,
+        /// AP-REP encrypted data encryption type.
+        encrypted_data_etype: i32,
+    },
+
     /// Crypto operation failed.
     #[error("crypto error: {0}")]
     Crypto(#[from] crate::crypto::Error),
@@ -1673,40 +1674,30 @@ pub enum Error {
     Client(String),
 }
 
-fn decode<T>(target: &'static str, bytes: &[u8]) -> Result<T, Error>
-where
-    T: rasn::Decode,
-{
-    rasn::der::decode(bytes).map_err(|source| Error::Decode {
-        target,
-        message: source.to_string(),
-    })
-}
-
-fn decrypt_encrypted_data(
-    etype_id: i32,
-    key: &[u8],
-    ciphertext: &[u8],
-    usage: u32,
-) -> Result<Vec<u8>, Error> {
-    let etype = KerberosEtype::from_etype_id(etype_id).ok_or(Error::UnsupportedEtype(etype_id))?;
-    let plaintext = etype.decrypt_message(key, ciphertext, usage)?;
-    Ok(crate::der::trim_zero_padded_der(&plaintext).to_vec())
-}
-
-fn validate_integer(
-    field: &'static str,
-    actual: &rasn::types::Integer,
-    expected: i32,
-) -> Result<(), Error> {
-    if actual != &rasn::types::Integer::from(expected) {
-        return Err(Error::InvalidMessage {
+fn ap_rep_error(error: crate::ap_rep::Error) -> Error {
+    match error {
+        crate::ap_rep::Error::Decode { target, message } => Error::Decode { target, message },
+        crate::ap_rep::Error::Encode { target, message } => Error::Encode { target, message },
+        crate::ap_rep::Error::InvalidMessage {
             field,
             expected,
-            actual: actual.to_string(),
-        });
+            actual,
+        } => Error::InvalidMessage {
+            field,
+            expected,
+            actual,
+        },
+        crate::ap_rep::Error::UnsupportedEtype(etype) => Error::UnsupportedEtype(etype),
+        crate::ap_rep::Error::KeyEtypeMismatch {
+            key_etype,
+            encrypted_data_etype,
+        } => Error::ApRepKeyEtypeMismatch {
+            key_etype,
+            encrypted_data_etype,
+        },
+        crate::ap_rep::Error::Random(source) => Error::Random(source),
+        crate::ap_rep::Error::Crypto(source) => Error::Crypto(source),
     }
-    Ok(())
 }
 
 fn integer_to_u32(field: &'static str, value: &rasn::types::Integer) -> Result<u32, Error> {
