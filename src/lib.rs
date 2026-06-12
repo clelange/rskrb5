@@ -37,6 +37,8 @@
 #[cfg(feature = "evaluation")]
 pub mod evaluation;
 
+#[cfg(feature = "messages")]
+pub mod ap_rep;
 pub mod ccache;
 #[cfg(feature = "messages")]
 pub mod client;
@@ -107,6 +109,11 @@ pub enum Error {
     #[cfg(feature = "messages")]
     #[error("client error: {0}")]
     Client(#[from] client::Error),
+
+    /// AP-REP message processing failed.
+    #[cfg(feature = "messages")]
+    #[error("AP-REP error: {0}")]
+    ApRep(#[from] ap_rep::Error),
 
     /// kadmin message processing failed.
     #[cfg(feature = "messages")]
