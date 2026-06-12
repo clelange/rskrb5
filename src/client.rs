@@ -32,8 +32,6 @@ use tokio::net::{TcpStream, ToSocketAddrs, UdpSocket};
 use zeroize::Zeroizing;
 
 const KRB5_PVNO: i32 = 5;
-const KRB_AS_REQ_MSG_TYPE: i32 = 10;
-const KRB_TGS_REQ_MSG_TYPE: i32 = 12;
 const KRB_NT_PRINCIPAL: i32 = 1;
 const KRB_NT_SRV_INST: i32 = 2;
 const DEFAULT_TICKET_LIFETIME: Duration = Duration::from_secs(24 * 60 * 60);
@@ -3507,26 +3505,22 @@ pub fn build_as_req(
         .transpose()?;
     let padata = (!options.padata.is_empty()).then_some(options.padata);
     let kdc_option_bits = request_kdc_option_bits(options.kdc_option_bits, options.renew_lifetime);
-    let message = rasn_kerberos::AsReq(rasn_kerberos::KdcReq {
-        pvno: rasn::types::Integer::from(KRB5_PVNO),
-        msg_type: rasn::types::Integer::from(KRB_AS_REQ_MSG_TYPE),
-        padata,
-        req_body: rasn_kerberos::KdcReqBody {
-            kdc_options: kdc_options_from_bits(kdc_option_bits),
-            cname: Some(principal_to_rasn(&client)?),
-            realm: kerberos_string(&client.realm)?,
-            sname: Some(principal_to_rasn(&service)?),
-            from: None,
-            till: kerberos_time_from_system_time(till)?,
-            rtime: renew_till.map(kerberos_time_from_system_time).transpose()?,
-            nonce: options.nonce,
-            etype: options.etypes,
-            addresses: None,
-            enc_authorization_data: None,
-            additional_tickets: None,
-        },
-    });
-    let der = encode("AS-REQ", &message)?;
+    let req_body = rasn_kerberos::KdcReqBody {
+        kdc_options: kdc_options_from_bits(kdc_option_bits),
+        cname: Some(principal_to_rasn(&client)?),
+        realm: kerberos_string(&client.realm)?,
+        sname: Some(principal_to_rasn(&service)?),
+        from: None,
+        till: kerberos_time_from_system_time(till)?,
+        rtime: renew_till.map(kerberos_time_from_system_time).transpose()?,
+        nonce: options.nonce,
+        etype: options.etypes,
+        addresses: None,
+        enc_authorization_data: None,
+        additional_tickets: None,
+    };
+    let message = crate::kdc_req::build_as_req(req_body, padata);
+    let der = crate::kdc_req::encode_as_req(&message).map_err(kdc_req_error)?;
 
     Ok(BuiltAsReq {
         message,
@@ -3867,7 +3861,7 @@ pub fn build_tgs_req_for_realm_with_confounder(
         enc_authorization_data: None,
         additional_tickets,
     };
-    let req_body_der = encode("TGS-REQ-BODY", &req_body)?;
+    let req_body_der = crate::kdc_req::encode_kdc_req_body(&req_body).map_err(kdc_req_error)?;
     let etype = KerberosEtype::from_etype_id(tgt.session_key.etype)
         .ok_or(Error::UnsupportedEtype(tgt.session_key.etype))?;
     let checksum = etype.checksum(
@@ -3909,13 +3903,8 @@ pub fn build_tgs_req_for_realm_with_confounder(
     let mut padata = Vec::with_capacity(options.padata.len() + 1);
     padata.push(pa_tgs_req);
     padata.extend(options.padata);
-    let message = rasn_kerberos::TgsReq(rasn_kerberos::KdcReq {
-        pvno: rasn::types::Integer::from(KRB5_PVNO),
-        msg_type: rasn::types::Integer::from(KRB_TGS_REQ_MSG_TYPE),
-        padata: Some(padata),
-        req_body,
-    });
-    let der = encode("TGS-REQ", &message)?;
+    let message = crate::kdc_req::build_tgs_req(req_body, Some(padata));
+    let der = crate::kdc_req::encode_tgs_req(&message).map_err(kdc_req_error)?;
 
     Ok(BuiltTgsReq {
         message,
@@ -5059,6 +5048,32 @@ fn ap_req_error(error: crate::ap_req::Error) -> Error {
         },
         crate::ap_req::Error::Random(source) => Error::Random(source),
         crate::ap_req::Error::Crypto(source) => Error::Crypto(source),
+    }
+}
+
+fn kdc_req_error(error: crate::kdc_req::Error) -> Error {
+    match error {
+        crate::kdc_req::Error::Decode { target, message } => Error::Decode { target, message },
+        crate::kdc_req::Error::Encode { target, message } => Error::Encode { target, message },
+        crate::kdc_req::Error::InvalidMessage {
+            field,
+            expected,
+            actual,
+        } => Error::InvalidMessage {
+            field,
+            expected,
+            actual,
+        },
+        crate::kdc_req::Error::UnsupportedEtype(etype) => Error::UnsupportedEtype(etype),
+        crate::kdc_req::Error::TicketKeyEtypeMismatch {
+            key_etype,
+            encrypted_data_etype,
+        } => Error::TicketKeyEtypeMismatch {
+            key_etype,
+            encrypted_data_etype,
+        },
+        crate::kdc_req::Error::Random(source) => Error::Random(source),
+        crate::kdc_req::Error::Crypto(source) => Error::Crypto(source),
     }
 }
 
