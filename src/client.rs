@@ -33,9 +33,7 @@ use zeroize::Zeroizing;
 
 const KRB5_PVNO: i32 = 5;
 const KRB_AS_REQ_MSG_TYPE: i32 = 10;
-const KRB_AS_REP_MSG_TYPE: i32 = 11;
 const KRB_TGS_REQ_MSG_TYPE: i32 = 12;
-const KRB_TGS_REP_MSG_TYPE: i32 = 13;
 const KRB_NT_PRINCIPAL: i32 = 1;
 const KRB_NT_SRV_INST: i32 = 2;
 const DEFAULT_TICKET_LIFETIME: Duration = Duration::from_secs(24 * 60 * 60);
@@ -89,7 +87,7 @@ pub const KRB_ERR_RESPONSE_TOO_BIG: i32 = 52;
 pub const AS_REQ_PA_ENC_TIMESTAMP_USAGE: u32 = 1;
 
 /// Key usage for AS-REP encrypted parts.
-pub const AS_REP_ENCPART_USAGE: u32 = 3;
+pub const AS_REP_ENCPART_USAGE: u32 = crate::kdc_rep::AS_REP_ENCPART_USAGE;
 
 /// Key usage for PA-REQ-ENC-PA-REP checksums over the original AS-REQ.
 pub const AS_REQ_CHECKSUM_USAGE: u32 = 56;
@@ -107,7 +105,8 @@ pub const AP_REQ_AUTHENTICATOR_USAGE: u32 = 11;
 pub const AP_REP_ENCPART_USAGE: u32 = 12;
 
 /// Key usage for TGS-REP encrypted parts when encrypted with the TGT session key.
-pub const TGS_REP_ENCPART_SESSION_KEY_USAGE: u32 = 8;
+pub const TGS_REP_ENCPART_SESSION_KEY_USAGE: u32 =
+    crate::kdc_rep::TGS_REP_ENCPART_SESSION_KEY_USAGE;
 
 /// Key usage/message type for PA-FOR-USER checksums.
 pub const PA_FOR_USER_CHECKSUM_USAGE: u32 = 17;
@@ -4333,10 +4332,8 @@ pub fn process_as_rep(
         return Err(Error::Kdc(Box::new(error)));
     }
 
-    let as_rep = decode::<rasn_kerberos::AsRep>("AS-REP", bytes)?;
+    let as_rep = crate::kdc_rep::decode_as_rep(bytes).map_err(kdc_rep_error)?;
     let kdc_rep = &as_rep.0;
-    validate_integer("pvno", &kdc_rep.pvno, KRB5_PVNO)?;
-    validate_integer("msg-type", &kdc_rep.msg_type, KRB_AS_REP_MSG_TYPE)?;
 
     let client = principal_from_parts(&kdc_rep.crealm, &kdc_rep.cname)?;
     if !principal_matches(&client, &request.client) {
@@ -4346,20 +4343,8 @@ pub fn process_as_rep(
         });
     }
 
-    if reply_key.etype != kdc_rep.enc_part.etype {
-        return Err(Error::KeyEtypeMismatch {
-            key_etype: reply_key.etype,
-            encrypted_data_etype: kdc_rep.enc_part.etype,
-        });
-    }
-
-    let plaintext = decrypt_encrypted_data(
-        kdc_rep.enc_part.etype,
-        &reply_key.value,
-        kdc_rep.enc_part.cipher.as_ref(),
-        AS_REP_ENCPART_USAGE,
-    )?;
-    let enc_part = decode_as_rep_enc_part(&plaintext)?;
+    let enc_part =
+        crate::kdc_rep::decrypt_as_rep_enc_part(&as_rep, reply_key).map_err(kdc_rep_error)?;
     validate_as_rep_encrypted_padata(request, &enc_part, reply_key)?;
 
     if enc_part.nonce != request.nonce {
@@ -4491,10 +4476,8 @@ fn process_tgs_rep_inner(
         return Err(Error::Kdc(Box::new(error)));
     }
 
-    let tgs_rep = decode::<rasn_kerberos::TgsRep>("TGS-REP", bytes)?;
+    let tgs_rep = crate::kdc_rep::decode_tgs_rep(bytes).map_err(kdc_rep_error)?;
     let kdc_rep = &tgs_rep.0;
-    validate_integer("pvno", &kdc_rep.pvno, KRB5_PVNO)?;
-    validate_integer("msg-type", &kdc_rep.msg_type, KRB_TGS_REP_MSG_TYPE)?;
 
     let client = principal_from_parts(&kdc_rep.crealm, &kdc_rep.cname)?;
     if !principal_matches(&client, &request.client) {
@@ -4504,20 +4487,8 @@ fn process_tgs_rep_inner(
         });
     }
 
-    if tgs_session_key.etype != kdc_rep.enc_part.etype {
-        return Err(Error::KeyEtypeMismatch {
-            key_etype: tgs_session_key.etype,
-            encrypted_data_etype: kdc_rep.enc_part.etype,
-        });
-    }
-
-    let plaintext = decrypt_encrypted_data(
-        kdc_rep.enc_part.etype,
-        &tgs_session_key.value,
-        kdc_rep.enc_part.cipher.as_ref(),
-        TGS_REP_ENCPART_SESSION_KEY_USAGE,
-    )?;
-    let enc_part = decode_tgs_rep_enc_part(&plaintext)?;
+    let enc_part = crate::kdc_rep::decrypt_tgs_rep_enc_part(&tgs_rep, tgs_session_key)
+        .map_err(kdc_rep_error)?;
 
     if enc_part.nonce != request.nonce {
         return Err(Error::NonceMismatch {
@@ -5065,17 +5036,6 @@ where
     })
 }
 
-fn decrypt_encrypted_data(
-    etype_id: i32,
-    key: &[u8],
-    ciphertext: &[u8],
-    usage: u32,
-) -> Result<Vec<u8>, Error> {
-    let etype = KerberosEtype::from_etype_id(etype_id).ok_or(Error::UnsupportedEtype(etype_id))?;
-    let plaintext = etype.decrypt_message(key, ciphertext, usage)?;
-    Ok(crate::der::trim_zero_padded_der(&plaintext).to_vec())
-}
-
 fn ap_req_error(error: crate::ap_req::Error) -> Error {
     match error {
         crate::ap_req::Error::Decode { target, message } => Error::Decode { target, message },
@@ -5125,6 +5085,39 @@ fn ticket_error(error: crate::ticket::Error) -> Error {
         },
         crate::ticket::Error::Random(source) => Error::Random(source),
         crate::ticket::Error::Crypto(source) => Error::Crypto(source),
+    }
+}
+
+fn kdc_rep_error(error: crate::kdc_rep::Error) -> Error {
+    match error {
+        crate::kdc_rep::Error::Decode { target, message } => Error::Decode { target, message },
+        crate::kdc_rep::Error::Encode { target, message } => Error::Encode { target, message },
+        crate::kdc_rep::Error::InvalidMessage {
+            field,
+            expected,
+            actual,
+        } => Error::InvalidMessage {
+            field,
+            expected,
+            actual,
+        },
+        crate::kdc_rep::Error::UnsupportedEtype(etype) => Error::UnsupportedEtype(etype),
+        crate::kdc_rep::Error::KeyEtypeMismatch {
+            key_etype,
+            encrypted_data_etype,
+        } => Error::KeyEtypeMismatch {
+            key_etype,
+            encrypted_data_etype,
+        },
+        crate::kdc_rep::Error::TicketKeyEtypeMismatch {
+            key_etype,
+            encrypted_data_etype,
+        } => Error::TicketKeyEtypeMismatch {
+            key_etype,
+            encrypted_data_etype,
+        },
+        crate::kdc_rep::Error::Random(source) => Error::Random(source),
+        crate::kdc_rep::Error::Crypto(source) => Error::Crypto(source),
     }
 }
 
@@ -5331,23 +5324,6 @@ fn as_rep_reply_key_info(response: &[u8]) -> Option<(i32, Option<u32>)> {
         .map(|as_rep| (as_rep.0.enc_part.etype, as_rep.0.enc_part.kvno))
 }
 
-fn decode_as_rep_enc_part(bytes: &[u8]) -> Result<rasn_kerberos::EncKdcRepPart, Error> {
-    match decode::<rasn_kerberos::EncAsRepPart>("EncAsRepPart", bytes) {
-        Ok(enc_part) => Ok(enc_part.0),
-        Err(as_rep_error) => {
-            // Some KDCs encode the shared encrypted KDC reply part with the
-            // EncTgsRepPart application tag even when returning an AS-REP.
-            decode::<rasn_kerberos::EncTgsRepPart>("EncTgsRepPart", bytes)
-                .map(|enc_part| enc_part.0)
-                .map_err(|_| as_rep_error)
-        }
-    }
-}
-
-fn decode_tgs_rep_enc_part(bytes: &[u8]) -> Result<rasn_kerberos::EncKdcRepPart, Error> {
-    decode::<rasn_kerberos::EncTgsRepPart>("EncTgsRepPart", bytes).map(|enc_part| enc_part.0)
-}
-
 #[cfg(feature = "tokio")]
 fn non_empty_kdc_response(response: Vec<u8>) -> Result<Vec<u8>, Error> {
     if response.is_empty() {
@@ -5482,21 +5458,6 @@ fn encode_hex_lower(bytes: &[u8]) -> String {
         out.push(HEX[(byte & 0x0f) as usize] as char);
     }
     out
-}
-
-fn validate_integer(
-    field: &'static str,
-    actual: &rasn::types::Integer,
-    expected: i32,
-) -> Result<(), Error> {
-    if actual != &rasn::types::Integer::from(expected) {
-        return Err(Error::InvalidMessage {
-            field,
-            expected,
-            actual: actual.to_string(),
-        });
-    }
-    Ok(())
 }
 
 fn principal_to_rasn(value: &Principal) -> Result<rasn_kerberos::PrincipalName, Error> {
