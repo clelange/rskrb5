@@ -29,7 +29,7 @@ continues in the lower-level modules and tests.
   AES128/AES256-CTS-HMAC-SHA1-96, RFC8009
   AES128/AES256-CTS-HMAC-SHA2, DES3-CBC-SHA1-KD, and RC4-HMAC string-to-key,
   KDF, checksums, and deterministic encrypted-message vectors; message helpers
-  preserve gokrb5 EncryptedData signed-kvno DER edge fixtures, PA-FOR-USER, PA-PAC-OPTIONS, PA-REQ-ENC-PA-REP, KRB-ERROR timing diagnostics, generic Ticket decode/decrypt/build helpers, generic KDC request decode/encode/build helpers, generic KDC reply decode/decrypt/encrypt helpers, and generic AP-REQ/AP-REP decode/decrypt/build helpers; KRB-SAFE decodes gokrb5 fixtures and verifies keyed checksums; KRB-CRED helpers decode gokrb5 fixtures, decrypt EncKrbCredPart, and round-trip ccache credentials through encrypted KRB-CRED import/export; kadmin covers
+  preserve gokrb5 EncryptedData signed-kvno DER edge fixtures, PA-FOR-USER, PA-PAC-OPTIONS, PA-REQ-ENC-PA-REP, generic KRB-ERROR decode/encode/METHOD-DATA helpers and timing diagnostics, generic Ticket decode/decrypt/build helpers, generic KDC request decode/encode/build helpers, generic KDC reply decode/decrypt/encrypt helpers, and generic AP-REQ/AP-REP decode/decrypt/build helpers; KRB-SAFE decodes gokrb5 fixtures and verifies keyed checksums; KRB-CRED helpers decode gokrb5 fixtures, decrypt EncKrbCredPart, and round-trip ccache credentials through encrypted KRB-CRED import/export; kadmin covers
   ChangePasswdData builders, DER decode, exact fixture round-trip, KRB-PRIV decode/decrypt/payload building, and kpasswd request
   and reply frame parsing plus reply result handling and result-code checks; client AS/TGS exchange primitives
   cover deterministic TGT AS-REQ construction, KRB-ERROR preauthentication
