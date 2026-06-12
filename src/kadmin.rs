@@ -323,7 +323,8 @@ impl Reply {
         }
 
         if frame.payload_length == 0 {
-            let krb_error = decode::<rasn_kerberos::KrbError>("KRB-ERROR", frame.body)?;
+            let krb_error =
+                crate::krb_error::decode_krb_error(frame.body).map_err(krb_error_error)?;
             let result = krb_error
                 .e_data
                 .as_ref()
@@ -589,6 +590,26 @@ fn ap_req_error(error: crate::ap_req::Error) -> Error {
         },
         other => Error::Decode {
             target: "AP-REQ",
+            message: other.to_string(),
+        },
+    }
+}
+
+fn krb_error_error(error: crate::krb_error::Error) -> Error {
+    match error {
+        crate::krb_error::Error::Decode { target, message } => Error::Decode { target, message },
+        crate::krb_error::Error::Encode { target, message } => Error::Encode { target, message },
+        crate::krb_error::Error::InvalidMessage {
+            field,
+            expected,
+            actual,
+        } => Error::InvalidKerberosMessage {
+            field,
+            expected,
+            actual,
+        },
+        other => Error::Decode {
+            target: "KRB-ERROR",
             message: other.to_string(),
         },
     }

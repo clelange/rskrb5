@@ -4532,18 +4532,11 @@ fn process_tgs_rep_inner(
 
 /// Decode a KRB-ERROR and any METHOD-DATA preauthentication hints.
 pub fn process_kdc_error(bytes: &[u8]) -> Result<KdcError, Error> {
-    let krb_error = decode::<rasn_kerberos::KrbError>("KRB-ERROR", bytes)?;
-    let info = crate::messages::KrbErrorInfo::from_rasn(&krb_error)?;
+    let krb_error = crate::krb_error::decode_krb_error(bytes).map_err(krb_error_error)?;
+    let info = crate::krb_error::krb_error_info(&krb_error).map_err(krb_error_error)?;
     let e_data = info.e_data;
-    let method_data = if info.error_code == KDC_ERR_PREAUTH_REQUIRED {
-        e_data
-            .as_ref()
-            .map(|data| decode::<rasn_kerberos::MethodData>("METHOD-DATA", data))
-            .transpose()?
-            .unwrap_or_default()
-    } else {
-        Vec::new()
-    };
+    let method_data = crate::krb_error::preauth_method_data(&krb_error, KDC_ERR_PREAUTH_REQUIRED)
+        .map_err(krb_error_error)?;
     let preauth_key_info = preauth_key_info_from_method_data(&method_data)?;
 
     Ok(KdcError {
@@ -5077,6 +5070,33 @@ fn kdc_req_error(error: crate::kdc_req::Error) -> Error {
     }
 }
 
+fn krb_error_error(error: crate::krb_error::Error) -> Error {
+    match error {
+        crate::krb_error::Error::Decode { target, message } => Error::Decode { target, message },
+        crate::krb_error::Error::Encode { target, message } => Error::Encode { target, message },
+        crate::krb_error::Error::InvalidMessage {
+            field,
+            expected,
+            actual,
+        } => Error::InvalidMessage {
+            field,
+            expected,
+            actual,
+        },
+        crate::krb_error::Error::IntegerOutOfRange { field, value } => {
+            Error::InvalidUnsignedInteger {
+                field,
+                actual: value,
+            }
+        }
+        crate::krb_error::Error::TimeOverflow => Error::TimeOverflow,
+        other => Error::Decode {
+            target: "KRB-ERROR",
+            message: other.to_string(),
+        },
+    }
+}
+
 fn ticket_error(error: crate::ticket::Error) -> Error {
     match error {
         crate::ticket::Error::Decode { target, message } => Error::Decode { target, message },
@@ -5436,7 +5456,7 @@ fn preauth_key_info_from_method_data(
 
 #[cfg(feature = "tokio")]
 fn kdc_error_code(bytes: &[u8]) -> Option<i32> {
-    rasn::der::decode::<rasn_kerberos::KrbError>(bytes)
+    crate::krb_error::decode_krb_error(bytes)
         .ok()
         .map(|error| error.error_code)
 }
