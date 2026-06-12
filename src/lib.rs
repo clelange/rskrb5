@@ -53,6 +53,8 @@ mod file_name;
 pub mod http;
 #[cfg(feature = "messages")]
 pub mod kadmin;
+#[cfg(feature = "messages")]
+pub mod kdc_rep;
 pub mod keytab;
 #[cfg(feature = "messages")]
 pub mod krb_cred;
@@ -128,6 +130,11 @@ pub enum Error {
     #[cfg(feature = "messages")]
     #[error("kadmin error: {0}")]
     Kadmin(#[from] kadmin::Error),
+
+    /// KDC reply message processing failed.
+    #[cfg(feature = "messages")]
+    #[error("KDC reply error: {0}")]
+    KdcRep(#[from] kdc_rep::Error),
 
     /// KRB-CRED processing failed.
     #[cfg(feature = "messages")]
