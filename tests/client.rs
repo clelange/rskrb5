@@ -9,12 +9,13 @@ use rskrb5::client::KpasswdRequestOptions;
 use rskrb5::client::{
     AP_REP_ENCPART_USAGE, AP_REQ_AUTHENTICATOR_USAGE, AS_REP_ENCPART_USAGE,
     AS_REQ_PA_ENC_TIMESTAMP_USAGE, ApReqOptions, AsReqOptions, BuiltAsReq, BuiltTgsReq, Error,
-    KDC_ERR_PREAUTH_REQUIRED, KDC_OPTION_CANONICALIZE, KDC_OPTION_RENEW, KDC_OPTION_RENEWABLE,
-    KdcError, KdcTransport, PA_ENC_TIMESTAMP, PA_ETYPE_INFO2, PA_FOR_USER,
-    PA_FOR_USER_CHECKSUM_USAGE, PA_REQ_ENC_PA_REP, PA_TGS_REQ, PreauthKeyInfo, Principal,
-    TGS_REP_ENCPART_SESSION_KEY_USAGE, TGS_REQ_AUTHENTICATOR_CHECKSUM_USAGE,
-    TGS_REQ_AUTHENTICATOR_USAGE, TgsReqOptions, build_ap_req_with_confounder,
-    build_kpasswd_request, build_kpasswd_request_with_confounders, build_preauthenticated_as_req,
+    KDC_ERR_PREAUTH_REQUIRED, KDC_OPTION_CANONICALIZE, KDC_OPTION_CNAME_IN_ADDL_TKT,
+    KDC_OPTION_RENEW, KDC_OPTION_RENEWABLE, KdcError, KdcTransport, PA_ENC_TIMESTAMP,
+    PA_ETYPE_INFO2, PA_FOR_USER, PA_FOR_USER_CHECKSUM_USAGE, PA_REQ_ENC_PA_REP, PA_TGS_REQ,
+    PreauthKeyInfo, Principal, TGS_REP_ENCPART_SESSION_KEY_USAGE,
+    TGS_REQ_AUTHENTICATOR_CHECKSUM_USAGE, TGS_REQ_AUTHENTICATOR_USAGE, TgsReqOptions,
+    build_ap_req_with_confounder, build_kpasswd_request, build_kpasswd_request_with_confounders,
+    build_preauthenticated_as_req, build_s4u2proxy_req_with_confounder,
     build_s4u2self_req_with_confounder, build_tgs_req_for_realm_with_confounder,
     build_tgs_req_with_confounder, build_tgt_as_req, build_tgt_renewal_req_with_confounder,
     build_ticket_renewal_req_with_confounder, default_password_salt, derive_password_reply_key,
@@ -22,7 +23,7 @@ use rskrb5::client::{
     login_as_service_with_password, login_tgt_with_keytab, login_tgt_with_password,
     pa_enc_timestamp_with_confounder, pa_for_user_padata, process_as_rep, process_kdc_error,
     process_tgs_rep, process_tgs_rep_with_referral, renew_tgt, renew_ticket, s4u_byte_array,
-    s4u2self, select_preauth_key_info, verify_kpasswd_ap_rep,
+    s4u2proxy, s4u2self, select_preauth_key_info, verify_kpasswd_ap_rep,
 };
 #[cfg(all(feature = "tokio", feature = "spnego"))]
 use rskrb5::client::{BlockingNegotiateClient, NegotiateClient};
@@ -639,6 +640,55 @@ fn builds_s4u2self_tgs_req_with_pa_for_user() {
 }
 
 #[test]
+fn builds_s4u2proxy_tgs_req_with_evidence_ticket() {
+    let user_tgt = sample_tgt_session();
+    let evidence_ticket = sample_service_ticket_session(&user_tgt);
+    let mut service_tgt = sample_tgt_session();
+    service_tgt.client = sample_service_principal();
+    let target_service = Principal::new("TEST.GOKRB5", 2, ["HTTP", "backend.test.gokrb5"]);
+
+    let request = build_s4u2proxy_req_with_confounder(
+        &service_tgt,
+        &evidence_ticket,
+        target_service.clone(),
+        TgsReqOptions::new(timestamp(1_893_553_450), 0x9988_7766).with_etypes(vec![18]),
+        timestamp(1_893_553_451),
+        654_321,
+        &decode_hex(TGS_REQ_CONFOUNDER),
+    )
+    .expect("S4U2Proxy TGS-REQ builds");
+    let decoded: rasn_kerberos::TgsReq = rasn::der::decode(&request.der).expect("TGS-REQ decodes");
+    let body = &decoded.0.req_body;
+
+    assert_eq!(request.client, evidence_ticket.client);
+    assert_eq!(request.service, target_service);
+    assert_eq!(
+        body.kdc_options.0.as_raw_slice(),
+        KDC_OPTION_CNAME_IN_ADDL_TKT.to_be_bytes().as_slice()
+    );
+    assert_eq!(
+        principal_from_parts(&body.realm, body.cname.as_ref().expect("cname")),
+        service_tgt.client
+    );
+    assert_eq!(
+        principal_from_parts(&body.realm, body.sname.as_ref().expect("sname")),
+        target_service
+    );
+    let additional_tickets = body
+        .additional_tickets
+        .as_ref()
+        .expect("S4U2Proxy additional ticket");
+    assert_eq!(additional_tickets.len(), 1);
+    assert_eq!(
+        principal_from_parts(&additional_tickets[0].realm, &additional_tickets[0].sname),
+        service_tgt.client
+    );
+    let padata = decoded.0.padata.as_ref().expect("S4U2Proxy padata");
+    assert_eq!(padata.len(), 1);
+    assert_eq!(padata[0].r#type, PA_TGS_REQ);
+}
+
+#[test]
 fn builds_service_ap_req_with_subkey_and_sequence_number() {
     let tgt = sample_tgt_session();
     let request = sample_tgs_request(&tgt);
@@ -1043,6 +1093,35 @@ fn s4u2self_uses_transport_boundary() {
     assert_eq!(transport.calls, 1);
     assert_eq!(session.client, user);
     assert_eq!(session.service, service_tgt.client);
+}
+
+#[test]
+fn s4u2proxy_uses_transport_boundary() {
+    let user_tgt = sample_tgt_session();
+    let evidence_ticket = sample_service_ticket_session(&user_tgt);
+    let mut service_tgt = sample_tgt_session();
+    service_tgt.client = sample_service_principal();
+    let target_service = Principal::new("TEST.GOKRB5", 2, ["HTTP", "backend.test.gokrb5"]);
+    let mut transport = S4u2ProxyTransport {
+        session_key: service_tgt.session_key.clone(),
+        expected_frontend_service: service_tgt.client.clone(),
+        expected_target_service: target_service.clone(),
+        expected_client: evidence_ticket.client.clone(),
+        calls: 0,
+    };
+
+    let session = s4u2proxy(
+        &mut transport,
+        &service_tgt,
+        &evidence_ticket,
+        target_service.clone(),
+        TgsReqOptions::new(timestamp(1_893_553_450), 0x6655_4433).with_etypes(vec![18]),
+    )
+    .expect("S4U2Proxy exchange succeeds");
+
+    assert_eq!(transport.calls, 1);
+    assert_eq!(session.client, evidence_ticket.client);
+    assert_eq!(session.service, target_service);
 }
 
 #[cfg(feature = "tokio")]
@@ -3346,6 +3425,56 @@ impl KdcTransport for S4uTransport {
         self.calls += 1;
         let mut built = built_tgs_request_from_der(decoded, request);
         built.client = self.expected_user.clone();
+        Ok(synthetic_tgs_rep(
+            &built,
+            built.nonce,
+            &self.session_key.clone(),
+        ))
+    }
+}
+
+struct S4u2ProxyTransport {
+    session_key: EncryptionKey,
+    expected_frontend_service: Principal,
+    expected_target_service: Principal,
+    expected_client: Principal,
+    calls: usize,
+}
+
+impl KdcTransport for S4u2ProxyTransport {
+    fn send(&mut self, realm: &str, request: &[u8]) -> Result<Vec<u8>, Error> {
+        assert_eq!(realm, "TEST.GOKRB5");
+        let decoded: rasn_kerberos::TgsReq = rasn::der::decode(request).expect("TGS-REQ decodes");
+        let body = &decoded.0.req_body;
+        assert_eq!(
+            body.kdc_options.0.as_raw_slice(),
+            KDC_OPTION_CNAME_IN_ADDL_TKT.to_be_bytes().as_slice()
+        );
+        assert_eq!(
+            principal_from_parts(&body.realm, body.cname.as_ref().expect("cname")),
+            self.expected_frontend_service
+        );
+        assert_eq!(
+            principal_from_parts(&body.realm, body.sname.as_ref().expect("sname")),
+            self.expected_target_service
+        );
+
+        let padata = decoded.0.padata.as_ref().expect("S4U2Proxy TGS-REQ padata");
+        assert_eq!(padata.len(), 1);
+        assert_eq!(padata[0].r#type, PA_TGS_REQ);
+        let additional_tickets = body
+            .additional_tickets
+            .as_ref()
+            .expect("S4U2Proxy evidence ticket");
+        assert_eq!(additional_tickets.len(), 1);
+        assert_eq!(
+            principal_from_parts(&additional_tickets[0].realm, &additional_tickets[0].sname),
+            self.expected_frontend_service
+        );
+
+        self.calls += 1;
+        let mut built = built_tgs_request_from_der(decoded, request);
+        built.client = self.expected_client.clone();
         Ok(synthetic_tgs_rep(
             &built,
             built.nonce,

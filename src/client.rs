@@ -111,6 +111,9 @@ pub const KDC_OPTION_RENEWABLE: u32 = 0x0080_0000;
 /// Raw KDC option mask for `canonicalize` in RFC 4120 bit-string order.
 pub const KDC_OPTION_CANONICALIZE: u32 = 0x0001_0000;
 
+/// Raw KDC option mask for `cname-in-addl-tkt` in RFC 4120 bit-string order.
+pub const KDC_OPTION_CNAME_IN_ADDL_TKT: u32 = 0x0002_0000;
+
 /// Raw KDC option mask for `renew` in RFC 4120 bit-string order.
 pub const KDC_OPTION_RENEW: u32 = 0x0000_0002;
 
@@ -446,6 +449,8 @@ pub struct TgsReqOptions {
     pub kdc_option_bits: u32,
     /// Additional TGS padata appended after PA-TGS-REQ.
     pub padata: Vec<rasn_kerberos::PaData>,
+    /// Additional tickets included in the TGS request body.
+    pub additional_tickets: Vec<rasn_kerberos::Ticket>,
 }
 
 impl TgsReqOptions {
@@ -459,6 +464,7 @@ impl TgsReqOptions {
             etypes: DEFAULT_TGS_ENCTYPES.to_vec(),
             kdc_option_bits: 0,
             padata: Vec::new(),
+            additional_tickets: Vec::new(),
         }
     }
 
@@ -507,6 +513,15 @@ impl TgsReqOptions {
     /// Add additional TGS padata.
     pub fn with_padata(mut self, padata: impl Into<Vec<rasn_kerberos::PaData>>) -> Self {
         self.padata = padata.into();
+        self
+    }
+
+    /// Add additional tickets to the TGS request body.
+    pub fn with_additional_tickets(
+        mut self,
+        additional_tickets: impl Into<Vec<rasn_kerberos::Ticket>>,
+    ) -> Self {
+        self.additional_tickets = additional_tickets.into();
         self
     }
 
@@ -3636,6 +3651,65 @@ pub fn build_s4u2self_req_with_confounder(
     Ok(request)
 }
 
+/// Build an S4U2Proxy TGS-REQ using a service TGT and user evidence ticket.
+pub fn build_s4u2proxy_req(
+    service_tgt: &AsRepSession,
+    evidence_ticket: &TgsRepSession,
+    target_service: Principal,
+    options: TgsReqOptions,
+) -> Result<BuiltTgsReq, Error> {
+    let (timestamp, cusec) = current_preauth_time()?;
+    let etype = KerberosEtype::from_etype_id(service_tgt.session_key.etype)
+        .ok_or(Error::UnsupportedEtype(service_tgt.session_key.etype))?;
+    let mut confounder = vec![0; etype.confounder_len()];
+    getrandom::fill(&mut confounder)?;
+    build_s4u2proxy_req_with_confounder(
+        service_tgt,
+        evidence_ticket,
+        target_service,
+        options,
+        timestamp,
+        cusec,
+        &confounder,
+    )
+}
+
+/// Build a deterministic S4U2Proxy TGS-REQ with an explicit authenticator timestamp and confounder.
+pub fn build_s4u2proxy_req_with_confounder(
+    service_tgt: &AsRepSession,
+    evidence_ticket: &TgsRepSession,
+    target_service: Principal,
+    mut options: TgsReqOptions,
+    timestamp: SystemTime,
+    cusec: u32,
+    confounder: &[u8],
+) -> Result<BuiltTgsReq, Error> {
+    if !principal_matches(&evidence_ticket.service, &service_tgt.client) {
+        return Err(Error::ServicePrincipalMismatch {
+            expected: service_tgt.client.name(),
+            actual: evidence_ticket.service.name(),
+        });
+    }
+    options.kdc_option_bits |= KDC_OPTION_CNAME_IN_ADDL_TKT;
+    options
+        .additional_tickets
+        .push(decode::<rasn_kerberos::Ticket>(
+            "S4U2Proxy evidence Ticket",
+            &evidence_ticket.ticket,
+        )?);
+    let mut request = build_tgs_req_for_realm_with_confounder(
+        service_tgt,
+        target_service.realm.clone(),
+        target_service,
+        options,
+        timestamp,
+        cusec,
+        confounder,
+    )?;
+    request.client = evidence_ticket.client.clone();
+    Ok(request)
+}
+
 /// Build a TGS-REQ for an explicit KDC realm, timestamp, and confounder.
 pub fn build_tgs_req_for_realm_with_confounder(
     tgt: &AsRepSession,
@@ -3660,6 +3734,8 @@ pub fn build_tgs_req_for_realm_with_confounder(
         .renew_lifetime
         .map(|duration| options.now.checked_add(duration).ok_or(Error::TimeOverflow))
         .transpose()?;
+    let additional_tickets =
+        (!options.additional_tickets.is_empty()).then_some(options.additional_tickets);
     let cname = principal_to_rasn(&tgt.client)?;
     let kdc_option_bits = request_kdc_option_bits(options.kdc_option_bits, options.renew_lifetime);
     let req_body = rasn_kerberos::KdcReqBody {
@@ -3674,7 +3750,7 @@ pub fn build_tgs_req_for_realm_with_confounder(
         etype: options.etypes,
         addresses: None,
         enc_authorization_data: None,
-        additional_tickets: None,
+        additional_tickets,
     };
     let req_body_der = encode("TGS-REQ-BODY", &req_body)?;
     let etype = KerberosEtype::from_etype_id(tgt.session_key.etype)
@@ -4031,6 +4107,21 @@ where
     T: KdcTransport + ?Sized,
 {
     let request = build_s4u2self_req(service_tgt, user, options)?;
+    exchange_tgs_req(transport, &request, &service_tgt.session_key)
+}
+
+/// Perform S4U2Proxy through a runtime-neutral transport.
+pub fn s4u2proxy<T>(
+    transport: &mut T,
+    service_tgt: &AsRepSession,
+    evidence_ticket: &TgsRepSession,
+    target_service: Principal,
+    options: TgsReqOptions,
+) -> Result<TgsRepSession, Error>
+where
+    T: KdcTransport + ?Sized,
+{
+    let request = build_s4u2proxy_req(service_tgt, evidence_ticket, target_service, options)?;
     exchange_tgs_req(transport, &request, &service_tgt.session_key)
 }
 
