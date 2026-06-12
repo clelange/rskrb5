@@ -1797,6 +1797,37 @@ impl TokioClient {
             .await
     }
 
+    /// Acquire an S4U2Proxy ticket for a target service using a user evidence ticket.
+    pub async fn s4u2proxy(
+        &mut self,
+        evidence_ticket: &TgsRepSession,
+        target_service: Principal,
+    ) -> Result<TgsRepSession, Error> {
+        let options = self.tgs_req_options()?;
+        self.s4u2proxy_with_options(evidence_ticket, target_service, options)
+            .await
+    }
+
+    /// Acquire an S4U2Proxy ticket using explicit TGS request options.
+    pub async fn s4u2proxy_with_options(
+        &mut self,
+        evidence_ticket: &TgsRepSession,
+        target_service: Principal,
+        options: TgsReqOptions,
+    ) -> Result<TgsRepSession, Error> {
+        let service_tgt = self.ensure_tgt().await?;
+        self.transport
+            .s4u2proxy_with_config(
+                &self.config,
+                self.protocol,
+                &service_tgt,
+                evidence_ticket,
+                target_service,
+                options,
+            )
+            .await
+    }
+
     /// Build a SPNEGO HTTP `Authorization` header for a service.
     #[cfg(feature = "spnego")]
     pub async fn spnego_header(&mut self, service: Principal) -> Result<String, Error> {
@@ -2782,6 +2813,39 @@ impl TokioKdcTransport {
         options: TgsReqOptions,
     ) -> Result<TgsRepSession, Error> {
         let request = build_s4u2self_req(service_tgt, user, options)?;
+        self.exchange_tgs_req_with_config(config, protocol, &request, &service_tgt.session_key)
+            .await
+    }
+
+    /// Perform S4U2Proxy through an explicit KDC endpoint.
+    pub async fn s4u2proxy<A>(
+        &self,
+        protocol: KdcProtocol,
+        addr: A,
+        service_tgt: &AsRepSession,
+        evidence_ticket: &TgsRepSession,
+        target_service: Principal,
+        options: TgsReqOptions,
+    ) -> Result<TgsRepSession, Error>
+    where
+        A: ToSocketAddrs + Clone,
+    {
+        let request = build_s4u2proxy_req(service_tgt, evidence_ticket, target_service, options)?;
+        self.exchange_tgs_req(protocol, addr, &request, &service_tgt.session_key)
+            .await
+    }
+
+    /// Perform S4U2Proxy through a config-discovered KDC.
+    pub async fn s4u2proxy_with_config(
+        &self,
+        config: &Config,
+        protocol: KdcProtocol,
+        service_tgt: &AsRepSession,
+        evidence_ticket: &TgsRepSession,
+        target_service: Principal,
+        options: TgsReqOptions,
+    ) -> Result<TgsRepSession, Error> {
+        let request = build_s4u2proxy_req(service_tgt, evidence_ticket, target_service, options)?;
         self.exchange_tgs_req_with_config(config, protocol, &request, &service_tgt.session_key)
             .await
     }

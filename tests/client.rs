@@ -1199,6 +1199,89 @@ fn tokio_client_s4u2self_uses_current_service_tgt_without_service_cache() {
     });
 }
 
+#[cfg(feature = "tokio")]
+#[test]
+fn tokio_transport_s4u2proxy_uses_tcp_kdc() {
+    runtime().block_on(async {
+        let user_tgt = sample_tgt_session();
+        let evidence_ticket = sample_service_ticket_session(&user_tgt);
+        let mut service_tgt = current_tgt_session(5, 180);
+        service_tgt.client = sample_service_principal();
+        let target_service = Principal::new("TEST.GOKRB5", 2, ["HTTP", "backend.test.gokrb5"]);
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind local KDC listener");
+        let addr = listener.local_addr().expect("local listener address");
+
+        let task = tokio::spawn(serve_s4u2proxy_tcp_request(
+            listener,
+            service_tgt.session_key.clone(),
+            service_tgt.client.clone(),
+            target_service.clone(),
+            evidence_ticket.client.clone(),
+        ));
+
+        let session = TokioKdcTransport::new()
+            .s4u2proxy(
+                KdcProtocol::Tcp,
+                addr,
+                &service_tgt,
+                &evidence_ticket,
+                target_service.clone(),
+                TgsReqOptions::new(timestamp(1_893_553_450), 0x2233_4455).with_etypes(vec![18]),
+            )
+            .await
+            .expect("Tokio transport S4U2Proxy succeeds");
+        task.await.expect("KDC task succeeds");
+
+        assert_eq!(session.client, evidence_ticket.client);
+        assert_eq!(session.service, target_service);
+    });
+}
+
+#[cfg(feature = "tokio")]
+#[test]
+fn tokio_client_s4u2proxy_uses_current_service_tgt_without_service_cache() {
+    runtime().block_on(async {
+        let user_tgt = sample_tgt_session();
+        let evidence_ticket = sample_service_ticket_session(&user_tgt);
+        let mut service_tgt = current_tgt_session(5, 180);
+        service_tgt.client = sample_service_principal();
+        let target_service = Principal::new("TEST.GOKRB5", 2, ["HTTP", "backend.test.gokrb5"]);
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind local KDC listener");
+        let addr = listener.local_addr().expect("local listener address");
+        let mut client = TokioClient::from_tgt_session(
+            config_with_kdc_server(addr.to_string()),
+            KdcProtocol::Tcp,
+            service_tgt.clone(),
+        );
+
+        let task = tokio::spawn(serve_s4u2proxy_tcp_request(
+            listener,
+            service_tgt.session_key.clone(),
+            service_tgt.client.clone(),
+            target_service.clone(),
+            evidence_ticket.client.clone(),
+        ));
+
+        let session = client
+            .s4u2proxy_with_options(
+                &evidence_ticket,
+                target_service.clone(),
+                TgsReqOptions::new(timestamp(1_893_553_450), 0x3344_5566).with_etypes(vec![18]),
+            )
+            .await
+            .expect("Tokio client S4U2Proxy succeeds");
+        task.await.expect("KDC task succeeds");
+
+        assert_eq!(session.client, evidence_ticket.client);
+        assert_eq!(session.service, target_service);
+        assert_eq!(client.cached_service_ticket_count(), 0);
+    });
+}
+
 #[test]
 fn renew_tgt_uses_transport_boundary() {
     let tgt = sample_tgt_session();
@@ -4250,6 +4333,49 @@ async fn serve_s4u2self_tcp_request(
 
     let mut built = built_tgs_request_from_der(decoded, &request);
     built.client = expected_user;
+    let response = synthetic_tgs_rep(&built, built.nonce, &reply_key);
+    write_tcp_kdc_response(&mut socket, &response).await;
+}
+
+#[cfg(feature = "tokio")]
+async fn serve_s4u2proxy_tcp_request(
+    listener: TcpListener,
+    reply_key: EncryptionKey,
+    expected_frontend_service: Principal,
+    expected_target_service: Principal,
+    expected_client: Principal,
+) {
+    let (request, mut socket) = read_tcp_kdc_request(&listener).await;
+    let decoded: rasn_kerberos::TgsReq = rasn::der::decode(&request).expect("TGS-REQ decodes");
+    let body = &decoded.0.req_body;
+    assert_eq!(
+        body.kdc_options.0.as_raw_slice(),
+        KDC_OPTION_CNAME_IN_ADDL_TKT.to_be_bytes().as_slice()
+    );
+    assert_eq!(
+        principal_from_parts(&body.realm, body.cname.as_ref().expect("cname")),
+        expected_frontend_service
+    );
+    assert_eq!(
+        principal_from_parts(&body.realm, body.sname.as_ref().expect("sname")),
+        expected_target_service
+    );
+
+    let padata = decoded.0.padata.as_ref().expect("S4U2Proxy TGS-REQ padata");
+    assert_eq!(padata.len(), 1);
+    assert_eq!(padata[0].r#type, PA_TGS_REQ);
+    let additional_tickets = body
+        .additional_tickets
+        .as_ref()
+        .expect("S4U2Proxy evidence ticket");
+    assert_eq!(additional_tickets.len(), 1);
+    assert_eq!(
+        principal_from_parts(&additional_tickets[0].realm, &additional_tickets[0].sname),
+        expected_frontend_service
+    );
+
+    let mut built = built_tgs_request_from_der(decoded, &request);
+    built.client = expected_client;
     let response = synthetic_tgs_rep(&built, built.nonce, &reply_key);
     write_tcp_kdc_response(&mut socket, &response).await;
 }
