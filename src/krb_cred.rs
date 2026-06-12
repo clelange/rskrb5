@@ -48,6 +48,24 @@ pub fn decrypt_krb_cred_enc_part(
     decode_enc_krb_cred_part(&plaintext)
 }
 
+/// Decrypt a KRB-CRED encrypted part and convert its tickets to ccache credentials.
+pub fn decrypt_krb_cred_to_ccache_credentials(
+    krb_cred: &rasn_kerberos::KrbCred,
+    key: &EncryptionKey,
+) -> Result<Vec<ccache::Credential>, Error> {
+    let enc_part = decrypt_krb_cred_enc_part(krb_cred, key)?;
+    decrypted_krb_cred_to_ccache_credentials(krb_cred, &enc_part)
+}
+
+/// Decode, decrypt, and convert a DER-encoded KRB-CRED to ccache credentials.
+pub fn decode_decrypt_krb_cred_to_ccache_credentials(
+    bytes: &[u8],
+    key: &EncryptionKey,
+) -> Result<Vec<ccache::Credential>, Error> {
+    let krb_cred = decode_krb_cred(bytes)?;
+    decrypt_krb_cred_to_ccache_credentials(&krb_cred, key)
+}
+
 /// Convert decrypted KRB-CRED contents into ccache credentials.
 pub fn decrypted_krb_cred_to_ccache_credentials(
     krb_cred: &rasn_kerberos::KrbCred,
