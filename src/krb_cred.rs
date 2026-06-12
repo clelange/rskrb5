@@ -81,8 +81,7 @@ pub fn ccache_credentials_to_krb_cred_parts(
             return Err(Error::UnsupportedSecondTicket);
         }
 
-        let ticket = decode::<rasn_kerberos::Ticket>("Ticket", &credential.ticket)?;
-        validate_integer("tkt-vno", &ticket.tkt_vno, KRB5_PVNO)?;
+        let ticket = crate::ticket::decode_ticket(&credential.ticket).map_err(ticket_error)?;
         tickets.push(ticket);
         ticket_info.push(ccache_credential_to_krb_cred_info(credential)?);
     }
@@ -257,7 +256,7 @@ fn krb_cred_info_to_ccache_credential(
             })
             .unwrap_or_default(),
         auth_data: Vec::new(),
-        ticket: encode("Ticket", ticket)?,
+        ticket: crate::ticket::encode_ticket(ticket).map_err(ticket_error)?,
         second_ticket: Vec::new(),
     })
 }
@@ -374,6 +373,32 @@ where
     })
 }
 
+fn ticket_error(error: crate::ticket::Error) -> Error {
+    match error {
+        crate::ticket::Error::Decode { target, message } => Error::Decode { target, message },
+        crate::ticket::Error::Encode { target, message } => Error::Encode { target, message },
+        crate::ticket::Error::InvalidMessage {
+            field,
+            expected,
+            actual,
+        } => Error::InvalidMessage {
+            field,
+            expected,
+            actual,
+        },
+        crate::ticket::Error::UnsupportedEtype(etype) => Error::UnsupportedEtype(etype),
+        crate::ticket::Error::KeyEtypeMismatch {
+            key_etype,
+            encrypted_data_etype,
+        } => Error::TicketKeyEtypeMismatch {
+            key_etype,
+            encrypted_data_etype,
+        },
+        crate::ticket::Error::Random(source) => Error::Random(source),
+        crate::ticket::Error::Crypto(source) => Error::Crypto(source),
+    }
+}
+
 fn validate_integer(
     field: &'static str,
     actual: &rasn::types::Integer,
@@ -441,6 +466,17 @@ pub enum Error {
         /// Reply key encryption type.
         key_etype: i32,
         /// KRB-CRED encrypted data encryption type.
+        encrypted_data_etype: i32,
+    },
+
+    /// A key did not match the encrypted ticket data etype.
+    #[error(
+        "key etype {key_etype} does not match Ticket encrypted data etype {encrypted_data_etype}"
+    )]
+    TicketKeyEtypeMismatch {
+        /// Key encryption type.
+        key_etype: i32,
+        /// Ticket encrypted data encryption type.
         encrypted_data_etype: i32,
     },
 

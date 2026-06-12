@@ -13,11 +13,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::config::Config;
-use crate::crypto::KerberosEtype;
 use crate::keytab::{EncryptionKey, Keytab};
 use crate::pac::{self, Pac};
 
-const KDC_REP_TICKET_USAGE: u32 = 2;
 const DEFAULT_MAX_CLOCK_SKEW: Duration = Duration::from_secs(5 * 60);
 const INVALID_TICKET_FLAG: usize = 7;
 
@@ -399,14 +397,8 @@ impl<'a> ServiceValidator<'a> {
             ticket_etype,
         )?;
 
-        let decrypted_ticket = decrypt_encrypted_data(
-            ticket_etype,
-            &service_key.0.value,
-            ap_req.ticket.enc_part.cipher.as_ref(),
-            KDC_REP_TICKET_USAGE,
-        )?;
-        let enc_ticket =
-            decode::<rasn_kerberos::EncTicketPart>("EncTicketPart", &decrypted_ticket)?;
+        let enc_ticket = crate::ticket::decrypt_ticket_enc_part(&ap_req.ticket, service_key.0)
+            .map_err(ticket_error)?;
         self.validate_ticket_times(&ticket_service, &enc_ticket)?;
         self.validate_client_address(&ticket_service, &enc_ticket)?;
         let pac = match &enc_ticket.authorization_data {
@@ -653,6 +645,17 @@ pub enum Error {
         encrypted_data_etype: i32,
     },
 
+    /// A key did not match the encrypted ticket data etype.
+    #[error(
+        "key etype {key_etype} does not match Ticket encrypted data etype {encrypted_data_etype}"
+    )]
+    TicketKeyEtypeMismatch {
+        /// Service key encryption type.
+        key_etype: i32,
+        /// Ticket encrypted data encryption type.
+        encrypted_data_etype: i32,
+    },
+
     /// Keytab lookup failed.
     #[error("keytab error: {0}")]
     Keytab(#[from] crate::keytab::Error),
@@ -751,27 +754,6 @@ struct ReplayKey {
     cusec: u32,
 }
 
-fn decode<T>(target: &'static str, bytes: &[u8]) -> Result<T, Error>
-where
-    T: rasn::Decode,
-{
-    rasn::der::decode(bytes).map_err(|source| Error::Decode {
-        target,
-        message: source.to_string(),
-    })
-}
-
-fn decrypt_encrypted_data(
-    etype_id: i32,
-    key: &[u8],
-    ciphertext: &[u8],
-    usage: u32,
-) -> Result<Vec<u8>, Error> {
-    let etype = KerberosEtype::from_etype_id(etype_id).ok_or(Error::UnsupportedEtype(etype_id))?;
-    let plaintext = etype.decrypt_message(key, ciphertext, usage)?;
-    Ok(crate::der::trim_zero_padded_der(&plaintext).to_vec())
-}
-
 fn ap_req_error(error: crate::ap_req::Error) -> Error {
     match error {
         crate::ap_req::Error::Decode { target, message } => Error::Decode { target, message },
@@ -795,6 +777,32 @@ fn ap_req_error(error: crate::ap_req::Error) -> Error {
         },
         crate::ap_req::Error::Random(source) => Error::Random(source),
         crate::ap_req::Error::Crypto(source) => Error::Crypto(source),
+    }
+}
+
+fn ticket_error(error: crate::ticket::Error) -> Error {
+    match error {
+        crate::ticket::Error::Decode { target, message } => Error::Decode { target, message },
+        crate::ticket::Error::Encode { target, message } => Error::Encode { target, message },
+        crate::ticket::Error::InvalidMessage {
+            field,
+            expected,
+            actual,
+        } => Error::InvalidMessage {
+            field,
+            expected,
+            actual,
+        },
+        crate::ticket::Error::UnsupportedEtype(etype) => Error::UnsupportedEtype(etype),
+        crate::ticket::Error::KeyEtypeMismatch {
+            key_etype,
+            encrypted_data_etype,
+        } => Error::TicketKeyEtypeMismatch {
+            key_etype,
+            encrypted_data_etype,
+        },
+        crate::ticket::Error::Random(source) => Error::Random(source),
+        crate::ticket::Error::Crypto(source) => Error::Crypto(source),
     }
 }
 

@@ -3812,10 +3812,7 @@ pub fn build_s4u2proxy_req_with_confounder(
     options.kdc_option_bits |= KDC_OPTION_CNAME_IN_ADDL_TKT;
     options
         .additional_tickets
-        .push(decode::<rasn_kerberos::Ticket>(
-            "S4U2Proxy evidence Ticket",
-            &evidence_ticket.ticket,
-        )?);
+        .push(crate::ticket::decode_ticket(&evidence_ticket.ticket).map_err(ticket_error)?);
     let mut request = build_tgs_req_for_realm_with_confounder(
         service_tgt,
         target_service.realm.clone(),
@@ -3844,7 +3841,7 @@ pub fn build_tgs_req_for_realm_with_confounder(
     }
 
     let kdc_realm = kdc_realm.into();
-    let ticket = decode::<rasn_kerberos::Ticket>("Ticket", &tgt.ticket)?;
+    let ticket = crate::ticket::decode_ticket(&tgt.ticket).map_err(ticket_error)?;
     let till = options
         .now
         .checked_add(options.ticket_lifetime)
@@ -3939,7 +3936,7 @@ pub fn build_ap_req_with_confounder(
     cusec: u32,
     confounder: &[u8],
 ) -> Result<BuiltApReq, Error> {
-    let ticket = decode::<rasn_kerberos::Ticket>("Ticket", &service_ticket.ticket)?;
+    let ticket = crate::ticket::decode_ticket(&service_ticket.ticket).map_err(ticket_error)?;
     let authenticator = rasn_kerberos::Authenticator {
         authenticator_vno: rasn::types::Integer::from(KRB5_PVNO),
         crealm: kerberos_string(&service_ticket.client.realm)?,
@@ -4388,7 +4385,7 @@ pub fn process_as_rep(
         });
     }
 
-    let ticket = encode("Ticket", &kdc_rep.ticket)?;
+    let ticket = crate::ticket::encode_ticket(&kdc_rep.ticket).map_err(ticket_error)?;
     Ok(AsRepSession {
         client,
         service: enc_part_service,
@@ -4548,7 +4545,7 @@ fn process_tgs_rep_inner(
         });
     }
 
-    let ticket = encode("Ticket", &kdc_rep.ticket)?;
+    let ticket = crate::ticket::encode_ticket(&kdc_rep.ticket).map_err(ticket_error)?;
     Ok(AsRepSession {
         client,
         service: enc_part_service,
@@ -4783,6 +4780,17 @@ pub enum Error {
         /// Reply key encryption type.
         key_etype: i32,
         /// AP-REQ authenticator encryption type.
+        encrypted_data_etype: i32,
+    },
+
+    /// A key did not match the encrypted ticket data etype.
+    #[error(
+        "key etype {key_etype} does not match Ticket encrypted data etype {encrypted_data_etype}"
+    )]
+    TicketKeyEtypeMismatch {
+        /// Service key encryption type.
+        key_etype: i32,
+        /// Ticket encrypted data encryption type.
         encrypted_data_etype: i32,
     },
 
@@ -5091,6 +5099,32 @@ fn ap_req_error(error: crate::ap_req::Error) -> Error {
         },
         crate::ap_req::Error::Random(source) => Error::Random(source),
         crate::ap_req::Error::Crypto(source) => Error::Crypto(source),
+    }
+}
+
+fn ticket_error(error: crate::ticket::Error) -> Error {
+    match error {
+        crate::ticket::Error::Decode { target, message } => Error::Decode { target, message },
+        crate::ticket::Error::Encode { target, message } => Error::Encode { target, message },
+        crate::ticket::Error::InvalidMessage {
+            field,
+            expected,
+            actual,
+        } => Error::InvalidMessage {
+            field,
+            expected,
+            actual,
+        },
+        crate::ticket::Error::UnsupportedEtype(etype) => Error::UnsupportedEtype(etype),
+        crate::ticket::Error::KeyEtypeMismatch {
+            key_etype,
+            encrypted_data_etype,
+        } => Error::TicketKeyEtypeMismatch {
+            key_etype,
+            encrypted_data_etype,
+        },
+        crate::ticket::Error::Random(source) => Error::Random(source),
+        crate::ticket::Error::Crypto(source) => Error::Crypto(source),
     }
 }
 
