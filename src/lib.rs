@@ -65,6 +65,8 @@ pub mod pac;
 pub mod service;
 #[cfg(feature = "spnego")]
 pub mod spnego;
+#[cfg(feature = "messages")]
+pub mod ticket;
 
 #[cfg(feature = "messages")]
 pub use client::Principal;
@@ -146,4 +148,9 @@ pub enum Error {
     #[cfg(feature = "spnego")]
     #[error("SPNEGO error: {0}")]
     Spnego(#[from] spnego::Error),
+
+    /// Ticket message processing failed.
+    #[cfg(feature = "messages")]
+    #[error("Ticket error: {0}")]
+    Ticket(#[from] ticket::Error),
 }
