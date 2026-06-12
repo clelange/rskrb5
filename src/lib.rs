@@ -51,6 +51,8 @@ pub mod http;
 pub mod kadmin;
 pub mod keytab;
 #[cfg(feature = "messages")]
+pub mod krb_cred;
+#[cfg(feature = "messages")]
 pub mod messages;
 pub mod pac;
 #[cfg(feature = "messages")]
@@ -108,6 +110,11 @@ pub enum Error {
     #[cfg(feature = "messages")]
     #[error("kadmin error: {0}")]
     Kadmin(#[from] kadmin::Error),
+
+    /// KRB-CRED processing failed.
+    #[cfg(feature = "messages")]
+    #[error("KRB-CRED error: {0}")]
+    KrbCred(#[from] krb_cred::Error),
 
     /// AP-REQ service validation failed.
     #[cfg(feature = "messages")]
