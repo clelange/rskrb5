@@ -2,7 +2,9 @@
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use rskrb5::messages::{EncryptedData, Error, KrbErrorInfo, PaForUser, decode_der, encode_der};
+use rskrb5::messages::{
+    EncryptedData, Error, KrbErrorInfo, PaForUser, PaPacOptions, decode_der, encode_der,
+};
 
 const ENCRYPTED_DATA: &str =
     "3023A003020100A103020105A21704156B726241534E2E312074657374206D657373616765";
@@ -28,6 +30,7 @@ const PA_FOR_USER: &str = concat!(
     "415448454E412E4D49542E454455A20F300DA003020101A106040431323334A30A1B",
     "086B72623564617461",
 );
+const PA_PAC_OPTIONS_CLAIMS_AND_RBCD: &str = "3009A00703050090000000";
 const TEST_CIPHER: &[u8] = b"krbASN.1 test message";
 const TEST_TIME_SECONDS: u64 = 771_228_197;
 
@@ -145,6 +148,16 @@ fn pa_for_user_decodes_and_roundtrips_gokrb5_fixture() {
     assert_eq!(decoded.cksum.checksum.as_ref(), b"1234");
     assert_eq!(decoded.auth_package.as_bytes(), b"krb5data");
     assert_eq!(decoded.encode_der().expect("PA-FOR-USER encodes"), bytes);
+}
+
+#[test]
+fn pa_pac_options_decodes_and_roundtrips_flags() {
+    let bytes = decode_hex(PA_PAC_OPTIONS_CLAIMS_AND_RBCD);
+    let decoded = PaPacOptions::decode_der(&bytes).expect("PA-PAC-OPTIONS decodes");
+
+    assert_eq!(decoded.bits(), 0x9000_0000);
+    assert_eq!(decoded.encode_der().expect("PA-PAC-OPTIONS encodes"), bytes);
+    assert_eq!(PaPacOptions::from_bits(0x9000_0000), decoded);
 }
 
 fn decode_encrypted_data(fixture: &str) -> EncryptedData {

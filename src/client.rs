@@ -73,6 +73,9 @@ pub const PA_ETYPE_INFO2: i32 = 19;
 /// PA-REQ-ENC-PA-REP marker used by modern gokrb5-compatible AS exchanges.
 pub const PA_REQ_ENC_PA_REP: i32 = 149;
 
+/// PA-PAC-OPTIONS preauthentication type used by MS-KILE.
+pub const PA_PAC_OPTIONS: i32 = 167;
+
 /// PA-FOR-USER padata type used by S4U2Self.
 pub const PA_FOR_USER: i32 = 129;
 
@@ -104,6 +107,18 @@ pub const TGS_REP_ENCPART_SESSION_KEY_USAGE: u32 = 8;
 
 /// Key usage/message type for PA-FOR-USER checksums.
 pub const PA_FOR_USER_CHECKSUM_USAGE: u32 = 17;
+
+/// Raw PAC option mask for `claims`.
+pub const PAC_OPTION_CLAIMS: u32 = 0x8000_0000;
+
+/// Raw PAC option mask for `branch-aware`.
+pub const PAC_OPTION_BRANCH_AWARE: u32 = 0x4000_0000;
+
+/// Raw PAC option mask for `forward-to-full-DC`.
+pub const PAC_OPTION_FORWARD_TO_FULL_DC: u32 = 0x2000_0000;
+
+/// Raw PAC option mask for `resource-based constrained delegation`.
+pub const PAC_OPTION_RESOURCE_BASED_CONSTRAINED_DELEGATION: u32 = 0x1000_0000;
 
 /// Raw KDC option mask for `renewable` in RFC 4120 bit-string order.
 pub const KDC_OPTION_RENEWABLE: u32 = 0x0080_0000;
@@ -3572,6 +3587,15 @@ pub fn pa_for_user_padata_with_auth_package(
 
     Ok(rasn_kerberos::PaData {
         r#type: PA_FOR_USER,
+        value: value.encode_der()?.into(),
+    })
+}
+
+/// Build PA-PAC-OPTIONS padata from a raw PAC option bit mask.
+pub fn pa_pac_options_padata(option_bits: u32) -> Result<rasn_kerberos::PaData, Error> {
+    let value = crate::messages::PaPacOptions::from_bits(option_bits);
+    Ok(rasn_kerberos::PaData {
+        r#type: PA_PAC_OPTIONS,
         value: value.encode_der()?.into(),
     })
 }

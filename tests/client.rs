@@ -11,19 +11,20 @@ use rskrb5::client::{
     AS_REQ_PA_ENC_TIMESTAMP_USAGE, ApReqOptions, AsReqOptions, BuiltAsReq, BuiltTgsReq, Error,
     KDC_ERR_PREAUTH_REQUIRED, KDC_OPTION_CANONICALIZE, KDC_OPTION_CNAME_IN_ADDL_TKT,
     KDC_OPTION_RENEW, KDC_OPTION_RENEWABLE, KdcError, KdcTransport, PA_ENC_TIMESTAMP,
-    PA_ETYPE_INFO2, PA_FOR_USER, PA_FOR_USER_CHECKSUM_USAGE, PA_REQ_ENC_PA_REP, PA_TGS_REQ,
-    PreauthKeyInfo, Principal, TGS_REP_ENCPART_SESSION_KEY_USAGE,
-    TGS_REQ_AUTHENTICATOR_CHECKSUM_USAGE, TGS_REQ_AUTHENTICATOR_USAGE, TgsReqOptions,
-    build_ap_req_with_confounder, build_kpasswd_request, build_kpasswd_request_with_confounders,
-    build_preauthenticated_as_req, build_s4u2proxy_req_with_confounder,
-    build_s4u2self_req_with_confounder, build_tgs_req_for_realm_with_confounder,
-    build_tgs_req_with_confounder, build_tgt_as_req, build_tgt_renewal_req_with_confounder,
-    build_ticket_renewal_req_with_confounder, default_password_salt, derive_password_reply_key,
-    exchange_as_req, exchange_tgs_req, login_as_service_with_keytab,
-    login_as_service_with_password, login_tgt_with_keytab, login_tgt_with_password,
-    pa_enc_timestamp_with_confounder, pa_for_user_padata, process_as_rep, process_kdc_error,
-    process_tgs_rep, process_tgs_rep_with_referral, renew_tgt, renew_ticket, s4u_byte_array,
-    s4u2proxy, s4u2self, select_preauth_key_info, verify_kpasswd_ap_rep,
+    PA_ETYPE_INFO2, PA_FOR_USER, PA_FOR_USER_CHECKSUM_USAGE, PA_PAC_OPTIONS, PA_REQ_ENC_PA_REP,
+    PA_TGS_REQ, PAC_OPTION_RESOURCE_BASED_CONSTRAINED_DELEGATION, PreauthKeyInfo, Principal,
+    TGS_REP_ENCPART_SESSION_KEY_USAGE, TGS_REQ_AUTHENTICATOR_CHECKSUM_USAGE,
+    TGS_REQ_AUTHENTICATOR_USAGE, TgsReqOptions, build_ap_req_with_confounder,
+    build_kpasswd_request, build_kpasswd_request_with_confounders, build_preauthenticated_as_req,
+    build_s4u2proxy_req_with_confounder, build_s4u2self_req_with_confounder,
+    build_tgs_req_for_realm_with_confounder, build_tgs_req_with_confounder, build_tgt_as_req,
+    build_tgt_renewal_req_with_confounder, build_ticket_renewal_req_with_confounder,
+    default_password_salt, derive_password_reply_key, exchange_as_req, exchange_tgs_req,
+    login_as_service_with_keytab, login_as_service_with_password, login_tgt_with_keytab,
+    login_tgt_with_password, pa_enc_timestamp_with_confounder, pa_for_user_padata,
+    pa_pac_options_padata, process_as_rep, process_kdc_error, process_tgs_rep,
+    process_tgs_rep_with_referral, renew_tgt, renew_ticket, s4u_byte_array, s4u2proxy, s4u2self,
+    select_preauth_key_info, verify_kpasswd_ap_rep,
 };
 #[cfg(all(feature = "tokio", feature = "spnego"))]
 use rskrb5::client::{BlockingNegotiateClient, NegotiateClient};
@@ -686,6 +687,42 @@ fn builds_s4u2proxy_tgs_req_with_evidence_ticket() {
     let padata = decoded.0.padata.as_ref().expect("S4U2Proxy padata");
     assert_eq!(padata.len(), 1);
     assert_eq!(padata[0].r#type, PA_TGS_REQ);
+}
+
+#[test]
+fn builds_s4u2proxy_tgs_req_with_pac_options() {
+    let user_tgt = sample_tgt_session();
+    let evidence_ticket = sample_service_ticket_session(&user_tgt);
+    let mut service_tgt = sample_tgt_session();
+    service_tgt.client = sample_service_principal();
+    let target_service = Principal::new("TEST.GOKRB5", 2, ["HTTP", "backend.test.gokrb5"]);
+    let pac_options = pa_pac_options_padata(PAC_OPTION_RESOURCE_BASED_CONSTRAINED_DELEGATION)
+        .expect("PA-PAC-OPTIONS padata builds");
+
+    let request = build_s4u2proxy_req_with_confounder(
+        &service_tgt,
+        &evidence_ticket,
+        target_service,
+        TgsReqOptions::new(timestamp(1_893_553_450), 0x8877_6655)
+            .with_etypes(vec![18])
+            .with_padata(vec![pac_options]),
+        timestamp(1_893_553_451),
+        654_321,
+        &decode_hex(TGS_REQ_CONFOUNDER),
+    )
+    .expect("S4U2Proxy TGS-REQ builds");
+    let decoded: rasn_kerberos::TgsReq = rasn::der::decode(&request.der).expect("TGS-REQ decodes");
+    let padata = decoded.0.padata.as_ref().expect("S4U2Proxy padata");
+
+    assert_eq!(padata.len(), 2);
+    assert_eq!(padata[0].r#type, PA_TGS_REQ);
+    assert_eq!(padata[1].r#type, PA_PAC_OPTIONS);
+    let pac_options = rskrb5::messages::PaPacOptions::decode_der(padata[1].value.as_ref())
+        .expect("PA-PAC-OPTIONS decodes");
+    assert_eq!(
+        pac_options.bits(),
+        PAC_OPTION_RESOURCE_BASED_CONSTRAINED_DELEGATION
+    );
 }
 
 #[test]

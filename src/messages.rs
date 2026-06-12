@@ -42,6 +42,14 @@ pub struct PaForUser {
     pub auth_package: rasn_kerberos::KerberosString,
 }
 
+/// MS-KILE `PA-PAC-OPTIONS` padata value.
+#[derive(AsnType, Clone, Debug, Decode, Encode, Eq, PartialEq)]
+pub struct PaPacOptions {
+    /// PAC option flags.
+    #[rasn(tag(explicit(0)))]
+    pub flags: rasn_kerberos::KerberosFlags,
+}
+
 impl PaForUser {
     /// Decode a DER-encoded `PA-FOR-USER` value.
     pub fn decode_der(bytes: &[u8]) -> Result<Self, Error> {
@@ -51,6 +59,36 @@ impl PaForUser {
     /// Encode the value as DER.
     pub fn encode_der(&self) -> Result<Vec<u8>, Error> {
         encode_der("PA-FOR-USER", self)
+    }
+}
+
+impl PaPacOptions {
+    /// Build PAC options from a raw KerberosFlags bit mask.
+    pub fn from_bits(bits: u32) -> Self {
+        Self {
+            flags: rasn_kerberos::KerberosFlags::from_slice(&bits.to_be_bytes()),
+        }
+    }
+
+    /// Return the first 32 PAC option bits as a raw bit mask.
+    pub fn bits(&self) -> u32 {
+        let raw = self.flags.as_raw_slice();
+        u32::from_be_bytes([
+            raw.first().copied().unwrap_or_default(),
+            raw.get(1).copied().unwrap_or_default(),
+            raw.get(2).copied().unwrap_or_default(),
+            raw.get(3).copied().unwrap_or_default(),
+        ])
+    }
+
+    /// Decode a DER-encoded `PA-PAC-OPTIONS` value.
+    pub fn decode_der(bytes: &[u8]) -> Result<Self, Error> {
+        decode_der("PA-PAC-OPTIONS", bytes)
+    }
+
+    /// Encode the value as DER.
+    pub fn encode_der(&self) -> Result<Vec<u8>, Error> {
+        encode_der("PA-PAC-OPTIONS", self)
     }
 }
 
