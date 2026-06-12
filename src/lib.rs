@@ -39,6 +39,8 @@ pub mod evaluation;
 
 #[cfg(feature = "messages")]
 pub mod ap_rep;
+#[cfg(feature = "messages")]
+pub mod ap_req;
 pub mod ccache;
 #[cfg(feature = "messages")]
 pub mod client;
@@ -109,6 +111,11 @@ pub enum Error {
     #[cfg(feature = "messages")]
     #[error("client error: {0}")]
     Client(#[from] client::Error),
+
+    /// AP-REQ message processing failed.
+    #[cfg(feature = "messages")]
+    #[error("AP-REQ error: {0}")]
+    ApReq(#[from] ap_req::Error),
 
     /// AP-REP message processing failed.
     #[cfg(feature = "messages")]
