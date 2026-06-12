@@ -53,6 +53,8 @@ pub mod keytab;
 #[cfg(feature = "messages")]
 pub mod krb_cred;
 #[cfg(feature = "messages")]
+pub mod krb_safe;
+#[cfg(feature = "messages")]
 pub mod messages;
 pub mod pac;
 #[cfg(feature = "messages")]
@@ -115,6 +117,11 @@ pub enum Error {
     #[cfg(feature = "messages")]
     #[error("KRB-CRED error: {0}")]
     KrbCred(#[from] krb_cred::Error),
+
+    /// KRB-SAFE processing failed.
+    #[cfg(feature = "messages")]
+    #[error("KRB-SAFE error: {0}")]
+    KrbSafe(#[from] krb_safe::Error),
 
     /// AP-REQ service validation failed.
     #[cfg(feature = "messages")]
