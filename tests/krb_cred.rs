@@ -2,13 +2,16 @@
 
 use pretty_assertions::assert_eq;
 use rasn::types::Integer;
+use rskrb5::ccache;
 use rskrb5::crypto::KerberosEtype;
 use rskrb5::keytab::EncryptionKey;
 use rskrb5::krb_cred::{
-    Error, KRB_CRED_ENCPART_USAGE, KRB_CRED_MSG_TYPE,
+    Error, KRB_CRED_ENCPART_USAGE, KRB_CRED_MSG_TYPE, ccache_credentials_to_krb_cred_parts,
     decode_decrypt_krb_cred_to_ccache_credentials, decode_enc_krb_cred_part, decode_krb_cred,
     decrypt_krb_cred_enc_part, decrypt_krb_cred_to_ccache_credentials,
-    decrypted_krb_cred_to_ccache_credentials,
+    decrypted_krb_cred_to_ccache_credentials, encode_encrypt_ccache_credentials_to_krb_cred,
+    encode_encrypt_ccache_credentials_to_krb_cred_with_confounder,
+    encrypt_ccache_credentials_to_krb_cred_with_confounder,
 };
 
 const REPLY_KEY: &str = "9cad00bbc72d703258e911dc18e6d5487cf737bf67fd111f0c2463ad6033bf51";
@@ -168,6 +171,121 @@ fn decodes_decrypts_krb_cred_to_ccache_credentials() {
 }
 
 #[test]
+fn builds_krb_cred_parts_from_ccache_credentials() {
+    let credentials = fixture_ccache_credentials();
+
+    let (tickets, enc_part) =
+        ccache_credentials_to_krb_cred_parts(&credentials).expect("KRB-CRED parts build");
+
+    assert_eq!(tickets.len(), 2);
+    assert_eq!(
+        tickets[0],
+        decode_krb_cred(&decode_hex(KRB_CRED))
+            .expect("KRB-CRED decodes")
+            .tickets[0]
+    );
+    assert_eq!(enc_part.ticket_info.len(), 2);
+    assert_eq!(enc_part.ticket_info[0].key.r#type, 1);
+    assert_eq!(enc_part.ticket_info[0].key.value.as_ref(), b"12345678");
+    assert_eq!(
+        enc_part.ticket_info[0]
+            .prealm
+            .as_ref()
+            .expect("client realm")
+            .as_bytes(),
+        b"ATHENA.MIT.EDU"
+    );
+}
+
+#[test]
+fn encrypts_ccache_credentials_to_krb_cred_roundtrip() {
+    let credentials = fixture_ccache_credentials();
+    let key = reply_key();
+
+    let krb_cred = encrypt_ccache_credentials_to_krb_cred_with_confounder(
+        &credentials,
+        &key,
+        &decode_hex(CONFOUNDER),
+    )
+    .expect("KRB-CRED exports");
+    let round_tripped =
+        decrypt_krb_cred_to_ccache_credentials(&krb_cred, &key).expect("exported KRB-CRED imports");
+
+    assert_eq!(round_tripped, credentials);
+}
+
+#[test]
+fn exports_zero_ccache_times_without_start_time_fallback() {
+    let mut credentials = fixture_ccache_credentials();
+    credentials[0].times.start_time = 0;
+    credentials[0].times.renew_till = 0;
+    let key = reply_key();
+
+    let krb_cred = encrypt_ccache_credentials_to_krb_cred_with_confounder(
+        &credentials,
+        &key,
+        &decode_hex(CONFOUNDER),
+    )
+    .expect("KRB-CRED exports");
+    let round_tripped =
+        decrypt_krb_cred_to_ccache_credentials(&krb_cred, &key).expect("exported KRB-CRED imports");
+
+    assert_eq!(round_tripped[0].times, credentials[0].times);
+}
+
+#[test]
+fn encodes_ccache_credentials_to_krb_cred_bytes() {
+    let credentials = fixture_ccache_credentials();
+    let key = reply_key();
+
+    let bytes = encode_encrypt_ccache_credentials_to_krb_cred_with_confounder(
+        &credentials,
+        &key,
+        &decode_hex(CONFOUNDER),
+    )
+    .expect("DER KRB-CRED exports");
+    let round_tripped =
+        decode_decrypt_krb_cred_to_ccache_credentials(&bytes, &key).expect("DER KRB-CRED imports");
+
+    assert_eq!(round_tripped, credentials);
+}
+
+#[test]
+fn encodes_ccache_credentials_to_krb_cred_with_random_confounder() {
+    let credentials = fixture_ccache_credentials();
+    let key = reply_key();
+
+    let bytes = encode_encrypt_ccache_credentials_to_krb_cred(&credentials, &key)
+        .expect("random-confounder DER KRB-CRED exports");
+    let round_tripped = decode_decrypt_krb_cred_to_ccache_credentials(&bytes, &key)
+        .expect("random-confounder DER KRB-CRED imports");
+
+    assert_eq!(round_tripped, credentials);
+}
+
+#[test]
+fn rejects_ccache_credentials_with_unrepresentable_fields() {
+    let mut credentials = fixture_ccache_credentials();
+    credentials[0].auth_data = vec![ccache::AuthorizationDataEntry {
+        ad_type: 1,
+        data: vec![2, 3],
+    }];
+
+    let error = ccache_credentials_to_krb_cred_parts(&credentials)
+        .expect_err("ccache auth-data is rejected");
+
+    assert!(matches!(error, Error::UnsupportedCredentialAuthData));
+
+    let mut credentials = fixture_ccache_credentials();
+    credentials[0].second_ticket = vec![0x61, 0x03, 0x02, 0x01, 0x05];
+
+    let error = ccache_credentials_to_krb_cred_parts(&credentials)
+        .expect_err("ccache second ticket is rejected");
+
+    assert!(matches!(error, Error::UnsupportedSecondTicket));
+}
+
+#[test]
 fn rejects_krb_cred_ticket_info_count_mismatch() {
     let krb_cred = decode_krb_cred(&decode_hex(KRB_CRED)).expect("KRB-CRED decodes");
     let mut enc_part =
@@ -184,6 +302,14 @@ fn rejects_krb_cred_ticket_info_count_mismatch() {
             info_count: 1,
         }
     ));
+}
+
+fn fixture_ccache_credentials() -> Vec<ccache::Credential> {
+    let krb_cred = decode_krb_cred(&decode_hex(KRB_CRED)).expect("KRB-CRED decodes");
+    let enc_part =
+        decode_enc_krb_cred_part(&decode_hex(ENC_KRB_CRED_PART)).expect("EncKrbCredPart decodes");
+    decrypted_krb_cred_to_ccache_credentials(&krb_cred, &enc_part)
+        .expect("KRB-CRED converts to ccache credentials")
 }
 
 #[test]

@@ -66,6 +66,100 @@ pub fn decode_decrypt_krb_cred_to_ccache_credentials(
     decrypt_krb_cred_to_ccache_credentials(&krb_cred, key)
 }
 
+/// Convert ccache credentials into KRB-CRED tickets and a decrypted encrypted part.
+pub fn ccache_credentials_to_krb_cred_parts(
+    credentials: &[ccache::Credential],
+) -> Result<(Vec<rasn_kerberos::Ticket>, rasn_kerberos::EncKrbCredPart), Error> {
+    let mut tickets = Vec::with_capacity(credentials.len());
+    let mut ticket_info = Vec::with_capacity(credentials.len());
+
+    for credential in credentials {
+        if !credential.auth_data.is_empty() {
+            return Err(Error::UnsupportedCredentialAuthData);
+        }
+        if !credential.second_ticket.is_empty() {
+            return Err(Error::UnsupportedSecondTicket);
+        }
+
+        let ticket = decode::<rasn_kerberos::Ticket>("Ticket", &credential.ticket)?;
+        validate_integer("tkt-vno", &ticket.tkt_vno, KRB5_PVNO)?;
+        tickets.push(ticket);
+        ticket_info.push(ccache_credential_to_krb_cred_info(credential)?);
+    }
+
+    Ok((
+        tickets,
+        rasn_kerberos::EncKrbCredPart {
+            ticket_info,
+            nonce: None,
+            timestamp: None,
+            usec: None,
+            sender_address: None,
+            recipient_address: None,
+        },
+    ))
+}
+
+/// Encrypt ccache credentials into a KRB-CRED using a random confounder.
+pub fn encrypt_ccache_credentials_to_krb_cred(
+    credentials: &[ccache::Credential],
+    key: &EncryptionKey,
+) -> Result<rasn_kerberos::KrbCred, Error> {
+    let etype =
+        KerberosEtype::from_etype_id(key.etype).ok_or(Error::UnsupportedEtype(key.etype))?;
+    let mut confounder = vec![0; etype.confounder_len()];
+    getrandom::fill(&mut confounder)?;
+    encrypt_ccache_credentials_to_krb_cred_with_confounder(credentials, key, &confounder)
+}
+
+/// Encrypt ccache credentials into a KRB-CRED using an explicit confounder.
+pub fn encrypt_ccache_credentials_to_krb_cred_with_confounder(
+    credentials: &[ccache::Credential],
+    key: &EncryptionKey,
+    confounder: &[u8],
+) -> Result<rasn_kerberos::KrbCred, Error> {
+    let (tickets, enc_part) = ccache_credentials_to_krb_cred_parts(credentials)?;
+    let plaintext = encode("EncKrbCredPart", &enc_part)?;
+    let etype =
+        KerberosEtype::from_etype_id(key.etype).ok_or(Error::UnsupportedEtype(key.etype))?;
+    let cipher = etype.encrypt_message_with_confounder(
+        &key.value,
+        &plaintext,
+        KRB_CRED_ENCPART_USAGE,
+        confounder,
+    )?;
+    Ok(rasn_kerberos::KrbCred {
+        pvno: rasn::types::Integer::from(KRB5_PVNO),
+        msg_type: rasn::types::Integer::from(KRB_CRED_MSG_TYPE),
+        tickets,
+        enc_part: rasn_kerberos::EncryptedData {
+            etype: key.etype,
+            kvno: None,
+            cipher: cipher.into(),
+        },
+    })
+}
+
+/// Encode ccache credentials as a DER KRB-CRED using a random confounder.
+pub fn encode_encrypt_ccache_credentials_to_krb_cred(
+    credentials: &[ccache::Credential],
+    key: &EncryptionKey,
+) -> Result<Vec<u8>, Error> {
+    let krb_cred = encrypt_ccache_credentials_to_krb_cred(credentials, key)?;
+    encode("KRB-CRED", &krb_cred)
+}
+
+/// Encode ccache credentials as a DER KRB-CRED using an explicit confounder.
+pub fn encode_encrypt_ccache_credentials_to_krb_cred_with_confounder(
+    credentials: &[ccache::Credential],
+    key: &EncryptionKey,
+    confounder: &[u8],
+) -> Result<Vec<u8>, Error> {
+    let krb_cred =
+        encrypt_ccache_credentials_to_krb_cred_with_confounder(credentials, key, confounder)?;
+    encode("KRB-CRED", &krb_cred)
+}
+
 /// Convert decrypted KRB-CRED contents into ccache credentials.
 pub fn decrypted_krb_cred_to_ccache_credentials(
     krb_cred: &rasn_kerberos::KrbCred,
@@ -84,6 +178,35 @@ pub fn decrypted_krb_cred_to_ccache_credentials(
         .zip(enc_part.ticket_info.iter())
         .map(|(ticket, info)| krb_cred_info_to_ccache_credential(ticket, info))
         .collect()
+}
+
+fn ccache_credential_to_krb_cred_info(
+    credential: &ccache::Credential,
+) -> Result<rasn_kerberos::KrbCredInfo, Error> {
+    Ok(rasn_kerberos::KrbCredInfo {
+        key: rasn_kerberos::EncryptionKey {
+            r#type: credential.key.etype,
+            value: credential.key.value.clone().into(),
+        },
+        prealm: Some(kerberos_string(&credential.client.realm)?),
+        pname: Some(principal_name_from_ccache(&credential.client)?),
+        flags: Some(rasn_kerberos::TicketFlags(
+            rasn_kerberos::KerberosFlags::from_slice(&credential.ticket_flags),
+        )),
+        auth_time: Some(kerberos_time_from_u32(credential.times.auth_time)?),
+        start_time: Some(kerberos_time_from_u32(credential.times.start_time)?),
+        end_time: Some(kerberos_time_from_u32(credential.times.end_time)?),
+        renew_till: Some(kerberos_time_from_u32(credential.times.renew_till)?),
+        srealm: Some(kerberos_string(&credential.server.realm)?),
+        sname: Some(principal_name_from_ccache(&credential.server)?),
+        caddr: (!credential.addresses.is_empty()).then(|| {
+            credential
+                .addresses
+                .iter()
+                .map(host_address_from_ccache)
+                .collect()
+        }),
+    })
 }
 
 fn krb_cred_info_to_ccache_credential(
@@ -139,6 +262,26 @@ fn krb_cred_info_to_ccache_credential(
     })
 }
 
+fn principal_name_from_ccache(
+    principal: &ccache::Principal,
+) -> Result<rasn_kerberos::PrincipalName, Error> {
+    Ok(rasn_kerberos::PrincipalName {
+        r#type: principal.name_type,
+        string: principal
+            .components
+            .iter()
+            .map(|component| kerberos_string(component))
+            .collect::<Result<Vec<_>, _>>()?,
+    })
+}
+
+fn host_address_from_ccache(address: &ccache::HostAddress) -> rasn_kerberos::HostAddress {
+    rasn_kerberos::HostAddress {
+        addr_type: address.addr_type,
+        address: address.address.clone().into(),
+    }
+}
+
 fn required_principal(
     field: &'static str,
     realm: Option<&rasn_kerberos::Realm>,
@@ -175,8 +318,20 @@ fn principal_from_parts(
     ))
 }
 
+fn kerberos_string(value: &str) -> Result<rasn_kerberos::KerberosString, Error> {
+    rasn_kerberos::KerberosString::from_bytes(value.as_bytes())
+        .map_err(|source| Error::InvalidKerberosString(source.to_string()))
+}
+
 fn kerberos_string_to_string(value: &rasn_kerberos::KerberosString) -> Result<String, Error> {
     Ok(str::from_utf8(value.as_bytes())?.to_owned())
+}
+
+fn kerberos_time_from_u32(seconds: u32) -> Result<rasn_kerberos::KerberosTime, Error> {
+    let utc = chrono::DateTime::<chrono::Utc>::from_timestamp(seconds.into(), 0)
+        .ok_or(Error::TimeOutOfRange)?;
+    let offset = chrono::FixedOffset::east_opt(0).ok_or(Error::TimeOutOfRange)?;
+    Ok(rasn_kerberos::KerberosTime(utc.with_timezone(&offset)))
 }
 
 fn optional_kerberos_time_to_u32(time: Option<&rasn_kerberos::KerberosTime>) -> Result<u32, Error> {
@@ -259,6 +414,10 @@ pub enum Error {
     #[error("invalid Kerberos string: {0}")]
     InvalidString(#[from] std::str::Utf8Error),
 
+    /// A string could not be encoded as a Kerberos GeneralString.
+    #[error("invalid Kerberos string: {0}")]
+    InvalidKerberosString(String),
+
     /// Message field did not contain the expected value.
     #[error("invalid {field}: expected {expected}, got {actual}")]
     InvalidMessage {
@@ -301,6 +460,18 @@ pub enum Error {
     /// A Kerberos time could not fit in a ccache timestamp.
     #[error("Kerberos time cannot be represented as a ccache timestamp")]
     TimeOutOfRange,
+
+    /// Ccache authorization data cannot be represented in KRB-CRED info.
+    #[error("ccache credential authorization data cannot be represented in KRB-CRED")]
+    UnsupportedCredentialAuthData,
+
+    /// Ccache second-ticket data cannot be represented in KRB-CRED info.
+    #[error("ccache credential second ticket cannot be represented in KRB-CRED")]
+    UnsupportedSecondTicket,
+
+    /// Random byte generation failed.
+    #[error("random byte generation failed: {0}")]
+    Random(#[from] getrandom::Error),
 
     /// Crypto operation failed.
     #[error("crypto error: {0}")]
