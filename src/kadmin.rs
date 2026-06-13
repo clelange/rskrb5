@@ -1,19 +1,17 @@
 //! kadmin protocol data wrappers used by gokrb5 compatibility tests.
 
-use crate::crypto::KerberosEtype;
 use crate::keytab::EncryptionKey;
 use rasn::prelude::*;
+
+pub use crate::krb_priv::{
+    EncKrbPrivPartOptions, KRB_PRIV_ENCPART_USAGE, KRB_PRIV_MSG_TYPE, KRB_PRIV_PVNO, host_address,
+    ipv4_host_address, ipv6_host_address,
+};
 
 /// Password-change request protocol version (`0xff80`).
 pub const CHANGE_PASSWORD_REQUEST_VERSION: u16 = 0xff80;
 /// Password-change reply protocol version.
 pub const CHANGE_PASSWORD_REPLY_VERSION: u16 = 1;
-/// Key usage for encrypted KRB-PRIV payloads.
-pub const KRB_PRIV_ENCPART_USAGE: u32 = 13;
-/// Kerberos protocol version used by KRB-PRIV.
-pub const KRB_PRIV_PVNO: i32 = 5;
-/// KRB-PRIV message type.
-pub const KRB_PRIV_MSG_TYPE: i32 = 21;
 /// Password change succeeded.
 pub const KPASSWD_SUCCESS: u16 = 0;
 /// Request was malformed.
@@ -85,84 +83,12 @@ impl ChangePasswdData {
     }
 }
 
-/// Options for constructing an encrypted KRB-PRIV payload.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct EncKrbPrivPartOptions {
-    /// Optional sender timestamp.
-    pub timestamp: Option<rasn_kerberos::KerberosTime>,
-    /// Optional sender timestamp microseconds.
-    pub usec: Option<rasn_kerberos::Microseconds>,
-    /// Optional sender sequence number.
-    pub seq_number: Option<u32>,
-    /// Sender host address.
-    pub sender_address: rasn_kerberos::HostAddress,
-    /// Optional recipient host address.
-    pub recipient_address: Option<rasn_kerberos::HostAddress>,
-}
-
-impl EncKrbPrivPartOptions {
-    /// Construct options with the required sender address.
-    pub fn new(sender_address: rasn_kerberos::HostAddress) -> Self {
-        Self {
-            timestamp: None,
-            usec: None,
-            seq_number: None,
-            sender_address,
-            recipient_address: None,
-        }
-    }
-
-    /// Set the sender timestamp and microseconds.
-    pub fn with_timestamp(mut self, timestamp: rasn_kerberos::KerberosTime, usec: u32) -> Self {
-        self.timestamp = Some(timestamp);
-        self.usec = Some(Integer::from(usec));
-        self
-    }
-
-    /// Set the sender sequence number.
-    pub fn with_sequence_number(mut self, seq_number: u32) -> Self {
-        self.seq_number = Some(seq_number);
-        self
-    }
-
-    /// Set the optional recipient address.
-    pub fn with_recipient_address(mut self, recipient_address: rasn_kerberos::HostAddress) -> Self {
-        self.recipient_address = Some(recipient_address);
-        self
-    }
-}
-
-/// Construct a Kerberos host address.
-pub fn host_address(addr_type: i32, address: impl AsRef<[u8]>) -> rasn_kerberos::HostAddress {
-    rasn_kerberos::HostAddress {
-        addr_type,
-        address: address.as_ref().to_vec().into(),
-    }
-}
-
-/// Construct an IPv4 Kerberos host address.
-pub fn ipv4_host_address(octets: [u8; 4]) -> rasn_kerberos::HostAddress {
-    host_address(rasn_kerberos::HostAddress::IPV4, octets)
-}
-
-/// Construct an IPv6 Kerberos host address.
-pub fn ipv6_host_address(octets: [u8; 16]) -> rasn_kerberos::HostAddress {
-    host_address(rasn_kerberos::HostAddress::IPV6, octets)
-}
-
 /// Build an unencrypted KRB-PRIV part around application data.
 pub fn build_enc_krb_priv_part(
     user_data: impl AsRef<[u8]>,
     options: EncKrbPrivPartOptions,
 ) -> rasn_kerberos::EncKrbPrivPart {
-    rasn_kerberos::EncKrbPrivPart {
-        user_data: user_data.as_ref().to_vec().into(),
-        timestamp: options.timestamp,
-        usec: options.usec,
-        seq_number: options.seq_number,
-        sender_address: options.sender_address,
-        recipient_address: options.recipient_address,
-    }
+    crate::krb_priv::build_enc_krb_priv_part(user_data, options)
 }
 
 /// Build a KRB-PRIV message using a caller-supplied confounder.
@@ -172,43 +98,23 @@ pub fn build_krb_priv_with_confounder(
     key: &EncryptionKey,
     confounder: &[u8],
 ) -> Result<rasn_kerberos::KrbPriv, Error> {
-    let enc_part = build_enc_krb_priv_part(user_data, options);
-    let plaintext = encode("EncKrbPrivPart", &enc_part)?;
-    let etype =
-        KerberosEtype::from_etype_id(key.etype).ok_or(Error::UnsupportedEtype(key.etype))?;
-    let cipher = etype
-        .encrypt_message_with_confounder(&key.value, &plaintext, KRB_PRIV_ENCPART_USAGE, confounder)
-        .map_err(|source| Error::Crypto {
-            message: source.to_string(),
-        })?;
-
-    Ok(rasn_kerberos::KrbPriv {
-        pvno: Integer::from(KRB_PRIV_PVNO),
-        msg_type: Integer::from(KRB_PRIV_MSG_TYPE),
-        enc_part: rasn_kerberos::EncryptedData {
-            etype: key.etype,
-            kvno: None,
-            cipher: cipher.into(),
-        },
-    })
+    crate::krb_priv::build_krb_priv_with_confounder(user_data, options, key, None, confounder)
+        .map_err(krb_priv_error)
 }
 
 /// Decode and validate a DER-encoded KRB-PRIV message.
 pub fn decode_krb_priv(bytes: &[u8]) -> Result<rasn_kerberos::KrbPriv, Error> {
-    let krb_priv = decode::<rasn_kerberos::KrbPriv>("KRB-PRIV", bytes)?;
-    validate_integer("pvno", &krb_priv.pvno, KRB_PRIV_PVNO)?;
-    validate_integer("msg-type", &krb_priv.msg_type, KRB_PRIV_MSG_TYPE)?;
-    Ok(krb_priv)
+    crate::krb_priv::decode_krb_priv(bytes).map_err(krb_priv_error)
 }
 
 /// Encode a KRB-PRIV message as DER.
 pub fn encode_krb_priv(krb_priv: &rasn_kerberos::KrbPriv) -> Result<Vec<u8>, Error> {
-    encode("KRB-PRIV", krb_priv)
+    crate::krb_priv::encode_krb_priv(krb_priv).map_err(krb_priv_error)
 }
 
 /// Decode a DER-encoded EncKrbPrivPart.
 pub fn decode_enc_krb_priv_part(bytes: &[u8]) -> Result<rasn_kerberos::EncKrbPrivPart, Error> {
-    decode("EncKrbPrivPart", bytes)
+    crate::krb_priv::decode_enc_krb_priv_part(bytes).map_err(krb_priv_error)
 }
 
 /// Decrypt and decode a KRB-PRIV encrypted part.
@@ -216,25 +122,7 @@ pub fn decrypt_krb_priv_enc_part(
     krb_priv: &rasn_kerberos::KrbPriv,
     key: &EncryptionKey,
 ) -> Result<rasn_kerberos::EncKrbPrivPart, Error> {
-    if krb_priv.enc_part.etype != key.etype {
-        return Err(Error::KeyEtypeMismatch {
-            key_etype: key.etype,
-            encrypted_data_etype: krb_priv.enc_part.etype,
-        });
-    }
-
-    let etype = KerberosEtype::from_etype_id(krb_priv.enc_part.etype)
-        .ok_or(Error::UnsupportedEtype(krb_priv.enc_part.etype))?;
-    let plaintext = etype
-        .decrypt_message(
-            &key.value,
-            krb_priv.enc_part.cipher.as_ref(),
-            KRB_PRIV_ENCPART_USAGE,
-        )
-        .map_err(|source| Error::Crypto {
-            message: source.to_string(),
-        })?;
-    decode_enc_krb_priv_part(crate::der::trim_zero_padded_der(&plaintext))
+    crate::krb_priv::decrypt_krb_priv_enc_part(krb_priv, key).map_err(krb_priv_error)
 }
 
 /// Password-change request frame containing AP-REQ and KRB-PRIV messages.
@@ -264,14 +152,14 @@ impl Request {
 
         let ap_req =
             crate::ap_req::decode_ap_req(&frame.body[..ap_req_end]).map_err(ap_req_error)?;
-        let krb_priv = decode::<rasn_kerberos::KrbPriv>("KRB-PRIV", &frame.body[ap_req_end..])?;
+        let krb_priv = decode_krb_priv(&frame.body[ap_req_end..])?;
         Ok(Self { ap_req, krb_priv })
     }
 
     /// Encode a password-change request frame.
     pub fn encode(&self) -> Result<Vec<u8>, Error> {
         let ap_req = crate::ap_req::encode_ap_req(&self.ap_req).map_err(ap_req_error)?;
-        let krb_priv = encode("KRB-PRIV", &self.krb_priv)?;
+        let krb_priv = encode_krb_priv(&self.krb_priv)?;
         if ap_req.len() > usize::from(u16::MAX) {
             return Err(Error::ApReqTooLarge {
                 actual: ap_req.len(),
@@ -350,7 +238,7 @@ impl Reply {
         }
 
         let ap_rep = decode::<rasn_kerberos::ApRep>("AP-REP", &frame.body[..ap_rep_end])?;
-        let krb_priv = decode::<rasn_kerberos::KrbPriv>("KRB-PRIV", &frame.body[ap_rep_end..])?;
+        let krb_priv = decode_krb_priv(&frame.body[ap_rep_end..])?;
 
         Ok(Self {
             message_length: frame.message_length,
@@ -615,19 +503,34 @@ fn krb_error_error(error: crate::krb_error::Error) -> Error {
     }
 }
 
-fn validate_integer(
-    field: &'static str,
-    actual: &rasn::types::Integer,
-    expected: i32,
-) -> Result<(), Error> {
-    if actual != &rasn::types::Integer::from(expected) {
-        return Err(Error::InvalidKerberosMessage {
+fn krb_priv_error(error: crate::krb_priv::Error) -> Error {
+    match error {
+        crate::krb_priv::Error::Decode { target, message } => Error::Decode { target, message },
+        crate::krb_priv::Error::Encode { target, message } => Error::Encode { target, message },
+        crate::krb_priv::Error::InvalidMessage {
             field,
             expected,
-            actual: actual.to_string(),
-        });
+            actual,
+        } => Error::InvalidKerberosMessage {
+            field,
+            expected,
+            actual,
+        },
+        crate::krb_priv::Error::UnsupportedEtype(etype) => Error::UnsupportedEtype(etype),
+        crate::krb_priv::Error::KeyEtypeMismatch {
+            key_etype,
+            encrypted_data_etype,
+        } => Error::KeyEtypeMismatch {
+            key_etype,
+            encrypted_data_etype,
+        },
+        crate::krb_priv::Error::Crypto(source) => Error::Crypto {
+            message: source.to_string(),
+        },
+        crate::krb_priv::Error::Random(source) => Error::Crypto {
+            message: source.to_string(),
+        },
     }
-    Ok(())
 }
 
 fn principal_name<I, S>(
