@@ -237,7 +237,8 @@ impl Reply {
             });
         }
 
-        let ap_rep = decode::<rasn_kerberos::ApRep>("AP-REP", &frame.body[..ap_rep_end])?;
+        let ap_rep =
+            crate::ap_rep::decode_ap_rep(&frame.body[..ap_rep_end]).map_err(ap_rep_error)?;
         let krb_priv = decode_krb_priv(&frame.body[ap_rep_end..])?;
 
         Ok(Self {
@@ -478,6 +479,26 @@ fn ap_req_error(error: crate::ap_req::Error) -> Error {
         },
         other => Error::Decode {
             target: "AP-REQ",
+            message: other.to_string(),
+        },
+    }
+}
+
+fn ap_rep_error(error: crate::ap_rep::Error) -> Error {
+    match error {
+        crate::ap_rep::Error::Decode { target, message } => Error::Decode { target, message },
+        crate::ap_rep::Error::Encode { target, message } => Error::Encode { target, message },
+        crate::ap_rep::Error::InvalidMessage {
+            field,
+            expected,
+            actual,
+        } => Error::InvalidKerberosMessage {
+            field,
+            expected,
+            actual,
+        },
+        other => Error::Decode {
+            target: "AP-REP",
             message: other.to_string(),
         },
     }
