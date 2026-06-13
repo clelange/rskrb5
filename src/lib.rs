@@ -63,6 +63,8 @@ pub mod krb_cred;
 #[cfg(feature = "messages")]
 pub mod krb_error;
 #[cfg(feature = "messages")]
+pub mod krb_priv;
+#[cfg(feature = "messages")]
 pub mod krb_safe;
 #[cfg(feature = "messages")]
 pub mod messages;
@@ -149,6 +151,11 @@ pub enum Error {
     #[cfg(feature = "messages")]
     #[error("KRB-ERROR error: {0}")]
     KrbError(#[from] krb_error::Error),
+
+    /// KRB-PRIV processing failed.
+    #[cfg(feature = "messages")]
+    #[error("KRB-PRIV error: {0}")]
+    KrbPriv(#[from] krb_priv::Error),
 
     /// KRB-CRED processing failed.
     #[cfg(feature = "messages")]
