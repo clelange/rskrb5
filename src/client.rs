@@ -5354,7 +5354,7 @@ fn initial_preauth_probe_options(mut options: AsReqOptions) -> AsReqOptions {
 }
 
 fn as_rep_reply_key_info(response: &[u8]) -> Option<(i32, Option<u32>)> {
-    rasn::der::decode::<rasn_kerberos::AsRep>(response)
+    crate::kdc_rep::decode_as_rep(response)
         .ok()
         .map(|as_rep| (as_rep.0.enc_part.etype, as_rep.0.enc_part.kvno))
 }
