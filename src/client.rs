@@ -710,7 +710,8 @@ pub struct BuiltKpasswdRequest {
     pub request: crate::kadmin::Request,
     /// Encoded kpasswd request frame.
     pub der: Vec<u8>,
-    /// Authenticator subkey used to encrypt KRB-PRIV and decrypt the reply.
+    /// Authenticator subkey used to encrypt request KRB-PRIV payloads and reply KRB-PRIV payloads
+    /// when the AP-REP does not select a server subkey.
     pub reply_key: EncryptionKey,
     /// Built AP-REQ metadata.
     pub ap_req: BuiltApReq,
@@ -1947,8 +1948,12 @@ impl TokioClient {
                 &request.request,
             )
             .await?;
-        verify_kpasswd_ap_rep(&reply, &request)?;
-        let result = reply.decrypt_result(&request.reply_key)?;
+        let verified = verify_kpasswd_ap_rep(&reply, &request)?;
+        let result_key = verified
+            .as_ref()
+            .and_then(|metadata| metadata.subkey.as_ref())
+            .unwrap_or(&request.reply_key);
+        let result = reply.decrypt_result(result_key)?;
         result.ensure_success()?;
 
         if update_password_credential {
@@ -3031,7 +3036,7 @@ pub fn build_kpasswd_request(
 ///
 /// KRB-ERROR replies do not carry AP-REP and return `Ok(None)`. Successful
 /// replies must echo the AP-REQ authenticator timestamp and are encrypted with
-/// the kpasswd request subkey.
+/// the kpasswd service-ticket session key.
 pub fn verify_kpasswd_ap_rep(
     reply: &crate::kadmin::Reply,
     request: &BuiltKpasswdRequest,
@@ -3042,8 +3047,8 @@ pub fn verify_kpasswd_ap_rep(
 
     let ap_rep = reply.ap_rep.as_ref().ok_or(Error::MissingKpasswdApRep)?;
     crate::ap_rep::validate_ap_rep(ap_rep).map_err(ap_rep_error)?;
-    let enc_part =
-        crate::ap_rep::decrypt_ap_rep_enc_part(ap_rep, &request.reply_key).map_err(ap_rep_error)?;
+    let enc_part = crate::ap_rep::decrypt_ap_rep_enc_part(ap_rep, &request.ap_req.session_key)
+        .map_err(ap_rep_error)?;
     let ctime = system_time_from_kerberos_time(&enc_part.ctime)?;
     let cusec = integer_to_u32("ap-rep.cusec", &enc_part.cusec)?;
     let authenticator_time = ctime
