@@ -1445,6 +1445,8 @@ fn tokio_client_returns_cached_service_ticket_from_ccache() {
     let mut service_credential = service_ticket
         .to_ccache_credential()
         .expect("service ticket converts");
+    // MIT kvno can store host-based service tickets as NT-PRINCIPAL in ccache.
+    service_credential.server.name_type = 1;
     make_credential_current(&mut service_credential, now);
     cache.credentials_mut().push(tgt_credential);
     cache.credentials_mut().push(service_credential);

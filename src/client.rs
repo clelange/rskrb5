@@ -1519,8 +1519,12 @@ impl TokioClient {
     pub fn cached_service_ticket(&self, service: Principal) -> Option<TgsRepSession> {
         let service = self.resolve_service_principal(service);
         let key = service_cache_key(&service);
-        let ticket = self.service_tickets.get(&key)?;
-        session_valid_at(ticket, SystemTime::now()).then(|| ticket.clone())
+        let mut ticket = self.service_tickets.get(&key)?.clone();
+        if !session_valid_at(&ticket, SystemTime::now()) {
+            return None;
+        }
+        ticket.service = service;
+        Some(ticket)
     }
 
     /// Remove a cached service ticket without dropping the TGT.
@@ -1727,6 +1731,8 @@ impl TokioClient {
         if let Some(ticket) = self.service_tickets.get(&key).cloned() {
             let now = SystemTime::now();
             if session_valid_at(&ticket, now) {
+                let mut ticket = ticket;
+                ticket.service = service;
                 return Ok(ticket);
             }
             if session_renewable_at(&ticket, now)
@@ -1740,6 +1746,8 @@ impl TokioClient {
                     )
                     .await
             {
+                let mut renewed = renewed;
+                renewed.service = service;
                 self.cache_service_ticket(renewed.clone());
                 return Ok(renewed);
             }
