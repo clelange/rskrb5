@@ -8,17 +8,20 @@ use std::future::Future;
 use std::task::{Context, Poll, Waker};
 use std::time::{Duration, UNIX_EPOCH};
 
-use http_types::header::WWW_AUTHENTICATE;
-use http_types::{Request, StatusCode};
+use http_types::header::{HeaderValue, WWW_AUTHENTICATE};
+use http_types::{Request, Response, StatusCode};
 use pretty_assertions::assert_eq;
 use rskrb5::http as krb_http;
-use rskrb5::keytab::Keytab;
+use rskrb5::keytab::{EncryptionKey, Keytab};
 use rskrb5::service::ServiceValidator;
-use rskrb5::spnego::{self, AcceptedContext, Krb5MechToken, NegTokenInit, SpnegoToken};
+use rskrb5::spnego::{
+    self, AcceptedContext, InitiatorContextOptions, Krb5MechToken, NegTokenInit, SpnegoToken,
+};
 
-#[cfg(feature = "tower")]
-use http_types::Response;
-#[cfg(feature = "tower")]
+use rskrb5::client::{AsRepSession, Principal};
+#[cfg(feature = "tokio")]
+use rskrb5::client::{KdcProtocol, TokioClient};
+#[cfg(any(feature = "tokio", feature = "tower"))]
 use rskrb5::config::Config;
 #[cfg(feature = "tower")]
 use tower_layer::Layer;
@@ -53,6 +56,8 @@ const VALID_AP_REQ: &str = concat!(
     "e041c817d652e3068912e55203ec6ea5ce374a20e5b9b5ed9dfb6bdb06137b90b2db2a",
     "db192d415375581bdf9a2bfe73d19c13ba1d983bf513",
 );
+const VALID_SESSION_KEY: &str = "8845cbaccbf11cb9f467fd577ba51c70d73de6554980a05395bf319e18bdda07";
+const AP_REP_CONFOUNDER: &str = "000102030405060708090a0b0c0d0e0f";
 
 #[test]
 fn http_helpers_set_headers_and_challenge() {
@@ -113,6 +118,120 @@ fn accept_request_validates_raw_krb5_header() {
 
     assert_eq!(accepted.ap_req.client.name(), "testuser1");
     assert_eq!(accepted.ap_req.service.name(), "HTTP/host.test.gokrb5");
+}
+
+#[test]
+fn http_helpers_scan_www_authenticate_negotiate_challenges() {
+    let mut missing = Response::new(());
+    assert!(matches!(
+        krb_http::www_authenticate_negotiate_header(&missing),
+        Err(krb_http::Error::MissingWwwAuthenticate)
+    ));
+
+    missing.headers_mut().append(
+        WWW_AUTHENTICATE,
+        HeaderValue::from_static("Basic realm=\"test, local\""),
+    );
+    assert!(matches!(
+        krb_http::www_authenticate_negotiate_header(&missing),
+        Err(krb_http::Error::MissingNegotiateChallenge)
+    ));
+
+    let challenge = krb_http::challenge_response::<()>();
+    assert_eq!(
+        krb_http::www_authenticate_negotiate_header(&challenge).expect("bare challenge is found"),
+        "Negotiate"
+    );
+
+    let mut response = Response::new(());
+    response.headers_mut().append(
+        WWW_AUTHENTICATE,
+        HeaderValue::from_static("Basic realm=\"test, local\""),
+    );
+    response.headers_mut().append(
+        WWW_AUTHENTICATE,
+        HeaderValue::from_static("negotiate response-token"),
+    );
+    assert_eq!(
+        krb_http::www_authenticate_negotiate_header(&response)
+            .expect("Negotiate challenge is found"),
+        "negotiate response-token"
+    );
+}
+
+#[cfg(feature = "tokio")]
+#[test]
+fn authorize_request_context_sets_header_and_returns_context() {
+    runtime().block_on(async {
+        let mut service_ticket = service_ticket_session_from_valid_ap_req();
+        let now = std::time::SystemTime::now();
+        service_ticket.auth_time = now - Duration::from_secs(1);
+        service_ticket.start_time = now - Duration::from_secs(1);
+        service_ticket.end_time = now + Duration::from_secs(60);
+        let service = service_ticket.service.clone();
+        let mut client = TokioClient::with_password(
+            Config::new(),
+            KdcProtocol::Auto,
+            Principal::user("TEST.GOKRB5", "testuser1"),
+            b"unused".to_vec(),
+        );
+        client.cache_service_ticket(service_ticket);
+        let mut request = Request::new(());
+
+        let context = krb_http::authorize_request_context_with_options(
+            &mut client,
+            &mut request,
+            service,
+            InitiatorContextOptions::new().with_sequence_number(Some(42)),
+        )
+        .await
+        .expect("request is authorized");
+
+        assert_eq!(context.sequence_number, Some(42));
+        assert_eq!(
+            krb_http::authorization_header(&request).expect("Authorization header exists"),
+            context.header
+        );
+    });
+}
+
+#[test]
+fn verify_ap_rep_response_uses_negotiate_www_authenticate_header() {
+    let context = initiator_context();
+    let response_header = ap_rep_response_header(&context);
+    let mut response = Response::new(());
+    response.headers_mut().append(
+        WWW_AUTHENTICATE,
+        HeaderValue::from_static("Basic realm=\"test\""),
+    );
+    response.headers_mut().append(
+        WWW_AUTHENTICATE,
+        HeaderValue::from_str(&response_header).expect("AP-REP header value"),
+    );
+
+    let verified = krb_http::verify_ap_rep_response(&context, &response).expect("AP-REP verifies");
+
+    assert_eq!(verified.ctime, context.authenticator_ctime);
+    assert_eq!(verified.cusec, context.authenticator_cusec);
+    assert_eq!(verified.authenticator_time, context.authenticator_time);
+}
+
+#[test]
+fn verify_ap_rep_response_rejects_malformed_and_wrong_tokens() {
+    let context = initiator_context();
+    let mut malformed = Response::new(());
+    malformed.headers_mut().append(
+        WWW_AUTHENTICATE,
+        HeaderValue::from_static("Negotiate not-base64"),
+    );
+    assert!(krb_http::verify_ap_rep_response(&context, &malformed).is_err());
+
+    let mut wrong_mechanism = Response::new(());
+    wrong_mechanism.headers_mut().append(
+        WWW_AUTHENTICATE,
+        HeaderValue::from_str(&valid_authorization_header()).expect("SPNEGO init header value"),
+    );
+    assert!(krb_http::verify_ap_rep_response(&context, &wrong_mechanism).is_err());
 }
 
 #[cfg(feature = "tower")]
@@ -430,6 +549,47 @@ fn raw_krb5_authorization_header() -> String {
     format!("Negotiate {}", base64_encode(&ap_req_token))
 }
 
+fn initiator_context() -> spnego::InitiatorContext {
+    spnego::init_sec_context_with_confounder(
+        &service_ticket_session_from_valid_ap_req(),
+        InitiatorContextOptions::new().with_sequence_number(Some(42)),
+        timestamp(1_893_553_447),
+        123_456,
+        &decode_hex(AP_REP_CONFOUNDER),
+    )
+    .expect("client SPNEGO context builds")
+}
+
+fn ap_rep_response_header(context: &spnego::InitiatorContext) -> String {
+    let keytab = keytab();
+    let mut validator = ServiceValidator::new(&keytab).with_now(timestamp(1_893_553_447));
+    let accepted = spnego::accept_sec_context_header(&mut validator, &context.header)
+        .expect("client SPNEGO header validates");
+    accepted
+        .ap_rep_response_header_with_confounder(&decode_hex(AP_REP_CONFOUNDER), Default::default())
+        .expect("AP-REP response header builds")
+}
+
+fn service_ticket_session_from_valid_ap_req() -> AsRepSession {
+    let ap_req: rasn_kerberos::ApReq =
+        rasn::der::decode(&decode_hex(VALID_AP_REQ)).expect("AP-REQ fixture decodes");
+    AsRepSession {
+        client: Principal::user("TEST.GOKRB5", "testuser1"),
+        service: Principal::new("TEST.GOKRB5", 1, ["HTTP", "host.test.gokrb5"]),
+        session_key: EncryptionKey {
+            etype: 18,
+            value: decode_hex(VALID_SESSION_KEY),
+        },
+        ticket: rasn::der::encode(&ap_req.ticket).expect("ticket encodes"),
+        ticket_flags: [0; 4],
+        auth_time: timestamp(1_893_553_445),
+        start_time: timestamp(1_893_553_445),
+        end_time: timestamp(1_893_639_845),
+        renew_till: None,
+        key_expiration: None,
+    }
+}
+
 fn keytab() -> Keytab {
     Keytab::parse(&decode_hex(HTTP_KEYTAB)).expect("HTTP keytab parses")
 }
@@ -452,6 +612,15 @@ fn base64_encode(bytes: &[u8]) -> String {
 
 fn timestamp(seconds: u64) -> std::time::SystemTime {
     UNIX_EPOCH + Duration::from_secs(seconds)
+}
+
+#[cfg(feature = "tokio")]
+fn runtime() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .enable_time()
+        .build()
+        .expect("runtime")
 }
 
 #[cfg(feature = "tower")]

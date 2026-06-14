@@ -4,7 +4,7 @@
 //! middleware is available with the `tower` feature and validates service-side
 //! `Authorization: Negotiate ...` headers before forwarding requests.
 
-use crate::service::ServiceValidator;
+use crate::service::{ServiceValidator, VerifiedApRep};
 use crate::spnego::{self, AcceptedContext};
 use http_types::header::{AUTHORIZATION, HeaderValue, ToStrError, WWW_AUTHENTICATE};
 use http_types::{Request, Response, StatusCode};
@@ -41,6 +41,14 @@ pub enum Error {
     /// The request did not contain an Authorization header.
     #[error("missing HTTP Authorization header")]
     MissingAuthorization,
+
+    /// The response did not contain a WWW-Authenticate header.
+    #[error("missing HTTP WWW-Authenticate header")]
+    MissingWwwAuthenticate,
+
+    /// No Negotiate challenge was present in WWW-Authenticate headers.
+    #[error("missing HTTP Negotiate challenge")]
+    MissingNegotiateChallenge,
 
     /// The request or response header could not be represented as a string.
     #[error("invalid HTTP header value: {0}")]
@@ -102,8 +110,33 @@ pub async fn authorize_request<B>(
     request: &mut Request<B>,
     service: Principal,
 ) -> Result<()> {
-    let header = client.spnego_header(service).await?;
-    set_authorization_header(request, &header)
+    let _ = authorize_request_context(client, request, service).await?;
+    Ok(())
+}
+
+/// Add a SPNEGO Authorization header and return the retained initiator context.
+#[cfg(feature = "tokio")]
+pub async fn authorize_request_context<B>(
+    client: &mut TokioClient,
+    request: &mut Request<B>,
+    service: Principal,
+) -> Result<spnego::InitiatorContext> {
+    let context = client.spnego_context(service).await?;
+    set_authorization_header(request, &context.header)?;
+    Ok(context)
+}
+
+/// Add a SPNEGO Authorization header with explicit initiator options.
+#[cfg(feature = "tokio")]
+pub async fn authorize_request_context_with_options<B>(
+    client: &mut TokioClient,
+    request: &mut Request<B>,
+    service: Principal,
+    options: spnego::InitiatorContextOptions,
+) -> Result<spnego::InitiatorContext> {
+    let context = client.spnego_context_with_options(service, options).await?;
+    set_authorization_header(request, &context.header)?;
+    Ok(context)
 }
 
 /// Validate the request's Negotiate header and attach the accepted context to extensions.
@@ -114,6 +147,32 @@ pub fn accept_request<B>(
     let accepted = spnego::accept_sec_context_header(validator, authorization_header(request)?)?;
     request.extensions_mut().insert(accepted.clone());
     Ok(accepted)
+}
+
+/// Return the first Negotiate challenge from all WWW-Authenticate headers.
+pub fn www_authenticate_negotiate_header<B>(response: &Response<B>) -> Result<&str> {
+    let mut saw_www_authenticate = false;
+    for value in response.headers().get_all(WWW_AUTHENTICATE) {
+        saw_www_authenticate = true;
+        let header = value.to_str().map_err(Error::InvalidHeader)?;
+        if let Some(challenge) = negotiate_challenge(header) {
+            return Ok(challenge);
+        }
+    }
+
+    if saw_www_authenticate {
+        Err(Error::MissingNegotiateChallenge)
+    } else {
+        Err(Error::MissingWwwAuthenticate)
+    }
+}
+
+/// Verify a SPNEGO AP-REP response token from WWW-Authenticate headers.
+pub fn verify_ap_rep_response<B>(
+    context: &spnego::InitiatorContext,
+    response: &Response<B>,
+) -> Result<VerifiedApRep> {
+    Ok(context.verify_ap_rep_response_header(www_authenticate_negotiate_header(response)?)?)
 }
 
 /// Build a `401 Unauthorized` response that starts Negotiate authentication.
@@ -130,6 +189,71 @@ pub fn challenge_response<B: Default>() -> Response<B> {
 /// Build a `401 Unauthorized` response that carries a SPNEGO reject token.
 pub fn reject_response<B: Default>() -> Result<Response<B>> {
     response_with_www_authenticate(StatusCode::UNAUTHORIZED, &spnego::reject_header()?)
+}
+
+fn negotiate_challenge(header: &str) -> Option<&str> {
+    for segment in WwwAuthenticateSegments::new(header) {
+        let challenge = segment.trim();
+        if let Some(rest) = challenge.get(..spnego::HTTP_NEGOTIATE.len())
+            && rest.eq_ignore_ascii_case(spnego::HTTP_NEGOTIATE)
+        {
+            let suffix = &challenge[spnego::HTTP_NEGOTIATE.len()..];
+            if suffix.is_empty() || suffix.starts_with(char::is_whitespace) {
+                return Some(challenge);
+            }
+        }
+    }
+    None
+}
+
+struct WwwAuthenticateSegments<'a> {
+    value: &'a str,
+    offset: usize,
+}
+
+impl<'a> WwwAuthenticateSegments<'a> {
+    fn new(value: &'a str) -> Self {
+        Self { value, offset: 0 }
+    }
+}
+
+impl<'a> Iterator for WwwAuthenticateSegments<'a> {
+    type Item = &'a str;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.offset >= self.value.len() {
+            return None;
+        }
+
+        let bytes = self.value.as_bytes();
+        let start = self.offset;
+        let mut end = self.value.len();
+        let mut quoted = false;
+        let mut escaped = false;
+        let mut index = self.offset;
+        while index < bytes.len() {
+            let byte = bytes[index];
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' && quoted {
+                escaped = true;
+            } else if byte == b'"' {
+                quoted = !quoted;
+            } else if byte == b',' && !quoted {
+                end = index;
+                index += 1;
+                break;
+            }
+            index += 1;
+        }
+
+        self.offset = index;
+        while self.offset < bytes.len() && bytes[self.offset].is_ascii_whitespace() {
+            self.offset += 1;
+        }
+
+        Some(&self.value[start..end])
+    }
 }
 
 fn response_with_www_authenticate<B: Default>(
