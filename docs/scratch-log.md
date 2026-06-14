@@ -10,4 +10,6 @@
 - Decision: HTTP response verification scans every `WWW-Authenticate` value and accepts comma-separated challenges. The parser is intentionally limited to finding a `Negotiate` challenge; it does not try to fully parse every auth scheme's parameter grammar.
 - Trade-off: tests adjust only cached-session metadata to current time when exercising `TokioClient`'s cache path; the DER ticket fixture remains unchanged for SPNEGO token compatibility checks.
 - Review fix: focused HTTP tests initially missed the cached service ticket because the fixture metadata is future-dated relative to the current test clock; fixed by making the cache metadata current in that one test.
+- Decision: add a transport-agnostic HTTP Negotiate client classifier instead of binding retry logic to a concrete HTTP client. Callers can keep ownership of request cloning, body replay policy, and redirect handling.
+- Trade-off: classify malformed or unexpected response tokens into an enum variant instead of returning early with an error, so client response handling can stay exhaustive and single-pass.
 - Verification: `cargo fmt --check`, `cargo check --no-default-features`, `cargo check`, `cargo check --no-default-features --features http`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test --all-features`, and the generated compatibility-report diff all pass.

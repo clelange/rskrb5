@@ -20,7 +20,7 @@ use rskrb5::spnego::{
 
 use rskrb5::client::{AsRepSession, Principal};
 #[cfg(feature = "tokio")]
-use rskrb5::client::{KdcProtocol, TokioClient};
+use rskrb5::client::{KdcProtocol, NegotiateClient, TokioClient};
 #[cfg(any(feature = "tokio", feature = "tower"))]
 use rskrb5::config::Config;
 #[cfg(feature = "tower")]
@@ -163,11 +163,7 @@ fn http_helpers_scan_www_authenticate_negotiate_challenges() {
 #[test]
 fn authorize_request_context_sets_header_and_returns_context() {
     runtime().block_on(async {
-        let mut service_ticket = service_ticket_session_from_valid_ap_req();
-        let now = std::time::SystemTime::now();
-        service_ticket.auth_time = now - Duration::from_secs(1);
-        service_ticket.start_time = now - Duration::from_secs(1);
-        service_ticket.end_time = now + Duration::from_secs(60);
+        let service_ticket = current_service_ticket_session();
         let service = service_ticket.service.clone();
         let mut client = TokioClient::with_password(
             Config::new(),
@@ -195,6 +191,42 @@ fn authorize_request_context_sets_header_and_returns_context() {
     });
 }
 
+#[cfg(feature = "tokio")]
+#[test]
+fn authorize_request_context_supports_negotiate_client_wrapper() {
+    runtime().block_on(async {
+        let mut service_ticket = current_service_ticket_session();
+        let service = service_ticket.service.clone();
+        let mut tokio_client = TokioClient::with_password(
+            Config::new(),
+            KdcProtocol::Auto,
+            Principal::user("TEST.GOKRB5", "testuser1"),
+            b"unused".to_vec(),
+        );
+        tokio_client.cache_service_ticket(service_ticket.clone());
+        let mut client = NegotiateClient::from_tokio_client(tokio_client);
+        let mut request = Request::new(());
+
+        let context = krb_http::authorize_request_context_with_negotiate_client_options(
+            &mut client,
+            &mut request,
+            service,
+            InitiatorContextOptions::new().with_sequence_number(Some(7)),
+        )
+        .await
+        .expect("request is authorized");
+
+        assert_eq!(context.sequence_number, Some(7));
+        assert_eq!(
+            krb_http::authorization_header(&request).expect("Authorization header exists"),
+            context.header
+        );
+
+        service_ticket.session_key.value = vec![0x55; 32];
+        assert_ne!(context.session_key, service_ticket.session_key);
+    });
+}
+
 #[test]
 fn verify_ap_rep_response_uses_negotiate_www_authenticate_header() {
     let context = initiator_context();
@@ -214,6 +246,80 @@ fn verify_ap_rep_response_uses_negotiate_www_authenticate_header() {
     assert_eq!(verified.ctime, context.authenticator_ctime);
     assert_eq!(verified.cusec, context.authenticator_cusec);
     assert_eq!(verified.authenticator_time, context.authenticator_time);
+}
+
+#[test]
+fn classify_negotiate_response_reports_client_state() {
+    let context = initiator_context();
+    assert_eq!(
+        krb_http::classify_negotiate_response(&context, &Response::new(())),
+        krb_http::ClientNegotiateResponse::NoAuthenticateHeader
+    );
+
+    let mut basic = Response::new(());
+    basic.headers_mut().append(
+        WWW_AUTHENTICATE,
+        HeaderValue::from_static("Basic realm=\"test\""),
+    );
+    assert_eq!(
+        krb_http::classify_negotiate_response(&context, &basic),
+        krb_http::ClientNegotiateResponse::NoNegotiateChallenge
+    );
+
+    assert_eq!(
+        krb_http::classify_negotiate_response(&context, &krb_http::challenge_response::<()>()),
+        krb_http::ClientNegotiateResponse::Challenge
+    );
+
+    let mut later_challenge = Response::new(());
+    later_challenge.headers_mut().append(
+        WWW_AUTHENTICATE,
+        HeaderValue::from_static("Basic realm=\"test\""),
+    );
+    later_challenge
+        .headers_mut()
+        .append(WWW_AUTHENTICATE, HeaderValue::from_static("Negotiate"));
+    assert_eq!(
+        krb_http::classify_negotiate_response(&context, &later_challenge),
+        krb_http::ClientNegotiateResponse::Challenge
+    );
+
+    let accepted_without_ap_rep = response_with_www_authenticate(
+        &spnego::accept_completed_header().expect("accept-completed header"),
+    );
+    assert_eq!(
+        krb_http::classify_negotiate_response(&context, &accepted_without_ap_rep),
+        krb_http::ClientNegotiateResponse::Accepted { ap_rep: None }
+    );
+
+    let rejected = response_with_www_authenticate(&spnego::reject_header().expect("reject header"));
+    assert_eq!(
+        krb_http::classify_negotiate_response(&context, &rejected),
+        krb_http::ClientNegotiateResponse::Rejected
+    );
+
+    let ap_rep = response_with_www_authenticate(&ap_rep_response_header(&context));
+    let classified = krb_http::classify_negotiate_response(&context, &ap_rep);
+    let krb_http::ClientNegotiateResponse::Accepted {
+        ap_rep: Some(verified),
+    } = classified
+    else {
+        panic!("expected verified AP-REP, got {classified:?}");
+    };
+    assert_eq!(verified.ctime, context.authenticator_ctime);
+    assert_eq!(verified.cusec, context.authenticator_cusec);
+
+    let malformed = response_with_www_authenticate("Negotiate not-base64");
+    assert!(matches!(
+        krb_http::classify_negotiate_response(&context, &malformed),
+        krb_http::ClientNegotiateResponse::InvalidToken { .. }
+    ));
+
+    let wrong_mechanism = response_with_www_authenticate(&valid_authorization_header());
+    assert!(matches!(
+        krb_http::classify_negotiate_response(&context, &wrong_mechanism),
+        krb_http::ClientNegotiateResponse::InvalidToken { .. }
+    ));
 }
 
 #[test]
@@ -588,6 +694,25 @@ fn service_ticket_session_from_valid_ap_req() -> AsRepSession {
         renew_till: None,
         key_expiration: None,
     }
+}
+
+fn response_with_www_authenticate(header: &str) -> Response<()> {
+    let mut response = Response::new(());
+    response.headers_mut().append(
+        WWW_AUTHENTICATE,
+        HeaderValue::from_str(header).expect("WWW-Authenticate header value"),
+    );
+    response
+}
+
+#[cfg(feature = "tokio")]
+fn current_service_ticket_session() -> AsRepSession {
+    let mut service_ticket = service_ticket_session_from_valid_ap_req();
+    let now = std::time::SystemTime::now();
+    service_ticket.auth_time = now - Duration::from_secs(1);
+    service_ticket.start_time = now - Duration::from_secs(1);
+    service_ticket.end_time = now + Duration::from_secs(60);
+    service_ticket
 }
 
 fn keytab() -> Keytab {

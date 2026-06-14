@@ -10,7 +10,7 @@ use http_types::header::{AUTHORIZATION, HeaderValue, ToStrError, WWW_AUTHENTICAT
 use http_types::{Request, Response, StatusCode};
 
 #[cfg(feature = "tokio")]
-use crate::client::{Principal, TokioClient};
+use crate::client::{NegotiateClient, Principal, TokioClient};
 #[cfg(feature = "tower")]
 use crate::config::Config;
 #[cfg(feature = "tower")]
@@ -85,6 +85,31 @@ pub enum TowerError<E> {
     Inner(E),
 }
 
+/// Client-side HTTP Negotiate response classification.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ClientNegotiateResponse {
+    /// The response did not contain any `WWW-Authenticate` header.
+    NoAuthenticateHeader,
+    /// The response contained authentication challenges, but none were Negotiate.
+    NoNegotiateChallenge,
+    /// The response contains a bare `Negotiate` challenge and the request should be retried with
+    /// an Authorization token.
+    Challenge,
+    /// The response accepted the context. AP-REP details are present when the server returned an
+    /// AP-REP token and it verified successfully.
+    Accepted {
+        /// Verified AP-REP data when mutual authentication was returned by the server.
+        ap_rep: Option<VerifiedApRep>,
+    },
+    /// The peer explicitly rejected the SPNEGO negotiation.
+    Rejected,
+    /// The peer returned a malformed or unexpected Negotiate token.
+    InvalidToken {
+        /// Human-readable parse or validation failure.
+        message: String,
+    },
+}
+
 /// Return the HTTP Authorization header as a string.
 pub fn authorization_header<B>(request: &Request<B>) -> Result<&str> {
     request
@@ -139,6 +164,33 @@ pub async fn authorize_request_context_with_options<B>(
     Ok(context)
 }
 
+/// Add a SPNEGO Authorization header using a high-level Negotiate client wrapper.
+#[cfg(feature = "tokio")]
+pub async fn authorize_request_context_with_negotiate_client<B>(
+    client: &mut NegotiateClient,
+    request: &mut Request<B>,
+    service: Principal,
+) -> Result<spnego::InitiatorContext> {
+    let context = client.authorization_context(service).await?;
+    set_authorization_header(request, &context.header)?;
+    Ok(context)
+}
+
+/// Add a SPNEGO Authorization header using a Negotiate client and explicit initiator options.
+#[cfg(feature = "tokio")]
+pub async fn authorize_request_context_with_negotiate_client_options<B>(
+    client: &mut NegotiateClient,
+    request: &mut Request<B>,
+    service: Principal,
+    options: spnego::InitiatorContextOptions,
+) -> Result<spnego::InitiatorContext> {
+    let context = client
+        .authorization_context_with_options(service, options)
+        .await?;
+    set_authorization_header(request, &context.header)?;
+    Ok(context)
+}
+
 /// Validate the request's Negotiate header and attach the accepted context to extensions.
 pub fn accept_request<B>(
     validator: &mut ServiceValidator<'_>,
@@ -175,6 +227,36 @@ pub fn verify_ap_rep_response<B>(
     Ok(context.verify_ap_rep_response_header(www_authenticate_negotiate_header(response)?)?)
 }
 
+/// Classify a response in a client-side HTTP Negotiate exchange.
+///
+/// If the response carries an AP-REP token, this verifies it with the retained initiator context.
+pub fn classify_negotiate_response<B>(
+    context: &spnego::InitiatorContext,
+    response: &Response<B>,
+) -> ClientNegotiateResponse {
+    let mut saw_www_authenticate = false;
+    for value in response.headers().get_all(WWW_AUTHENTICATE) {
+        saw_www_authenticate = true;
+        let header = match value.to_str() {
+            Ok(header) => header,
+            Err(source) => {
+                return ClientNegotiateResponse::InvalidToken {
+                    message: source.to_string(),
+                };
+            }
+        };
+        if let Some(challenge) = negotiate_challenge(header) {
+            return classify_negotiate_challenge(context, challenge);
+        }
+    }
+
+    if saw_www_authenticate {
+        ClientNegotiateResponse::NoNegotiateChallenge
+    } else {
+        ClientNegotiateResponse::NoAuthenticateHeader
+    }
+}
+
 /// Build a `401 Unauthorized` response that starts Negotiate authentication.
 pub fn challenge_response<B: Default>() -> Response<B> {
     let mut response = Response::new(B::default());
@@ -204,6 +286,77 @@ fn negotiate_challenge(header: &str) -> Option<&str> {
         }
     }
     None
+}
+
+fn classify_negotiate_challenge(
+    context: &spnego::InitiatorContext,
+    challenge: &str,
+) -> ClientNegotiateResponse {
+    if negotiate_challenge_is_bare(challenge) {
+        return ClientNegotiateResponse::Challenge;
+    }
+
+    let token = match spnego::parse_negotiate_header(challenge) {
+        Ok(token) => token,
+        Err(source) => {
+            return ClientNegotiateResponse::InvalidToken {
+                message: source.to_string(),
+            };
+        }
+    };
+
+    let response = match token {
+        spnego::SpnegoToken::Resp(response) => response,
+        spnego::SpnegoToken::Init(_) => {
+            return ClientNegotiateResponse::InvalidToken {
+                message: "expected NegTokenResp, got NegTokenInit".to_owned(),
+            };
+        }
+    };
+
+    match response.neg_state {
+        Some(spnego::NegState::Reject) => return ClientNegotiateResponse::Rejected,
+        Some(spnego::NegState::AcceptIncomplete | spnego::NegState::RequestMic)
+            if response.response_token.is_none() =>
+        {
+            return ClientNegotiateResponse::Challenge;
+        }
+        _ => {}
+    }
+
+    let Some(response_token) = response.response_token else {
+        return ClientNegotiateResponse::Accepted { ap_rep: None };
+    };
+    let krb5 = match spnego::Krb5MechToken::decode(&response_token) {
+        Ok(krb5) => krb5,
+        Err(source) => {
+            return ClientNegotiateResponse::InvalidToken {
+                message: source.to_string(),
+            };
+        }
+    };
+
+    match krb5.token_id {
+        spnego::Krb5TokenId::ApRep => match context.verify_ap_rep(&krb5.message) {
+            Ok(ap_rep) => ClientNegotiateResponse::Accepted {
+                ap_rep: Some(ap_rep),
+            },
+            Err(source) => ClientNegotiateResponse::InvalidToken {
+                message: source.to_string(),
+            },
+        },
+        spnego::Krb5TokenId::KrbError => ClientNegotiateResponse::Rejected,
+        spnego::Krb5TokenId::ApReq => ClientNegotiateResponse::InvalidToken {
+            message: "expected AP-REP token, got AP-REQ token".to_owned(),
+        },
+    }
+}
+
+fn negotiate_challenge_is_bare(challenge: &str) -> bool {
+    let mut parts = challenge.splitn(2, char::is_whitespace);
+    let scheme = parts.next().unwrap_or_default();
+    scheme.eq_ignore_ascii_case(spnego::HTTP_NEGOTIATE)
+        && parts.next().is_none_or(|value| value.trim().is_empty())
 }
 
 struct WwwAuthenticateSegments<'a> {
