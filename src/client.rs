@@ -2984,22 +2984,18 @@ pub fn build_kpasswd_request_with_confounders(
     if let Some(recipient_address) = options.recipient_address {
         krb_priv_options = krb_priv_options.with_recipient_address(recipient_address);
     }
-    let krb_priv = crate::kadmin::build_krb_priv_with_confounder(
-        change_data.encode_der()?,
+    let built_request = crate::kadmin::build_change_password_request_with_confounder(
+        ap_req.message.clone(),
+        change_data,
+        reply_key,
         krb_priv_options,
-        &reply_key,
         krb_priv_confounder,
     )?;
-    let request = crate::kadmin::Request {
-        ap_req: ap_req.message.clone(),
-        krb_priv,
-    };
-    let der = request.encode()?;
 
     Ok(BuiltKpasswdRequest {
-        request,
-        der,
-        reply_key,
+        request: built_request.request,
+        der: built_request.der,
+        reply_key: built_request.reply_key,
         ap_req,
     })
 }

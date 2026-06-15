@@ -125,6 +125,17 @@ pub fn decrypt_krb_priv_enc_part(
     crate::krb_priv::decrypt_krb_priv_enc_part(krb_priv, key).map_err(krb_priv_error)
 }
 
+/// Complete password-change request assembled for transport.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BuiltChangePasswordRequest {
+    /// Framed request message.
+    pub request: Request,
+    /// DER-encoded kpasswd request frame.
+    pub der: Vec<u8>,
+    /// Reply key used for the request subkey and KRB-PRIV encryption.
+    pub reply_key: EncryptionKey,
+}
+
 /// Password-change request frame containing AP-REQ and KRB-PRIV messages.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Request {
@@ -181,6 +192,27 @@ impl Request {
         frame.extend_from_slice(&krb_priv);
         Ok(frame)
     }
+}
+
+/// Build a complete kpasswd request frame using a caller-supplied AP-REQ,
+/// reply key, request payload, and KRB-PRIV confounder.
+pub fn build_change_password_request_with_confounder(
+    ap_req: rasn_kerberos::ApReq,
+    change_data: &ChangePasswdData,
+    reply_key: EncryptionKey,
+    options: EncKrbPrivPartOptions,
+    confounder: &[u8],
+) -> Result<BuiltChangePasswordRequest, Error> {
+    let krb_priv =
+        build_krb_priv_with_confounder(change_data.encode_der()?, options, &reply_key, confounder)?;
+    let request = Request { ap_req, krb_priv };
+    let der = request.encode()?;
+
+    Ok(BuiltChangePasswordRequest {
+        request,
+        der,
+        reply_key,
+    })
 }
 
 /// Parsed RFC 3244-style password-change reply frame.
