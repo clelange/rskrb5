@@ -167,6 +167,10 @@ HTTP, DNS, ccache, referral, renewal, and kpasswd-gated integration suite; it
 preserves the gokrb5-style `INTEGRATION=1`, `TESTPRIVILEGED=1`, and optional
 `TESTAD=1` and `TEST_KPASSWD=1` gates.
 
+For local runs, use [`scripts/run-gated-integration.sh`](scripts/run-gated-integration.sh);
+the detailed fixture setup and DNS resolver notes are documented in
+[`docs/gated-integration.md`](docs/gated-integration.md).
+
 The live kpasswd integration test also requires the `test_kpasswd` workflow
 input because it temporarily changes the Docker test principal password before
 restoring it. Use `TEST_KPASSWD_ADDR`, `TEST_KPASSWD_PORT`, and

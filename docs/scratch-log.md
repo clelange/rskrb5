@@ -19,3 +19,10 @@
 - Blocked gate: local DNS-SRV validation could start the gokrb5 DNS container, but direct `dig` queries returned `REFUSED` or timed out under OrbStack instead of serving the expected test zone.
 - Review fix: `TEST_KPASSWD=1` exposed that successful kpasswd replies encrypt AP-REP with the kadmin/changepw ticket session key, then may encrypt the KRB-PRIV result with an AP-REP server subkey. The high-level client now verifies AP-REP with the ticket session key and decrypts the result with the AP-REP subkey when present, falling back to the request subkey.
 - Verification: focused kpasswd unit coverage passes, the live Docker MIT `TEST_KPASSWD=1` change/restore test now passes over TCP, and a follow-up AS-login sanity check confirms `testuser1` is restored to `passwordvalue`.
+
+## 2026-06-16
+
+- Decision: extract the Docker-backed gokrb5 fixture startup from the GitHub workflow into `scripts/run-gated-integration.sh` so local and CI validation share the same container names, ports, generated env, and cleanup path.
+- Trade-off: on Darwin, default to direct Docker container IPs and skip resolver mutation unless explicitly requested. This keeps no-sudo local runs useful for `INTEGRATION=1`, `TESTPRIVILEGED=1`, HTTP, referral, old/latest/short KDCs, and focused kpasswd validation, while leaving DNS-SRV enabled by default on Linux/CI.
+- Review fix: the gokrb5 DNS image allows queries only from localhost and selected Docker bridge CIDRs; OrbStack uses `192.168.215.0/24`, so local direct queries were refused. The runner now relaxes the fixture `allow-query` ACL and records the DNS container IP in `target/gated-integration.env` when direct-container mode is active.
+- Verification: direct `dig @"$DNS_IP"` SRV/A queries now succeed locally, `scripts/run-gated-integration.sh test --test client_integration` passes with DNS skipped, and focused `TEST_KPASSWD=1` password-change validation passes through the runner.
