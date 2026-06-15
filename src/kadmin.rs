@@ -102,6 +102,15 @@ pub fn build_krb_priv_with_confounder(
         .map_err(krb_priv_error)
 }
 
+/// Build a KRB-PRIV message using a random confounder.
+pub fn build_krb_priv(
+    user_data: impl AsRef<[u8]>,
+    options: EncKrbPrivPartOptions,
+    key: &EncryptionKey,
+) -> Result<rasn_kerberos::KrbPriv, Error> {
+    crate::krb_priv::build_krb_priv(user_data, options, key, None).map_err(krb_priv_error)
+}
+
 /// Decode and validate a DER-encoded KRB-PRIV message.
 pub fn decode_krb_priv(bytes: &[u8]) -> Result<rasn_kerberos::KrbPriv, Error> {
     crate::krb_priv::decode_krb_priv(bytes).map_err(krb_priv_error)
@@ -205,6 +214,14 @@ pub fn build_change_password_request_with_confounder(
 ) -> Result<BuiltChangePasswordRequest, Error> {
     let krb_priv =
         build_krb_priv_with_confounder(change_data.encode_der()?, options, &reply_key, confounder)?;
+    build_change_password_request_from_parts(ap_req, krb_priv, reply_key)
+}
+
+fn build_change_password_request_from_parts(
+    ap_req: rasn_kerberos::ApReq,
+    krb_priv: rasn_kerberos::KrbPriv,
+    reply_key: EncryptionKey,
+) -> Result<BuiltChangePasswordRequest, Error> {
     let request = Request { ap_req, krb_priv };
     let der = request.encode()?;
 
@@ -213,6 +230,18 @@ pub fn build_change_password_request_with_confounder(
         der,
         reply_key,
     })
+}
+
+/// Build a complete kpasswd request frame using a caller-supplied AP-REQ,
+/// reply key, request payload, and random KRB-PRIV confounder.
+pub fn build_change_password_request(
+    ap_req: rasn_kerberos::ApReq,
+    change_data: &ChangePasswdData,
+    reply_key: EncryptionKey,
+    options: EncKrbPrivPartOptions,
+) -> Result<BuiltChangePasswordRequest, Error> {
+    let krb_priv = build_krb_priv(change_data.encode_der()?, options, &reply_key)?;
+    build_change_password_request_from_parts(ap_req, krb_priv, reply_key)
 }
 
 /// Parsed RFC 3244-style password-change reply frame.

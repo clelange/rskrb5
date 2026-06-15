@@ -6,9 +6,9 @@ use rskrb5::crypto::KerberosEtype;
 use rskrb5::kadmin::{
     ChangePasswdData, ChangePasswordResult, EncKrbPrivPartOptions, Error as KadminError,
     KPASSWD_AUTHERROR, KPASSWD_SUCCESS, KRB_PRIV_MSG_TYPE, KRB_PRIV_PVNO, Reply, Request,
-    build_change_password_request_with_confounder, build_krb_priv_with_confounder,
-    decode_enc_krb_priv_part, decode_krb_priv, decrypt_krb_priv_enc_part, encode_krb_priv,
-    ipv4_host_address, ipv6_host_address,
+    build_change_password_request, build_change_password_request_with_confounder, build_krb_priv,
+    build_krb_priv_with_confounder, decode_enc_krb_priv_part, decode_krb_priv,
+    decrypt_krb_priv_enc_part, encode_krb_priv, ipv4_host_address, ipv6_host_address,
 };
 use rskrb5::keytab::EncryptionKey;
 
@@ -162,6 +162,32 @@ fn krb_priv_builder_encrypts_change_password_payload() {
 }
 
 #[test]
+fn krb_priv_builder_generates_confounder_for_change_password_payload() {
+    let data = ChangePasswdData::new(b"newpassword")
+        .encode_der()
+        .expect("ChangePasswdData encodes");
+    let key = EncryptionKey {
+        etype: 18,
+        value: vec![0x11; 32],
+    };
+    let sender_address = ipv4_host_address([127, 0, 0, 1]);
+    let options = EncKrbPrivPartOptions::new(sender_address.clone()).with_sequence_number(8);
+
+    let krb_priv = build_krb_priv(&data, options, &key).expect("KRB-PRIV builds");
+
+    assert_eq!(krb_priv.enc_part.etype, key.etype);
+
+    let enc_part =
+        decrypt_krb_priv_enc_part(&krb_priv, &key).expect("KRB-PRIV decrypts and decodes");
+    let decoded_data =
+        ChangePasswdData::decode_der(enc_part.user_data.as_ref()).expect("payload decodes");
+
+    assert_eq!(decoded_data, ChangePasswdData::new(b"newpassword"));
+    assert_eq!(enc_part.sender_address, sender_address);
+    assert_eq!(enc_part.seq_number, Some(8));
+}
+
+#[test]
 fn kpasswd_request_roundtrips_gokrb5_fixture() {
     let bytes = decode_hex(MARSHALLED_KPASSWD_REQ);
     let request = Request::parse(&bytes).expect("kpasswd request parses");
@@ -221,6 +247,41 @@ fn kpasswd_request_builder_encrypts_payload_and_frames_request() {
     assert_eq!(enc_part.sender_address, sender_address);
     assert_eq!(enc_part.recipient_address, Some(recipient_address));
     assert_eq!(enc_part.seq_number, Some(99));
+}
+
+#[test]
+fn kpasswd_request_builder_generates_krb_priv_confounder() {
+    let fixture_request =
+        Request::parse(&decode_hex(MARSHALLED_KPASSWD_REQ)).expect("fixture request parses");
+    let change_data = ChangePasswdData::new(b"replacement-password");
+    let reply_key = EncryptionKey {
+        etype: 18,
+        value: vec![0x66; 32],
+    };
+    let sender_address = ipv4_host_address([127, 0, 0, 1]);
+    let options = EncKrbPrivPartOptions::new(sender_address.clone()).with_sequence_number(101);
+
+    let built = build_change_password_request(
+        fixture_request.ap_req.clone(),
+        &change_data,
+        reply_key.clone(),
+        options,
+    )
+    .expect("kpasswd request builds");
+
+    assert_eq!(built.reply_key, reply_key);
+
+    let parsed = Request::parse(&built.der).expect("built request parses");
+    assert_eq!(parsed.ap_req, fixture_request.ap_req);
+
+    let enc_part =
+        decrypt_krb_priv_enc_part(&parsed.krb_priv, &reply_key).expect("payload decrypts");
+    let decoded_data =
+        ChangePasswdData::decode_der(enc_part.user_data.as_ref()).expect("payload decodes");
+
+    assert_eq!(decoded_data, change_data);
+    assert_eq!(enc_part.sender_address, sender_address);
+    assert_eq!(enc_part.seq_number, Some(101));
 }
 
 #[test]

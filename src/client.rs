@@ -2965,25 +2965,13 @@ pub fn build_kpasswd_request_with_confounders(
     ap_req_confounder: &[u8],
     krb_priv_confounder: &[u8],
 ) -> Result<BuiltKpasswdRequest, Error> {
-    let ap_req = build_ap_req_with_confounder(
+    let ap_req = build_kpasswd_ap_req_with_confounder(
         service_ticket,
-        ApReqOptions::new()
-            .with_subkey(Some(reply_key.clone()))
-            .with_sequence_number(Some(options.sequence_number)),
-        options.timestamp,
-        options.cusec,
+        &reply_key,
+        &options,
         ap_req_confounder,
     )?;
-
-    let mut krb_priv_options = crate::kadmin::EncKrbPrivPartOptions::new(options.sender_address)
-        .with_timestamp(
-            kerberos_time_from_system_time(options.timestamp)?,
-            options.cusec,
-        )
-        .with_sequence_number(options.sequence_number);
-    if let Some(recipient_address) = options.recipient_address {
-        krb_priv_options = krb_priv_options.with_recipient_address(recipient_address);
-    }
+    let krb_priv_options = kpasswd_krb_priv_options(&options)?;
     let built_request = crate::kadmin::build_change_password_request_with_confounder(
         ap_req.message.clone(),
         change_data,
@@ -3015,17 +3003,60 @@ pub fn build_kpasswd_request(
     getrandom::fill(&mut reply_key.value)?;
     let mut ap_req_confounder = vec![0; etype.confounder_len()];
     getrandom::fill(&mut ap_req_confounder)?;
-    let mut krb_priv_confounder = vec![0; etype.confounder_len()];
-    getrandom::fill(&mut krb_priv_confounder)?;
 
-    build_kpasswd_request_with_confounders(
+    let ap_req = build_kpasswd_ap_req_with_confounder(
         service_ticket,
+        &reply_key,
+        &options,
+        &ap_req_confounder,
+    )?;
+    let krb_priv_options = kpasswd_krb_priv_options(&options)?;
+    let built_request = crate::kadmin::build_change_password_request(
+        ap_req.message.clone(),
         change_data,
         reply_key,
-        options,
-        &ap_req_confounder,
-        &krb_priv_confounder,
+        krb_priv_options,
+    )?;
+
+    Ok(BuiltKpasswdRequest {
+        request: built_request.request,
+        der: built_request.der,
+        reply_key: built_request.reply_key,
+        ap_req,
+    })
+}
+
+fn build_kpasswd_ap_req_with_confounder(
+    service_ticket: &TgsRepSession,
+    reply_key: &EncryptionKey,
+    options: &KpasswdRequestOptions,
+    ap_req_confounder: &[u8],
+) -> Result<BuiltApReq, Error> {
+    build_ap_req_with_confounder(
+        service_ticket,
+        ApReqOptions::new()
+            .with_subkey(Some(reply_key.clone()))
+            .with_sequence_number(Some(options.sequence_number)),
+        options.timestamp,
+        options.cusec,
+        ap_req_confounder,
     )
+}
+
+fn kpasswd_krb_priv_options(
+    options: &KpasswdRequestOptions,
+) -> Result<crate::kadmin::EncKrbPrivPartOptions, Error> {
+    let mut krb_priv_options =
+        crate::kadmin::EncKrbPrivPartOptions::new(options.sender_address.clone())
+            .with_timestamp(
+                kerberos_time_from_system_time(options.timestamp)?,
+                options.cusec,
+            )
+            .with_sequence_number(options.sequence_number);
+    if let Some(recipient_address) = &options.recipient_address {
+        krb_priv_options = krb_priv_options.with_recipient_address(recipient_address.clone());
+    }
+    Ok(krb_priv_options)
 }
 
 /// Verify the AP-REP section of a successful kpasswd reply.
