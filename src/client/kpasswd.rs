@@ -6,14 +6,15 @@ use crate::crypto::KerberosEtype;
 use crate::keytab::EncryptionKey;
 
 use super::{
-    ApReqOptions, BuiltApReq, Error, Principal, TgsRepSession, ap_rep_error,
-    build_ap_req_with_confounder, encryption_key_from_rasn, integer_to_u32,
-    kerberos_time_from_system_time, system_time_from_kerberos_time,
+    ApReqOptions, BuiltApReq, Error, TgsRepSession, ap_rep_error, build_ap_req_with_confounder,
+    encryption_key_from_rasn, integer_to_u32, kerberos_time_from_system_time,
+    system_time_from_kerberos_time,
 };
 
 #[cfg(feature = "tokio")]
 use super::{
-    KRB_NT_PRINCIPAL, TokioClient, TokioClientCredentials, current_preauth_time, random_nonce,
+    KRB_NT_PRINCIPAL, Principal, TokioClient, TokioClientCredentials, current_preauth_time,
+    random_nonce,
 };
 #[cfg(feature = "tokio")]
 use zeroize::Zeroizing;

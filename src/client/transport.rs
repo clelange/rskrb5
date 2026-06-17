@@ -1,11 +1,18 @@
 //! Tokio-backed KDC transport, endpoint discovery, and network exchanges.
 
+use std::env;
 use std::future::Future;
+use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 
 use crate::config::Config;
 use crate::keytab::{EncryptionKey, Keytab};
-use hickory_resolver::{TokioResolver, proto::rr::RData};
+use hickory_resolver::{
+    TokioResolver,
+    config::{ConnectionConfig, NameServerConfig, ResolverConfig},
+    net::runtime::TokioRuntimeProvider,
+    proto::rr::RData,
+};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpStream, ToSocketAddrs, UdpSocket};
 
@@ -27,6 +34,8 @@ const DEFAULT_TCP_RESPONSE_LIMIT: usize = 16 * 1024 * 1024;
 const MAX_UDP_DATAGRAM: usize = 65_507;
 #[cfg(feature = "tokio")]
 const DEFAULT_MAX_REFERRALS: usize = 5;
+#[cfg(feature = "tokio")]
+const RSKRB5_DNS_SERVER_ENV: &str = "RSKRB5_DNS_SERVER";
 
 /// KDC wire protocol for Tokio transport operations.
 #[cfg(feature = "tokio")]
@@ -970,10 +979,7 @@ impl TokioKdcTransport {
             KdcProtocol::Tcp => "_tcp",
         };
         let query = format!("{service}.{transport}.{realm}.");
-        let resolver = TokioResolver::builder_tokio()
-            .map_err(|source| Error::DnsResolverConfig(source.to_string()))?
-            .build()
-            .map_err(|source| Error::DnsResolverConfig(source.to_string()))?;
+        let resolver = dns_resolver()?;
         let lookup = resolver
             .srv_lookup(query.as_str())
             .await
@@ -1008,15 +1014,23 @@ impl TokioKdcTransport {
                 .then_with(|| left.3.cmp(&right.3))
         });
 
-        Ok(records
-            .into_iter()
-            .map(|(_, _, host, port)| KdcEndpoint {
+        let resolve_targets = dns_server_override()?.is_some();
+        let mut endpoints = Vec::with_capacity(records.len());
+        for (_, _, target, port) in records {
+            let host = if resolve_targets {
+                resolve_dns_endpoint_host(&resolver, realm, protocol, &target).await?
+            } else {
+                target
+            };
+            endpoints.push(KdcEndpoint {
                 protocol,
                 host,
                 port,
                 source: KdcEndpointSource::DnsSrv,
-            })
-            .collect())
+            });
+        }
+
+        Ok(endpoints)
     }
 
     async fn send_to_endpoints(
@@ -1184,6 +1198,96 @@ fn parse_kdc_port(endpoint: &str, port: &str) -> Result<u16, Error> {
 }
 
 #[cfg(feature = "tokio")]
+fn dns_resolver() -> Result<TokioResolver, Error> {
+    if let Some((ip, port)) = dns_server_override()? {
+        let mut udp = ConnectionConfig::udp();
+        udp.port = port;
+        let mut tcp = ConnectionConfig::tcp();
+        tcp.port = port;
+
+        let mut config = ResolverConfig::default();
+        config.name_servers = vec![NameServerConfig::new(ip, true, vec![udp, tcp])];
+
+        return TokioResolver::builder_with_config(config, TokioRuntimeProvider::default())
+            .build()
+            .map_err(|source| Error::DnsResolverConfig(source.to_string()));
+    }
+
+    TokioResolver::builder_tokio()
+        .map_err(|source| Error::DnsResolverConfig(source.to_string()))?
+        .build()
+        .map_err(|source| Error::DnsResolverConfig(source.to_string()))
+}
+
+#[cfg(feature = "tokio")]
+async fn resolve_dns_endpoint_host(
+    resolver: &TokioResolver,
+    realm: &str,
+    protocol: KdcProtocol,
+    target: &str,
+) -> Result<String, Error> {
+    if target.parse::<IpAddr>().is_ok() {
+        return Ok(target.to_owned());
+    }
+
+    let lookup_name = if target.ends_with('.') {
+        target.to_owned()
+    } else {
+        format!("{target}.")
+    };
+    let lookup = resolver
+        .lookup_ip(lookup_name.as_str())
+        .await
+        .map_err(|source| Error::DnsSrvLookup {
+            realm: realm.to_owned(),
+            protocol,
+            message: format!("target {target}: {source}"),
+        })?;
+    lookup
+        .iter()
+        .next()
+        .map(|ip| ip.to_string())
+        .ok_or_else(|| Error::DnsSrvLookup {
+            realm: realm.to_owned(),
+            protocol,
+            message: format!("target {target}: no address records found"),
+        })
+}
+
+#[cfg(feature = "tokio")]
+fn dns_server_override() -> Result<Option<(IpAddr, u16)>, Error> {
+    match env::var(RSKRB5_DNS_SERVER_ENV) {
+        Ok(value) if !value.trim().is_empty() => {
+            parse_dns_server(&value).map(Some).map_err(|message| {
+                Error::DnsResolverConfig(format!("{RSKRB5_DNS_SERVER_ENV}: {message}"))
+            })
+        }
+        Ok(_) | Err(env::VarError::NotPresent) => Ok(None),
+        Err(source) => Err(Error::DnsResolverConfig(format!(
+            "{RSKRB5_DNS_SERVER_ENV}: {source}"
+        ))),
+    }
+}
+
+#[cfg(feature = "tokio")]
+fn parse_dns_server(value: &str) -> Result<(IpAddr, u16), String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err("empty DNS server override".to_owned());
+    }
+
+    if let Ok(addr) = value.parse::<SocketAddr>() {
+        return Ok((addr.ip(), addr.port()));
+    }
+
+    if let Ok(ip) = value.parse::<IpAddr>() {
+        return Ok((ip, 53));
+    }
+
+    Err(format!("expected IP literal or IP:port, got {value:?}"))
+}
+
+#[cfg(feature = "tokio")]
 fn kdc_error_code(bytes: &[u8]) -> Option<i32> {
     crate::krb_error::decode_krb_error(bytes)
         .ok()
@@ -1194,4 +1298,31 @@ fn kdc_error_code(bytes: &[u8]) -> Option<i32> {
 fn auto_uses_udp_first(config: &Config, request_len: usize) -> bool {
     let limit = config.libdefaults.udp_preference_limit;
     limit != 1 && limit >= 0 && request_len <= limit as usize
+}
+
+#[cfg(all(test, feature = "tokio"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_dns_server_override_ip_and_default_port() {
+        assert_eq!(
+            parse_dns_server("127.0.0.1").expect("DNS server parses"),
+            (IpAddr::from([127, 0, 0, 1]), 53)
+        );
+    }
+
+    #[test]
+    fn parses_dns_server_override_ip_and_explicit_port() {
+        assert_eq!(
+            parse_dns_server("127.0.88.53:5353").expect("DNS server parses"),
+            (IpAddr::from([127, 0, 88, 53]), 5353)
+        );
+    }
+
+    #[test]
+    fn rejects_dns_server_override_hostname() {
+        let error = parse_dns_server("dns.test.gokrb5:53").expect_err("hostname rejected");
+        assert!(error.contains("expected IP literal"));
+    }
 }

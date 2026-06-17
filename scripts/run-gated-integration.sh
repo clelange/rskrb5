@@ -244,6 +244,7 @@ export TEST_HTTP_URL=$http_url
 export TEST_HTTP_ADDR=$http_addr
 export DNS_IP=$dns_ip
 export DNSUTILS_OVERRIDE_NS=$dns_override_ns
+export RSKRB5_DNS_SERVER=$dns_override_ns
 EOF
 }
 

@@ -1614,13 +1614,29 @@ fn http_target(path: &str) -> Result<HttpTarget, Box<dyn Error>> {
         return Err("TEST_HTTP_URL must include a host".into());
     }
 
-    let addr = if authority
+    let port = if authority
         .rsplit_once(':')
         .is_some_and(|(_, port)| port.parse::<u16>().is_ok())
     {
-        authority.to_owned()
+        authority
+            .rsplit_once(':')
+            .expect("port checked")
+            .1
+            .to_owned()
     } else {
-        format!("{authority}:80")
+        "80".to_owned()
+    };
+    let connect_host = std::env::var("TEST_HTTP_ADDR")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| authority.to_owned());
+    let addr = if connect_host
+        .rsplit_once(':')
+        .is_some_and(|(_, port)| port.parse::<u16>().is_ok())
+    {
+        connect_host
+    } else {
+        format!("{connect_host}:{port}")
     };
     let base_path = base_path.trim_matches('/');
     let request_path = ensure_absolute_path(path);
