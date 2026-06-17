@@ -126,6 +126,18 @@ configure_resolver() {
   printf 'nameserver %s\n' "$dns_ip" | sudo_cmd tee /etc/resolv.conf >/dev/null
 }
 
+default_configure_resolver_enabled() {
+  local enabled="${RSKRB5_CONFIGURE_RESOLVER:-}"
+  if [[ -z "$enabled" ]]; then
+    if [[ "$(uname -s)" == "Linux" ]]; then
+      enabled=1
+    else
+      enabled=0
+    fi
+  fi
+  printf '%s\n' "$enabled"
+}
+
 dig_short() {
   local server="$1"
   local name="$2"
@@ -278,14 +290,8 @@ start_fixtures() {
     fi
   fi
 
-  local configure_resolver_enabled="${RSKRB5_CONFIGURE_RESOLVER:-}"
-  if [[ -z "$configure_resolver_enabled" ]]; then
-    if [[ "$(uname -s)" == "Linux" ]]; then
-      configure_resolver_enabled=1
-    else
-      configure_resolver_enabled=0
-    fi
-  fi
+  local configure_resolver_enabled
+  configure_resolver_enabled="$(default_configure_resolver_enabled)"
   local test_dns_kdc="${TEST_DNS_KDC:-$configure_resolver_enabled}"
 
   local primary_addr old_addr latest_addr resdom_addr short_addr kpasswd_addr kpasswd_sender_addr
@@ -371,6 +377,12 @@ run_tests() {
 
   # shellcheck disable=SC1090
   source "$ENV_FILE"
+  local configure_resolver_enabled
+  configure_resolver_enabled="$(default_configure_resolver_enabled)"
+  configure_resolver "$DNS_IP" "$configure_resolver_enabled"
+  if [[ "$configure_resolver_enabled" == "1" && "$TEST_DNS_KDC" == "1" ]]; then
+    verify_configured_resolver "$TEST_HTTP_ADDR"
+  fi
   cargo test --all-features "$@"
 }
 
