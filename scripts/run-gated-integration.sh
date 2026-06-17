@@ -99,7 +99,7 @@ container_gateway() {
 
 relax_dns_acl() {
   docker_cmd exec dns sh -lc \
-    "for _ in 1 2 3 4 5 6 7 8 9 10; do pidof named >/dev/null 2>&1 && break; sleep 1; done; sed -i 's/allow-query[[:space:]]*{[^}]*};/allow-query { any; };/' /etc/named.conf && kill -HUP \$(pidof named)"
+    "ready=0; for _ in 1 2 3 4 5 6 7 8 9 10; do rndc status >/dev/null 2>&1 && ready=1 && break; sleep 1; done; test \"\$ready\" = 1 && sed -i 's/allow-query[[:space:]]*{[^}]*};/allow-query { any; };/' /etc/named.conf && rndc reconfig"
 }
 
 strip_port() {
@@ -124,6 +124,80 @@ configure_resolver() {
     sudo_cmd cp /etc/resolv.conf "$RESOLV_CONF_BACKUP"
   fi
   printf 'nameserver %s\n' "$dns_ip" | sudo_cmd tee /etc/resolv.conf >/dev/null
+}
+
+dig_short() {
+  local server="$1"
+  local name="$2"
+  local record_type="$3"
+  local host="${server%:*}"
+  local port="${server##*:}"
+
+  if [[ "$server" != *:* || ! "$port" =~ ^[0-9]+$ ]]; then
+    host="$server"
+    port=53
+  fi
+
+  dig @"$host" -p "$port" +time=1 +tries=1 +short "$name" "$record_type"
+}
+
+wait_for_dns_fixture() {
+  local dns_server="$1"
+  local http_addr="$2"
+
+  if ! command -v dig >/dev/null 2>&1; then
+    echo "dig not found; skipping DNS fixture readiness check." >&2
+    return
+  fi
+
+  local srv_answer=""
+  local http_answer=""
+  for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+    srv_answer="$(dig_short "$dns_server" _kerberos._udp.test.gokrb5 SRV 2>&1 || true)"
+    http_answer="$(dig_short "$dns_server" cname.test.gokrb5 A 2>&1 || true)"
+    if [[ "$srv_answer" == *"kdc.test.gokrb5."* && "$http_answer" == *"$http_addr"* ]]; then
+      return
+    fi
+    sleep 1
+  done
+
+  {
+    echo "DNS fixture did not become ready at $dns_server."
+    echo "Last _kerberos._udp.test.gokrb5 SRV answer:"
+    echo "$srv_answer"
+    echo "Last cname.test.gokrb5 A answer:"
+    echo "$http_answer"
+  } >&2
+  return 1
+}
+
+verify_configured_resolver() {
+  local http_addr="$1"
+
+  if ! command -v dig >/dev/null 2>&1; then
+    echo "dig not found; skipping configured resolver verification." >&2
+    return
+  fi
+
+  local srv_answer=""
+  local http_answer=""
+  for _ in 1 2 3 4 5; do
+    srv_answer="$(dig +time=1 +tries=1 +short _kerberos._udp.test.gokrb5 SRV 2>&1 || true)"
+    http_answer="$(dig +time=1 +tries=1 +short cname.test.gokrb5 A 2>&1 || true)"
+    if [[ "$srv_answer" == *"kdc.test.gokrb5."* && "$http_answer" == *"$http_addr"* ]]; then
+      return
+    fi
+    sleep 1
+  done
+
+  {
+    echo "Configured resolver cannot query the DNS fixture."
+    echo "Last _kerberos._udp.test.gokrb5 SRV answer:"
+    echo "$srv_answer"
+    echo "Last cname.test.gokrb5 A answer:"
+    echo "$http_answer"
+  } >&2
+  return 1
 }
 
 write_env() {
@@ -271,12 +345,19 @@ start_fixtures() {
   fi
   local dns_override_ns="${DNSUTILS_OVERRIDE_NS:-"$dns_ip:53"}"
 
+  if [[ "$test_dns_kdc" == "1" || "$http_url" == *".test.gokrb5"* ]]; then
+    wait_for_dns_fixture "$dns_override_ns" "$http_addr"
+  fi
+
   write_env \
     "$primary_addr" "$old_addr" "$latest_addr" "$resdom_addr" "$short_addr" \
     "$kpasswd_addr" "$kpasswd_sender_addr" "$dns_ip" "$dns_override_ns" \
     "$http_url" "$http_addr" "$test_dns_kdc"
 
   configure_resolver "$dns_ip" "$configure_resolver_enabled"
+  if [[ "$configure_resolver_enabled" == "1" && "$test_dns_kdc" == "1" ]]; then
+    verify_configured_resolver "$http_addr"
+  fi
 
   echo "Started gokrb5 integration fixtures."
   echo "Environment written to $ENV_FILE"
