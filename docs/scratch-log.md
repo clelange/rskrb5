@@ -31,3 +31,8 @@
 - Trade-off: keep random reply-key and confounder generation in `client` for now because that code already has the service-ticket session context. The new `kadmin` API is deterministic and testable with explicit confounders.
 - Decision: add random-confounder `kadmin` convenience builders for KRB-PRIV and full kpasswd request framing. `client` still owns reply-key and AP-REQ confounder generation, but generated KRB-PRIV request encryption now belongs to `kadmin`.
 - Trade-off: do not add a full service-ticket `ChangePasswdMsg` clone in `kadmin` yet; doing so would either pull client session types into `kadmin` or duplicate AP-REQ authenticator construction. Keep that seam private until the client/session modules are slimmer.
+
+## 2026-06-17
+
+- Decision: extract client-side kpasswd request construction, AP-REP verification, and Tokio password-change methods into `src/client/kpasswd.rs` while re-exporting the public API from `rskrb5::client`. This keeps compatibility paths stable and reduces the main `client.rs` surface before adding a fuller gokrb5-shaped password-change message API.
+- Trade-off: keep the child module private and let it use parent-private AP-REQ and time helpers. That avoids widening internal helper visibility only for refactoring.
