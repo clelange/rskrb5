@@ -112,3 +112,16 @@
 - Verification: `cargo fmt --check`, `cargo check --no-default-features`, `cargo check`,
   `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test --all-features`,
   and compatibility-report regeneration diff are all passing with 25/25 focused kadmin tests.
+
+## 2026-06-20 (follow-up)
+
+- Decision: keep privileged integration behavior robust across hosts by adding a runtime
+  availability gate for the host `kinit` and `kvno` binaries before running external-ccache
+  and kvno-specific Docker KDC tests.
+- Trade-off: environments without optional Kerberos binaries now skip those specific tests
+  with explicit reason logging, rather than failing the integration run before execution.
+- Review fix: dedicated `privileged_kvno_integration_enabled()` helper now wraps the existing
+  privileged gate and gates only the kvno-dependent tests in `tests/client_integration.rs`.
+- Verification: `cargo fmt --check`, `cargo check --no-default-features`, `cargo check`,
+  `cargo clippy --all-targets --all-features -- -D warnings`, and `cargo test --all-features`
+  all pass.

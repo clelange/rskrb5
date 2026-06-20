@@ -910,6 +910,9 @@ fn docker_mit_kdc_reads_external_kvno_service_ticket_ccache() -> Result<(), Box<
     if !privileged_integration_enabled() {
         return Ok(());
     }
+    if !privileged_kvno_integration_enabled() {
+        return Ok(());
+    }
     let _guard = INTEGRATION_LOCK.lock().expect("integration test lock");
 
     let env = ExternalKrbEnv::new("kvno-service")?;
@@ -959,6 +962,9 @@ fn docker_mit_kdc_tokio_client_uses_external_ccache_tgt() -> Result<(), Box<dyn 
 fn docker_mit_kdc_tokio_client_uses_cached_service_ticket_without_kdc() -> Result<(), Box<dyn Error>>
 {
     if !privileged_integration_enabled() {
+        return Ok(());
+    }
+    if !privileged_kvno_integration_enabled() {
         return Ok(());
     }
     let _guard = INTEGRATION_LOCK.lock().expect("integration test lock");
@@ -1986,7 +1992,36 @@ fn privileged_integration_enabled() -> bool {
         );
         return false;
     }
+    if !command_available("kinit") {
+        eprintln!(
+            "skipping privileged Docker KDC integration test; set a PATH-accessible kinit binary to enable"
+        );
+        return false;
+    }
     true
+}
+
+fn privileged_kvno_integration_enabled() -> bool {
+    if !privileged_integration_enabled() {
+        return false;
+    }
+    if !command_available("kvno") {
+        eprintln!(
+            "skipping privileged Docker KDC kvno tests; set a PATH-accessible kvno binary to enable"
+        );
+        return false;
+    }
+    true
+}
+
+fn command_available(program: &str) -> bool {
+    Command::new(program)
+        .arg("--version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok()
 }
 
 fn external_tool_krb5_conf() -> String {
