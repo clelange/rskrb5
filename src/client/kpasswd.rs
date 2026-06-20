@@ -283,6 +283,7 @@ impl TokioClient {
         options: KpasswdRequestOptions,
     ) -> Result<crate::kadmin::ChangePasswordResult, Error> {
         let new_password = new_password.as_ref().to_vec();
+        let client = self.client.clone();
         let service = Principal::new(
             target.realm.clone(),
             KRB_NT_PRINCIPAL,
@@ -296,7 +297,7 @@ impl TokioClient {
                     .login_as_service_with_password_config(
                         &self.config,
                         self.protocol,
-                        target.clone(),
+                        client,
                         service,
                         &password,
                         self.as_req_options()?,
@@ -308,7 +309,7 @@ impl TokioClient {
                     .login_as_service_with_keytab_config(
                         &self.config,
                         self.protocol,
-                        target.clone(),
+                        client,
                         service,
                         &keytab,
                         self.as_req_options()?,
@@ -317,12 +318,16 @@ impl TokioClient {
             }
             None => self.get_service_ticket(service).await?,
         };
-        let change_data = crate::kadmin::ChangePasswdData::for_target(
-            &new_password,
-            target.name_type,
-            target.components.iter().map(String::as_str),
-            &target.realm,
-        )?;
+        let change_data = if target == self.client {
+            crate::kadmin::ChangePasswdData::new(&new_password)
+        } else {
+            crate::kadmin::ChangePasswdData::for_target(
+                &new_password,
+                target.name_type,
+                target.components.iter().map(String::as_str),
+                &target.realm,
+            )?
+        };
         let request = build_kpasswd_request(&ticket, &change_data, options)?;
         let reply = self
             .transport

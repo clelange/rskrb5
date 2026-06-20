@@ -61,3 +61,16 @@
 - Verification: added a focused Tokio unit test that asserts target principal appears in
   the encrypted `ChangePasswdData` payload and that kpasswd responses are accepted
   through the new target-specific API.
+- Decision: when constructing `ChangePasswdData`, keep `targ_name`/`targ_realm`
+  unset for self-password changes, and set explicit target fields only for
+  `change_password_for` calls targeting another principal.
+- Decision: explicit-target password changes must still authenticate AS/requests as
+  `self.client` and only vary the encrypted `ChangePasswdData` target metadata;
+  this avoids reusing long-term credentials as the `target` principal.
+- Trade-off: this behavior change fixes a latent credential flow bug but preserves the
+  existing “password rotation only for self target” contract for simplicity.
+- Review fix: initial implementation used `target` as AS-login client principal and
+  always encoded `target` in `ChangePasswdData`, which caused explicit-target change
+  to mutate the local principal and wrong request contents on subsequent self-change
+  attempts. Tests now cover both regressions: explicit target payload fields and the
+  non-rotation path.
