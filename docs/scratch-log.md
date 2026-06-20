@@ -170,3 +170,13 @@
   `cargo test --all-features`, compatibility-report diff, and
   `scripts/run-gated-integration.sh run --test client_integration docker_mit_kdc_dns_srv_as_login`
   all pass.
+
+## 2026-06-26
+
+- Decision: add focused negative parity tests for `Reply::encode` invariants:
+  mixed KRB-ERROR + AP-REP payloads and missing required reply fields.
+- Trade-off: keep these as unit tests in `tests/kadmin.rs` only; no transport-level
+  or integration tests were added because the invariants are pure serialization state
+  checks and already covered by existing integration flows.
+- Review fix: confirmed `tests/kadmin.rs` coverage expanded to 32 tests and no
+  regressions; all test suites and compatibility-report diff still pass.
