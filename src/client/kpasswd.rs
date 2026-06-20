@@ -239,7 +239,26 @@ impl TokioClient {
     ) -> Result<crate::kadmin::ChangePasswordResult, Error> {
         let (timestamp, cusec) = current_preauth_time()?;
         let sequence_number = random_nonce()?;
-        self.change_password_with_options(
+        self.change_password_for_with_options(
+            self.client.clone(),
+            new_password,
+            KpasswdRequestOptions::new(timestamp, cusec, sequence_number, sender_address),
+        )
+        .await
+    }
+
+    /// Change the given target principal's password using generated timestamp and
+    /// sequence metadata.
+    pub async fn change_password_for(
+        &mut self,
+        target: Principal,
+        new_password: impl AsRef<[u8]>,
+        sender_address: rasn_kerberos::HostAddress,
+    ) -> Result<crate::kadmin::ChangePasswordResult, Error> {
+        let (timestamp, cusec) = current_preauth_time()?;
+        let sequence_number = random_nonce()?;
+        self.change_password_for_with_options(
+            target,
             new_password,
             KpasswdRequestOptions::new(timestamp, cusec, sequence_number, sender_address),
         )
@@ -252,15 +271,25 @@ impl TokioClient {
         new_password: impl AsRef<[u8]>,
         options: KpasswdRequestOptions,
     ) -> Result<crate::kadmin::ChangePasswordResult, Error> {
+        self.change_password_for_with_options(self.client.clone(), new_password, options)
+            .await
+    }
+
+    /// Change the given target principal's password using explicit request metadata.
+    pub async fn change_password_for_with_options(
+        &mut self,
+        target: Principal,
+        new_password: impl AsRef<[u8]>,
+        options: KpasswdRequestOptions,
+    ) -> Result<crate::kadmin::ChangePasswordResult, Error> {
         let new_password = new_password.as_ref().to_vec();
-        let target = self.client.clone();
         let service = Principal::new(
             target.realm.clone(),
             KRB_NT_PRINCIPAL,
             ["kadmin".to_owned(), "changepw".to_owned()],
         );
-        let update_password_credential =
-            matches!(self.credentials, Some(TokioClientCredentials::Password(_)));
+        let update_password_credential = target == self.client
+            && matches!(self.credentials, Some(TokioClientCredentials::Password(_)));
         let ticket = match self.credentials.clone() {
             Some(TokioClientCredentials::Password(password)) => {
                 self.transport

@@ -45,3 +45,19 @@
 - Review fix: live HTTP Negotiate tests now connect to `TEST_HTTP_ADDR` while preserving the `TEST_HTTP_URL` host header, so HTTP validation no longer depends on host DNS for the socket address.
 - Verification: with resolver mutation disabled, the local gated Docker slice now passes the DNS-SRV AS-login test plus both raw Kerberos and SPNEGO HTTP authentication tests.
 - Review fix: the compatibility report generator's evaluation-only feature set exposed a Tokio-only kpasswd import warning; moved that import behind the Tokio feature gate.
+
+## 2026-06-20
+
+- Decision: add `TokioClient::change_password_for` and
+  `TokioClient::change_password_for_with_options` to support explicit target
+  principals in kadmin change flows while preserving existing
+  `change_password*` default-target behavior.
+- Decision: update in-place password credential rotation only when target matches the
+  configured client principal; changing another principal keeps login credentials
+  unchanged.
+- Trade-off: keep service-ticket acquisition logic and error mapping inside `client`
+  and avoid new generic helpers; only target principal construction and request
+  intent were added in `kpasswd`.
+- Verification: added a focused Tokio unit test that asserts target principal appears in
+  the encrypted `ChangePasswdData` payload and that kpasswd responses are accepted
+  through the new target-specific API.
