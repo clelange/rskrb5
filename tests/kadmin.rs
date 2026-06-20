@@ -594,6 +594,38 @@ fn kpasswd_reply_roundtrips_error_reply_with_marshal() {
 }
 
 #[test]
+fn kpasswd_reply_rejects_mixed_error_payloads() {
+    let mut reply = Reply::parse(&kpasswd_reply_frame(0, &decode_hex(KRB_ERROR_WITH_EDATA)))
+        .expect("KRB-ERROR reply parses");
+    let success = Reply::parse(&decode_hex(MARSHALLED_KPASSWD_REP)).expect("KRB-REP reply parses");
+    reply.ap_rep = success.ap_rep;
+    reply.krb_priv = success.krb_priv;
+
+    assert!(matches!(
+        reply.encode(),
+        Err(KadminError::InvalidErrorReplyPayload)
+    ));
+}
+
+#[test]
+fn kpasswd_reply_rejects_success_payloads_without_krb_priv() {
+    let mut reply =
+        Reply::parse(&decode_hex(MARSHALLED_KPASSWD_REP)).expect("KRB-REP reply parses");
+    reply.krb_priv = None;
+
+    assert!(matches!(reply.encode(), Err(KadminError::MissingKrbPriv)));
+}
+
+#[test]
+fn kpasswd_reply_rejects_success_payloads_without_ap_rep() {
+    let mut reply =
+        Reply::parse(&decode_hex(MARSHALLED_KPASSWD_REP)).expect("KRB-REP reply parses");
+    reply.ap_rep = None;
+
+    assert!(matches!(reply.encode(), Err(KadminError::MissingApRep)));
+}
+
+#[test]
 fn kpasswd_reply_exposes_result_code_and_text_helpers() {
     let reply = Reply::parse(&kpasswd_reply_frame(0, &decode_hex(KRB_ERROR_WITH_EDATA)))
         .expect("KRB-ERROR reply parses");
