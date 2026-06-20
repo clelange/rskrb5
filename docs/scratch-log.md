@@ -152,3 +152,21 @@
   `cargo check`, `cargo clippy --all-targets --all-features -- -D warnings`,
   `cargo test --all-features`, and dedicated `cargo test --all-features --test client_ad_integration`
   all pass.
+
+## 2026-06-25
+
+- Decision: complete the narrow `kadmin::Reply` marshal/encoding parity slice for
+  gokrb5 compatibility by adding `Reply::encode` and `Reply::marshal` alias.
+- Trade-off: implement encode by reusing existing typed message encoders (`ap_rep`,
+  `krb_error`, `krb_priv`) and mapping module-specific errors through local
+  conversion helpers, avoiding a new generic serializer abstraction.
+- Decision: fail inconsistent reply states with a dedicated
+  `Error::InvalidErrorReplyPayload` when a KRB-ERROR reply also carries AP-REP/KRB-PRIV
+  payload fields.
+- Review fix: fixed compile-time scoping (`encode_krb_error`, `encode_ap_rep`) and mapped
+  `encode_krb_error` failures through `krb_error_error`.
+- Verification: `cargo fmt --check`, `cargo check --no-default-features`,
+  `cargo check`, `cargo check --all-features`, `cargo clippy --all-targets --all-features -- -D warnings`,
+  `cargo test --all-features`, compatibility-report diff, and
+  `scripts/run-gated-integration.sh run --test client_integration docker_mit_kdc_dns_srv_as_login`
+  all pass.

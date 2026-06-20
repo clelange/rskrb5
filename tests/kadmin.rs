@@ -553,6 +553,15 @@ fn kpasswd_reply_matches_gokrb5_fixture() {
 }
 
 #[test]
+fn kpasswd_reply_roundtrips_success_reply_with_marshal() {
+    let bytes = decode_hex(MARSHALLED_KPASSWD_REP);
+    let reply = Reply::parse(&bytes).expect("kpasswd reply parses");
+
+    assert_eq!(reply.marshal().expect("reply marshals"), bytes);
+    assert_eq!(reply.encode().expect("reply encodes"), bytes);
+}
+
+#[test]
 fn kpasswd_reply_supports_gokrb5_aliases() {
     let bytes = kpasswd_reply_frame(0, &decode_hex(KRB_ERROR_WITH_EDATA));
     let mut reply = Reply::unmarshal(&bytes).expect("reply unmarshals");
@@ -573,6 +582,15 @@ fn kpasswd_reply_supports_gokrb5_aliases() {
         reply.decrypt_result(&key).expect("result decrypts"),
         expected
     );
+}
+
+#[test]
+fn kpasswd_reply_roundtrips_error_reply_with_marshal() {
+    let bytes = kpasswd_reply_frame(0, &decode_hex(KRB_ERROR_WITH_EDATA));
+    let reply = Reply::parse(&bytes).expect("KRB-ERROR reply parses");
+
+    assert_eq!(reply.marshal().expect("reply marshals"), bytes);
+    assert_eq!(reply.encode().expect("reply encodes"), bytes);
 }
 
 #[test]

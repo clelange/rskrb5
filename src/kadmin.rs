@@ -557,6 +557,73 @@ impl Reply {
         let enc_part = decrypt_krb_priv_enc_part(krb_priv, key)?;
         ChangePasswordResult::parse(enc_part.user_data.as_ref())
     }
+
+    /// Re-encode this reply into a framed kpasswd response.
+    pub fn encode(&self) -> Result<Vec<u8>, Error> {
+        let (ap_rep, krb_priv, krb_error) = (
+            self.ap_rep.as_ref(),
+            self.krb_priv.as_ref(),
+            self.krb_error.as_ref(),
+        );
+
+        if self.is_krb_error() {
+            if ap_rep.is_some() || krb_priv.is_some() {
+                return Err(Error::InvalidErrorReplyPayload);
+            }
+            let body = krb_error
+                .map(|krb_error| {
+                    crate::krb_error::encode_krb_error(krb_error).map_err(krb_error_error)
+                })
+                .ok_or(Error::MissingKrbError)??;
+            let frame_length = 2 + 2 + 2 + body.len();
+            if frame_length > usize::from(u16::MAX) {
+                return Err(Error::FrameTooLarge {
+                    actual: frame_length,
+                });
+            }
+
+            let mut frame = Vec::with_capacity(frame_length);
+            frame.extend_from_slice(&(frame_length as u16).to_be_bytes());
+            frame.extend_from_slice(&CHANGE_PASSWORD_REPLY_VERSION.to_be_bytes());
+            frame.extend_from_slice(&0u16.to_be_bytes());
+            frame.extend_from_slice(&body);
+            return Ok(frame);
+        }
+
+        let ap_rep = ap_rep.ok_or(Error::MissingApRep)?;
+        let krb_priv = krb_priv.ok_or(Error::MissingKrbPriv)?;
+        let encoded_ap_rep = crate::ap_rep::encode_ap_rep(ap_rep).map_err(ap_rep_error)?;
+        let ap_rep_length: u16 =
+            encoded_ap_rep
+                .len()
+                .try_into()
+                .map_err(|_| Error::FrameTooLarge {
+                    actual: encoded_ap_rep.len(),
+                })?;
+        let encoded_krb_priv = encode_krb_priv(krb_priv)?;
+
+        let frame_length = 2 + 2 + 2 + encoded_ap_rep.len() + encoded_krb_priv.len();
+        if frame_length > usize::from(u16::MAX) {
+            return Err(Error::FrameTooLarge {
+                actual: frame_length,
+            });
+        }
+
+        let mut frame = Vec::with_capacity(frame_length);
+        frame.extend_from_slice(&(frame_length as u16).to_be_bytes());
+        frame.extend_from_slice(&CHANGE_PASSWORD_REPLY_VERSION.to_be_bytes());
+        frame.extend_from_slice(&ap_rep_length.to_be_bytes());
+        frame.extend_from_slice(&encoded_ap_rep);
+        frame.extend_from_slice(&encoded_krb_priv);
+        Ok(frame)
+    }
+
+    /// Re-encode this reply into a framed kpasswd response.
+    ///
+    /// Compatibility alias for callers following the gokrb5 API naming.
+    pub fn marshal(&self) -> Result<Vec<u8>, Error> {
+        self.encode()
+    }
 }
 
 /// Cleartext password-change response code and text.
@@ -664,6 +731,15 @@ pub enum Error {
     /// A non-error reply did not include a KRB-PRIV section.
     #[error("kadmin reply does not contain KRB-PRIV")]
     MissingKrbPriv,
+    /// A failure reply did not include a KRB-ERROR section.
+    #[error("kadmin reply does not contain KRB-ERROR")]
+    MissingKrbError,
+    /// A successful reply did not include an AP-REP section.
+    #[error("kadmin reply does not contain AP-REP")]
+    MissingApRep,
+    /// A KRB-ERROR reply included AP-REP and/or KRB-PRIV payload fields.
+    #[error("kadmin error reply cannot include AP-REP or KRB-PRIV")]
+    InvalidErrorReplyPayload,
     /// The encrypted data etype is not implemented yet.
     #[error("unsupported encryption type: {0}")]
     UnsupportedEtype(i32),
