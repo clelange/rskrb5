@@ -524,6 +524,18 @@ impl Reply {
         self.krb_error.is_some()
     }
 
+    /// Access the parsed change-password result code for compatibility with
+    /// gokrb5's `ResultCode`.
+    pub fn result_code(&self) -> Option<u16> {
+        self.result.as_ref().map(|result| result.code)
+    }
+
+    /// Access the parsed change-password result text for compatibility with
+    /// gokrb5's `Result`.
+    pub fn result_text(&self) -> Option<&str> {
+        self.result.as_ref().map(|result| result.text.as_str())
+    }
+
     /// Decrypt a successful reply's encrypted result into the stored `result`.
     ///
     /// Compatibility alias for callers following the gokrb5 API naming.

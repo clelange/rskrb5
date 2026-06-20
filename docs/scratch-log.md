@@ -125,3 +125,16 @@
 - Verification: `cargo fmt --check`, `cargo check --no-default-features`, `cargo check`,
   `cargo clippy --all-targets --all-features -- -D warnings`, and `cargo test --all-features`
   all pass.
+
+- Decision: keep `kadmin` API parity narrow for gokrb5-v8 by adding compatible reply
+  accessors in `src/kadmin.rs`: `Reply::result_code` and `Reply::result_text`,
+  matching `ResultCode`/`Result` intent while preserving existing `Option`-style semantics.
+- Trade-off: these helpers intentionally return `None` for success replies (`KRB-REP`) and
+  only populate on error replies (`KRB-ERROR`), which avoids implicit error defaults and keeps
+  behavior explicit for callers.
+- Review fix: added tests in `tests/kadmin.rs` for both populated-failure and
+  success-`None` helper behavior so future parser regressions are caught directly.
+- Verification: ran full local validation (`cargo fmt --check`, `cargo check
+  --no-default-features`, `cargo check`, `cargo check --all-features`,
+  `cargo clippy --all-targets --all-features -- -D warnings`,
+  `cargo test --all-features`) and compatibility-report diff; all passed.

@@ -576,6 +576,15 @@ fn kpasswd_reply_supports_gokrb5_aliases() {
 }
 
 #[test]
+fn kpasswd_reply_exposes_result_code_and_text_helpers() {
+    let reply = Reply::parse(&kpasswd_reply_frame(0, &decode_hex(KRB_ERROR_WITH_EDATA)))
+        .expect("KRB-ERROR reply parses");
+
+    assert_eq!(reply.result_code(), Some(u16::from_be_bytes([b'k', b'r'])));
+    assert_eq!(reply.result_text(), Some("b5data"));
+}
+
+#[test]
 fn kpasswd_reply_parses_krb_error_response_data() {
     let error = decode_hex(KRB_ERROR_WITH_EDATA);
     let frame = kpasswd_reply_frame(0, &error);
@@ -595,6 +604,14 @@ fn kpasswd_reply_parses_krb_error_response_data() {
             text: "b5data".to_owned(),
         })
     );
+}
+
+#[test]
+fn kpasswd_reply_result_helpers_absent_for_success_reply() {
+    let reply = Reply::parse(&decode_hex(MARSHALLED_KPASSWD_REP)).expect("KRB-REP reply parses");
+
+    assert_eq!(reply.result_code(), None);
+    assert_eq!(reply.result_text(), None);
 }
 
 #[test]
