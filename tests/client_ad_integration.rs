@@ -2,8 +2,9 @@
 
 use std::env;
 use std::error::Error;
+use std::net::{TcpStream, ToSocketAddrs};
 use std::sync::Mutex;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use rskrb5::client::{
     ApReqOptions, KdcProtocol, Principal, TgsRepSession, TokioClient, build_ap_req_with_confounder,
@@ -154,12 +155,70 @@ fn active_directory_trust_user_domain_service_ticket_validates_pac() -> Result<(
 }
 
 fn ad_enabled() -> bool {
-    if env::var("TESTAD").as_deref() == Ok("1") {
-        true
-    } else {
+    if !ad_prefetch_gate() {
         eprintln!("skipping AD integration test; set TESTAD=1 to enable");
-        false
+        return false;
     }
+
+    let user_kdc = ad_user_kdc_addr();
+    let resource_kdc = ad_resource_kdc_addr();
+
+    if !tcp_reachable(&user_kdc, "USER realm KDC") {
+        eprintln!("skipping AD integration test; cannot reach user KDC at {user_kdc}");
+        return false;
+    }
+
+    if !tcp_reachable(&resource_kdc, "RESOURCE realm KDC") {
+        eprintln!("skipping AD integration test; cannot reach resource KDC at {resource_kdc}");
+        return false;
+    }
+
+    true
+}
+
+fn ad_prefetch_gate() -> bool {
+    env::var("TESTAD").as_deref() == Ok("1")
+}
+
+fn ad_user_kdc_addr() -> String {
+    env_value(
+        &["TEST_AD_USER_KDC_ADDR", "TEST_AD_KDC_ADDR"],
+        "192.168.88.100:88",
+    )
+}
+
+fn ad_resource_kdc_addr() -> String {
+    env_value(
+        &["TEST_AD_RESOURCE_KDC_ADDR", "TEST_AD_RES_KDC_ADDR"],
+        "192.168.88.101:88",
+    )
+}
+
+fn ad_user_admin_addr() -> String {
+    env_value(
+        &["TEST_AD_USER_ADMIN_ADDR", "TEST_AD_ADMIN_ADDR"],
+        "192.168.88.100:464",
+    )
+}
+
+fn ad_resource_admin_addr() -> String {
+    env_value(
+        &["TEST_AD_RESOURCE_ADMIN_ADDR", "TEST_AD_RES_ADMIN_ADDR"],
+        "192.168.88.101:464",
+    )
+}
+
+fn tcp_reachable(endpoint: &str, label: &str) -> bool {
+    let mut addrs = match endpoint.to_socket_addrs() {
+        Ok(addrs) => addrs,
+        Err(error) => {
+            eprintln!("failed to resolve {label} {endpoint}: {error}");
+            return false;
+        }
+    };
+    let timeout = Duration::from_secs(1);
+
+    addrs.any(|addr| TcpStream::connect_timeout(&addr, timeout).is_ok())
 }
 
 fn ad_client(user: &str, keytab: Keytab, rc4: bool) -> Result<TokioClient, Box<dyn Error>> {
@@ -172,22 +231,10 @@ fn ad_client(user: &str, keytab: Keytab, rc4: bool) -> Result<TokioClient, Box<d
 }
 
 fn ad_config(rc4: bool) -> Result<Config, Box<dyn Error>> {
-    let user_kdc = env_value(
-        &["TEST_AD_USER_KDC_ADDR", "TEST_AD_KDC_ADDR"],
-        "192.168.88.100:88",
-    );
-    let user_admin = env_value(
-        &["TEST_AD_USER_ADMIN_ADDR", "TEST_AD_ADMIN_ADDR"],
-        "192.168.88.100:464",
-    );
-    let resource_kdc = env_value(
-        &["TEST_AD_RESOURCE_KDC_ADDR", "TEST_AD_RES_KDC_ADDR"],
-        "192.168.88.101:88",
-    );
-    let resource_admin = env_value(
-        &["TEST_AD_RESOURCE_ADMIN_ADDR", "TEST_AD_RES_ADMIN_ADDR"],
-        "192.168.88.101:464",
-    );
+    let user_kdc = ad_user_kdc_addr();
+    let user_admin = ad_user_admin_addr();
+    let resource_kdc = ad_resource_kdc_addr();
+    let resource_admin = ad_resource_admin_addr();
     let rc4_options = if rc4 {
         r#"
   allow_weak_crypto = true

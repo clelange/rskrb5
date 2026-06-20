@@ -138,3 +138,17 @@
   --no-default-features`, `cargo check`, `cargo check --all-features`,
   `cargo clippy --all-targets --all-features -- -D warnings`,
   `cargo test --all-features`) and compatibility-report diff; all passed.
+
+## 2026-06-20 (follow-up, AD hardening)
+
+- Decision: harden `TESTAD=1` integration entry by adding explicit TCP reachability
+  checks for the configured AD test KDC endpoints in `tests/client_ad_integration.rs`.
+- Trade-off: AD suites now skip early with clear logs when either realm KDC is unreachable,
+  rather than failing later as `KdcEndpointFailures` after transport timeouts.
+- Review fix: centralized AD address derivation into helpers (`ad_user_kdc_addr`, `ad_resource_kdc_addr`,
+  `ad_user_admin_addr`, `ad_resource_admin_addr`) so tests and preflight checks share defaults
+  and user-overridden env values.
+- Verification: `cargo fmt --all`, `cargo check --no-default-features`,
+  `cargo check`, `cargo clippy --all-targets --all-features -- -D warnings`,
+  `cargo test --all-features`, and dedicated `cargo test --all-features --test client_ad_integration`
+  all pass.
