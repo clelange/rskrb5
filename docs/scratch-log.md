@@ -190,3 +190,15 @@
 - Review fix: added a focused upstream-style constructor test to assert decoded
   `ChangePasswdData`, sender loopback address, and request-frame identity, while
   updating existing fixture-based callsites to the explicit-options helper.
+
+## 2026-06-28
+
+- Decision: keep integration validation authoritative through
+  `scripts/run-gated-integration.sh` rather than raw `INTEGRATION=1` runs, because the
+  script provisions fixtures and ensures consistent env wiring.
+- Trade-off: keep direct `INTEGRATION=1` as a local smoke path for quick unit/integration
+  feedback, but treat connection-refused outcomes as environment problems unless fixtures are
+  started via the launcher.
+- Review fix: plain `INTEGRATION=1` tests initially failed with `Connection refused`
+  to 127.0.0.1:88/98/78/58; starting fixtures through the script resolved the failures and
+  the full Docker integration, privileged, and AD-gated tests all passed.
