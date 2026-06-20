@@ -3,6 +3,7 @@
 use crate::crypto::KerberosEtype;
 use crate::keytab::EncryptionKey;
 use rasn::prelude::*;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub use crate::krb_priv::{
     EncKrbPrivPartOptions, KRB_PRIV_ENCPART_USAGE, KRB_PRIV_MSG_TYPE, KRB_PRIV_PVNO, host_address,
@@ -373,6 +374,37 @@ pub fn build_change_password_message(
 
 /// Compatibility alias mirroring gokrb5 naming.
 pub fn change_passwd_msg(
+    client_principal: rasn_kerberos::PrincipalName,
+    client_realm: &str,
+    new_password: impl AsRef<[u8]>,
+    service_ticket: rasn_kerberos::Ticket,
+    session_key: &EncryptionKey,
+) -> Result<BuiltChangePasswordRequest, Error> {
+    let change_data = ChangePasswdData {
+        new_passwd: new_password.as_ref().to_vec().into(),
+        targ_name: Some(client_principal.clone()),
+        targ_realm: Some(kerberos_string(client_realm)?),
+    };
+    let (timestamp, cusec) = current_kerberos_time()?;
+    let options = ChangePasswdMessageOptions::new(
+        timestamp,
+        cusec,
+        current_sequence_number(),
+        ipv4_host_address([127, 0, 0, 1]),
+    );
+
+    build_change_password_message(
+        client_principal,
+        client_realm,
+        &change_data,
+        service_ticket,
+        session_key,
+        options,
+    )
+}
+
+/// Compatibility alias mirroring gokrb5 naming with caller-provided auth context.
+pub fn change_passwd_msg_with_options(
     client_principal: rasn_kerberos::PrincipalName,
     client_realm: &str,
     change_data: &ChangePasswdData,
@@ -786,6 +818,9 @@ pub enum Error {
     /// A Kerberos string value could not be constructed.
     #[error("invalid Kerberos string value: {0}")]
     InvalidKerberosString(String),
+    /// Timestamp conversion from system time overflowed.
+    #[error("system time conversion overflow")]
+    TimeOverflow,
     /// Encoded AP-REQ is too large for the two-byte kpasswd length field.
     #[error("encoded AP-REQ is too large: {actual} bytes")]
     ApReqTooLarge {
@@ -976,6 +1011,29 @@ fn random_key_material(size: usize) -> Result<Vec<u8>, Error> {
         message: source.to_string(),
     })?;
     Ok(value)
+}
+
+fn current_kerberos_time() -> Result<(rasn_kerberos::KerberosTime, u32), Error> {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| Error::TimeOverflow)?;
+    let seconds = i64::try_from(now.as_secs()).map_err(|_| Error::TimeOverflow)?;
+    let cusec = now.subsec_micros();
+    let utc =
+        chrono::DateTime::<chrono::Utc>::from_timestamp(seconds, 0).ok_or(Error::TimeOverflow)?;
+    let offset = chrono::FixedOffset::east_opt(0).ok_or(Error::TimeOverflow)?;
+
+    Ok((
+        rasn_kerberos::KerberosTime(utc.with_timezone(&offset)),
+        cusec,
+    ))
+}
+
+fn current_sequence_number() -> u32 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.subsec_micros())
+        .unwrap_or(0)
 }
 
 fn encryption_key_to_rasn(value: &EncryptionKey) -> rasn_kerberos::EncryptionKey {

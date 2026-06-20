@@ -180,3 +180,13 @@
   checks and already covered by existing integration flows.
 - Review fix: confirmed `tests/kadmin.rs` coverage expanded to 32 tests and no
   regressions; all test suites and compatibility-report diff still pass.
+
+## 2026-06-27
+
+- Decision: align `kadmin::change_passwd_msg` with gokrb5-v8 convenience semantics by making
+  it generate timestamp, microsecond component, sequence number, and sender loopback defaults.
+- Trade-off: preserve the existing explicit-context flow by adding a new
+  `change_passwd_msg_with_options` API rather than breaking prior callers.
+- Review fix: added a focused upstream-style constructor test to assert decoded
+  `ChangePasswdData`, sender loopback address, and request-frame identity, while
+  updating existing fixture-based callsites to the explicit-options helper.

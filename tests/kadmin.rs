@@ -10,8 +10,8 @@ use rskrb5::kadmin::{
     Reply, Request, build_change_password_message, build_change_password_message_with_confounders,
     build_change_password_request, build_change_password_request_with_confounder, build_krb_priv,
     build_krb_priv_with_confounder, change_passwd_msg, change_passwd_msg_with_confounders,
-    decode_enc_krb_priv_part, decode_krb_priv, decrypt_krb_priv_enc_part, encode_krb_priv,
-    ipv4_host_address, ipv6_host_address,
+    change_passwd_msg_with_options, decode_enc_krb_priv_part, decode_krb_priv,
+    decrypt_krb_priv_enc_part, encode_krb_priv, ipv4_host_address, ipv6_host_address,
 };
 use rskrb5::keytab::EncryptionKey;
 const CHG_PASSWD_MSG_AP_REQ_CONFOUNDER: &str = "00112233445566778899aabbccddeeff";
@@ -399,7 +399,7 @@ fn kpasswd_request_change_passwd_msg_alias_builds_and_decrypts_payload() {
         ChangePasswdData::for_target(b"updated-password", 1, ["target-user"], "TEST.GOKRB5")
             .expect("targeted ChangePasswdData builds");
 
-    let built = change_passwd_msg(
+    let built = change_passwd_msg_with_options(
         rasn_principal_name(1, ["testuser1"]),
         "TEST.GOKRB5",
         &change_data,
@@ -416,6 +416,39 @@ fn kpasswd_request_change_passwd_msg_alias_builds_and_decrypts_payload() {
         ChangePasswdData::decode_der(enc_part.user_data.as_ref()).expect("payload decodes");
 
     assert_eq!(decoded_data, change_data);
+}
+
+#[test]
+fn kpasswd_request_change_passwd_msg_uses_upstream_style_inputs() {
+    let fixture_request =
+        Request::parse(&decode_hex(MARSHALLED_KPASSWD_REQ)).expect("kpasswd request parses");
+    let service_ticket = fixture_request.ap_req.ticket;
+    let service_session_key = EncryptionKey {
+        etype: fixture_request.ap_req.authenticator.etype,
+        value: vec![0x44; 32],
+    };
+    let change_data =
+        ChangePasswdData::for_target(b"default-style-password", 1, ["testuser1"], "TEST.GOKRB5")
+            .expect("targeted ChangePasswdData builds");
+
+    let built = change_passwd_msg(
+        rasn_principal_name(1, ["testuser1"]),
+        "TEST.GOKRB5",
+        b"default-style-password",
+        service_ticket,
+        &service_session_key,
+    )
+    .expect("gokrb5-compatible constructor builds");
+
+    let parsed = Request::parse(&built.der).expect("gokrb5-compatible constructor parses");
+    let enc_part =
+        decrypt_krb_priv_enc_part(&parsed.krb_priv, &built.reply_key).expect("KRB-PRIV decrypts");
+    let decoded_data =
+        ChangePasswdData::decode_der(enc_part.user_data.as_ref()).expect("payload decodes");
+
+    assert_eq!(decoded_data, change_data);
+    assert_eq!(enc_part.sender_address, ipv4_host_address([127, 0, 0, 1]));
+    assert_eq!(parsed, built.request);
 }
 
 #[test]
