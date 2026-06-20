@@ -2086,7 +2086,9 @@ impl NegotiateClient {
         new_password: impl AsRef<[u8]>,
         sender_address: rasn_kerberos::HostAddress,
     ) -> Result<crate::kadmin::ChangePasswordResult, Error> {
-        self.inner.change_password(new_password, sender_address).await
+        self.inner
+            .change_password(new_password, sender_address)
+            .await
     }
 
     /// Change the given target principal's password using generated timestamp and
@@ -2272,8 +2274,10 @@ impl BlockingNegotiateClient {
         new_password: impl AsRef<[u8]>,
         sender_address: rasn_kerberos::HostAddress,
     ) -> Result<crate::kadmin::ChangePasswordResult, Error> {
-        self.runtime
-            .block_on(self.client.change_password_for(target, new_password, sender_address))
+        self.runtime.block_on(
+            self.client
+                .change_password_for(target, new_password, sender_address),
+        )
     }
 
     /// Change this client's password using explicit kpasswd request metadata.
@@ -2282,8 +2286,10 @@ impl BlockingNegotiateClient {
         new_password: impl AsRef<[u8]>,
         options: KpasswdRequestOptions,
     ) -> Result<crate::kadmin::ChangePasswordResult, Error> {
-        self.runtime
-            .block_on(self.client.change_password_with_options(new_password, options))
+        self.runtime.block_on(
+            self.client
+                .change_password_with_options(new_password, options),
+        )
     }
 
     /// Change the given target principal's password using explicit kpasswd
@@ -2295,7 +2301,10 @@ impl BlockingNegotiateClient {
         options: KpasswdRequestOptions,
     ) -> Result<crate::kadmin::ChangePasswordResult, Error> {
         self.runtime
-            .block_on(self.client.change_password_for_with_options(target, new_password, options))
+            .block_on(
+                self.client
+                    .change_password_for_with_options(target, new_password, options),
+            )
     }
 }
 
