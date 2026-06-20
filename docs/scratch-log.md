@@ -74,3 +74,11 @@
   to mutate the local principal and wrong request contents on subsequent self-change
   attempts. Tests now cover both regressions: explicit target payload fields and the
   non-rotation path.
+
+## 2026-06-22
+
+- Decision: mirror `TokioClient` password-change methods on `NegotiateClient` and
+  `BlockingNegotiateClient` as thin pass-throughs (`change_password*` methods).
+- Trade-off: this expands the high-level HTTP wrapper API but keeps behavior
+  centralized in `client/kpasswd.rs`, avoiding duplicated logic and preserving
+  existing kadmin request semantics.

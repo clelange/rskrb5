@@ -2079,6 +2079,52 @@ impl NegotiateClient {
         self.authorization_context(Principal::host_based_service(service, host)?)
             .await
     }
+
+    /// Change this client's password using generated timestamp and sequence metadata.
+    pub async fn change_password(
+        &mut self,
+        new_password: impl AsRef<[u8]>,
+        sender_address: rasn_kerberos::HostAddress,
+    ) -> Result<crate::kadmin::ChangePasswordResult, Error> {
+        self.inner.change_password(new_password, sender_address).await
+    }
+
+    /// Change the given target principal's password using generated timestamp and
+    /// sequence metadata.
+    pub async fn change_password_for(
+        &mut self,
+        target: Principal,
+        new_password: impl AsRef<[u8]>,
+        sender_address: rasn_kerberos::HostAddress,
+    ) -> Result<crate::kadmin::ChangePasswordResult, Error> {
+        self.inner
+            .change_password_for(target, new_password, sender_address)
+            .await
+    }
+
+    /// Change this client's password using explicit kpasswd request metadata.
+    pub async fn change_password_with_options(
+        &mut self,
+        new_password: impl AsRef<[u8]>,
+        options: KpasswdRequestOptions,
+    ) -> Result<crate::kadmin::ChangePasswordResult, Error> {
+        self.inner
+            .change_password_with_options(new_password, options)
+            .await
+    }
+
+    /// Change the given target principal's password using explicit kpasswd
+    /// request metadata.
+    pub async fn change_password_for_with_options(
+        &mut self,
+        target: Principal,
+        new_password: impl AsRef<[u8]>,
+        options: KpasswdRequestOptions,
+    ) -> Result<crate::kadmin::ChangePasswordResult, Error> {
+        self.inner
+            .change_password_for_with_options(target, new_password, options)
+            .await
+    }
 }
 
 /// Blocking wrapper for synchronous CLI consumers of HTTP Negotiate.
@@ -2206,6 +2252,50 @@ impl BlockingNegotiateClient {
     ) -> Result<crate::spnego::InitiatorContext, Error> {
         self.runtime
             .block_on(self.client.authorization_context_for_host(service, host))
+    }
+
+    /// Change this client's password using generated timestamp and sequence metadata.
+    pub fn change_password(
+        &mut self,
+        new_password: impl AsRef<[u8]>,
+        sender_address: rasn_kerberos::HostAddress,
+    ) -> Result<crate::kadmin::ChangePasswordResult, Error> {
+        self.runtime
+            .block_on(self.client.change_password(new_password, sender_address))
+    }
+
+    /// Change the given target principal's password using generated timestamp and
+    /// sequence metadata.
+    pub fn change_password_for(
+        &mut self,
+        target: Principal,
+        new_password: impl AsRef<[u8]>,
+        sender_address: rasn_kerberos::HostAddress,
+    ) -> Result<crate::kadmin::ChangePasswordResult, Error> {
+        self.runtime
+            .block_on(self.client.change_password_for(target, new_password, sender_address))
+    }
+
+    /// Change this client's password using explicit kpasswd request metadata.
+    pub fn change_password_with_options(
+        &mut self,
+        new_password: impl AsRef<[u8]>,
+        options: KpasswdRequestOptions,
+    ) -> Result<crate::kadmin::ChangePasswordResult, Error> {
+        self.runtime
+            .block_on(self.client.change_password_with_options(new_password, options))
+    }
+
+    /// Change the given target principal's password using explicit kpasswd
+    /// request metadata.
+    pub fn change_password_for_with_options(
+        &mut self,
+        target: Principal,
+        new_password: impl AsRef<[u8]>,
+        options: KpasswdRequestOptions,
+    ) -> Result<crate::kadmin::ChangePasswordResult, Error> {
+        self.runtime
+            .block_on(self.client.change_password_for_with_options(target, new_password, options))
     }
 }
 
