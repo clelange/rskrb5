@@ -2303,3 +2303,27 @@ fn base64_encode(bytes: &[u8]) -> String {
     use base64::Engine as _;
     base64::engine::general_purpose::STANDARD.encode(bytes)
 }
+
+#[cfg(test)]
+mod preflight_tests {
+    use super::*;
+    use std::net::TcpListener;
+
+    #[test]
+    fn tcp_reachable_accepts_open_local_listener() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind local listener");
+        let addr = listener.local_addr().expect("local listener address");
+        assert!(tcp_reachable(&addr.to_string(), "open listener"));
+        drop(listener);
+    }
+
+    #[test]
+    fn tcp_reachable_rejects_invalid_endpoint() {
+        assert!(!tcp_reachable(":::not-valid", "invalid"));
+    }
+
+    #[test]
+    fn tcp_reachable_rejects_closed_port_by_default() {
+        assert!(!tcp_reachable("127.0.0.1:9", "closed port"));
+    }
+}

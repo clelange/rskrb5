@@ -215,3 +215,16 @@
 - Review fix: plain `INTEGRATION=1` tests initially failed with `Connection refused`
   to 127.0.0.1:88/98/78/58; starting fixtures through the script resolved the failures and
   the full Docker integration, privileged, and AD-gated tests all passed.
+
+## 2026-06-29
+
+- Decision: add narrow unit coverage for `tests/client_integration.rs` preflight helpers in
+  `tcp_reachable` itself, so integration-gating behavior is exercised without requiring
+  fixture environments.
+- Trade-off: keep assertions local and deterministic (`open listener`, malformed endpoint,
+  closed default port) instead of adding broader network or DNS-dependent tests here.
+- Review fix: use a single explicit local listener and no hard-coded integration endpoints; avoid
+  flaky remote host dependence and keep test runtime unchanged.
+- Verification: full `cargo fmt --check`, `cargo check --no-default-features`, `cargo check`,
+  `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test --all-features`,
+  and compatibility-report diff all pass.
