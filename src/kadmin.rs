@@ -1,5 +1,6 @@
 //! kadmin protocol data wrappers used by gokrb5 compatibility tests.
 
+use crate::crypto::KerberosEtype;
 use crate::keytab::EncryptionKey;
 use rasn::prelude::*;
 
@@ -77,9 +78,23 @@ impl ChangePasswdData {
         decode("ChangePasswdData", bytes)
     }
 
+    /// Parse DER-encoded password-change data.
+    ///
+    /// Compatibility alias for callers following the gokrb5 API naming.
+    pub fn unmarshal(bytes: &[u8]) -> Result<Self, Error> {
+        Self::decode_der(bytes)
+    }
+
     /// Encode password-change data using DER.
     pub fn encode_der(&self) -> Result<Vec<u8>, Error> {
         encode("ChangePasswdData", self)
+    }
+
+    /// Marshal password-change data as DER bytes.
+    ///
+    /// Compatibility alias for callers following the gokrb5 API naming.
+    pub fn marshal(&self) -> Result<Vec<u8>, Error> {
+        self.encode_der()
     }
 }
 
@@ -145,6 +160,46 @@ pub struct BuiltChangePasswordRequest {
     pub reply_key: EncryptionKey,
 }
 
+/// Options for constructing a full kpasswd request message.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ChangePasswdMessageOptions {
+    /// Authenticator and KRB-PRIV timestamp.
+    pub timestamp: rasn_kerberos::KerberosTime,
+    /// Authenticator and KRB-PRIV microseconds.
+    pub cusec: u32,
+    /// Authenticator and KRB-PRIV sequence number.
+    pub sequence_number: u32,
+    /// Sender address used in KRB-PRIV encrypted part.
+    pub sender_address: rasn_kerberos::HostAddress,
+    /// Optional recipient address used in KRB-PRIV encrypted part.
+    pub recipient_address: Option<rasn_kerberos::HostAddress>,
+}
+
+impl ChangePasswdMessageOptions {
+    /// Construct options with the required authenticator timestamp, microseconds,
+    /// sequence number, and sender address.
+    pub fn new(
+        timestamp: rasn_kerberos::KerberosTime,
+        cusec: u32,
+        sequence_number: u32,
+        sender_address: rasn_kerberos::HostAddress,
+    ) -> Self {
+        Self {
+            timestamp,
+            cusec,
+            sequence_number,
+            sender_address,
+            recipient_address: None,
+        }
+    }
+
+    /// Set the optional recipient address.
+    pub fn with_recipient_address(mut self, recipient_address: rasn_kerberos::HostAddress) -> Self {
+        self.recipient_address = Some(recipient_address);
+        self
+    }
+}
+
 /// Password-change request frame containing AP-REQ and KRB-PRIV messages.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Request {
@@ -176,6 +231,13 @@ impl Request {
         Ok(Self { ap_req, krb_priv })
     }
 
+    /// Parse a password-change request frame.
+    ///
+    /// Compatibility alias for callers following the gokrb5 API naming.
+    pub fn unmarshal(bytes: &[u8]) -> Result<Self, Error> {
+        Self::parse(bytes)
+    }
+
     /// Encode a password-change request frame.
     pub fn encode(&self) -> Result<Vec<u8>, Error> {
         let ap_req = crate::ap_req::encode_ap_req(&self.ap_req).map_err(ap_req_error)?;
@@ -201,6 +263,13 @@ impl Request {
         frame.extend_from_slice(&krb_priv);
         Ok(frame)
     }
+
+    /// Marshal a password-change request frame.
+    ///
+    /// Compatibility alias for callers following the gokrb5 API naming.
+    pub fn marshal(&self) -> Result<Vec<u8>, Error> {
+        self.encode()
+    }
 }
 
 /// Build a complete kpasswd request frame using a caller-supplied AP-REQ,
@@ -215,6 +284,136 @@ pub fn build_change_password_request_with_confounder(
     let krb_priv =
         build_krb_priv_with_confounder(change_data.encode_der()?, options, &reply_key, confounder)?;
     build_change_password_request_from_parts(ap_req, krb_priv, reply_key)
+}
+
+/// Build a full kpasswd request message using a service ticket, explicit context,
+/// and explicit confounders for AP-REQ and KRB-PRIV encryption.
+#[allow(clippy::too_many_arguments)]
+pub fn build_change_password_message_with_confounders(
+    client_principal: rasn_kerberos::PrincipalName,
+    client_realm: &str,
+    change_data: &ChangePasswdData,
+    service_ticket: rasn_kerberos::Ticket,
+    session_key: &EncryptionKey,
+    options: ChangePasswdMessageOptions,
+    reply_key: EncryptionKey,
+    ap_req_confounder: &[u8],
+    krb_priv_confounder: &[u8],
+) -> Result<BuiltChangePasswordRequest, Error> {
+    let mut krb_priv_options = EncKrbPrivPartOptions::new(options.sender_address.clone())
+        .with_timestamp(options.timestamp.clone(), options.cusec)
+        .with_sequence_number(options.sequence_number);
+    if let Some(recipient_address) = options.recipient_address {
+        krb_priv_options = krb_priv_options.with_recipient_address(recipient_address);
+    }
+
+    let authenticator = rasn_kerberos::Authenticator {
+        authenticator_vno: rasn::types::Integer::from(5),
+        crealm: kerberos_string(client_realm)?,
+        cname: client_principal,
+        cksum: None,
+        cusec: rasn::types::Integer::from(options.cusec),
+        ctime: options.timestamp,
+        subkey: Some(encryption_key_to_rasn(&reply_key)),
+        seq_number: Some(options.sequence_number),
+        authorization_data: None,
+    };
+    let authenticator_usage = crate::ap_req::authenticator_usage_for_ticket(&service_ticket);
+    let ap_req_kvno = service_ticket.enc_part.kvno;
+    let ap_req = crate::ap_req::build_ap_req_with_confounder(
+        service_ticket,
+        crate::ap_req::ap_options_from_bits(0),
+        &authenticator,
+        session_key,
+        authenticator_usage,
+        ap_req_kvno,
+        ap_req_confounder,
+    )
+    .map_err(ap_req_error)?;
+
+    build_change_password_request_with_confounder(
+        ap_req,
+        change_data,
+        reply_key,
+        krb_priv_options,
+        krb_priv_confounder,
+    )
+}
+
+/// Build a full kpasswd request message using generated subkey and confounders.
+pub fn build_change_password_message(
+    client_principal: rasn_kerberos::PrincipalName,
+    client_realm: &str,
+    change_data: &ChangePasswdData,
+    service_ticket: rasn_kerberos::Ticket,
+    session_key: &EncryptionKey,
+    options: ChangePasswdMessageOptions,
+) -> Result<BuiltChangePasswordRequest, Error> {
+    let etype = KerberosEtype::from_etype_id(session_key.etype)
+        .ok_or(Error::UnsupportedEtype(session_key.etype))?;
+    let reply_key = EncryptionKey {
+        etype: session_key.etype,
+        value: random_key_material(etype.key_len())?,
+    };
+    let ap_req_confounder = random_key_material(etype.confounder_len())?;
+    let krb_priv_confounder = random_key_material(etype.confounder_len())?;
+
+    build_change_password_message_with_confounders(
+        client_principal,
+        client_realm,
+        change_data,
+        service_ticket,
+        session_key,
+        options,
+        reply_key,
+        &ap_req_confounder,
+        &krb_priv_confounder,
+    )
+}
+
+/// Compatibility alias mirroring gokrb5 naming.
+pub fn change_passwd_msg(
+    client_principal: rasn_kerberos::PrincipalName,
+    client_realm: &str,
+    change_data: &ChangePasswdData,
+    service_ticket: rasn_kerberos::Ticket,
+    session_key: &EncryptionKey,
+    options: ChangePasswdMessageOptions,
+) -> Result<BuiltChangePasswordRequest, Error> {
+    build_change_password_message(
+        client_principal,
+        client_realm,
+        change_data,
+        service_ticket,
+        session_key,
+        options,
+    )
+}
+
+/// Compatibility alias mirroring gokrb5 naming with explicit confounders.
+#[allow(clippy::too_many_arguments)]
+pub fn change_passwd_msg_with_confounders(
+    client_principal: rasn_kerberos::PrincipalName,
+    client_realm: &str,
+    change_data: &ChangePasswdData,
+    service_ticket: rasn_kerberos::Ticket,
+    session_key: &EncryptionKey,
+    options: ChangePasswdMessageOptions,
+    reply_key: EncryptionKey,
+    ap_req_confounder: &[u8],
+    krb_priv_confounder: &[u8],
+) -> Result<BuiltChangePasswordRequest, Error> {
+    build_change_password_message_with_confounders(
+        client_principal,
+        client_realm,
+        change_data,
+        service_ticket,
+        session_key,
+        options,
+        reply_key,
+        ap_req_confounder,
+        krb_priv_confounder,
+    )
 }
 
 fn build_change_password_request_from_parts(
@@ -313,9 +512,24 @@ impl Reply {
         })
     }
 
+    /// Parse a password-change reply frame.
+    ///
+    /// Compatibility alias for callers following the gokrb5 API naming.
+    pub fn unmarshal(bytes: &[u8]) -> Result<Self, Error> {
+        Self::parse(bytes)
+    }
+
     /// Whether the reply carried KRB-ERROR instead of AP-REP/KRB-PRIV.
     pub fn is_krb_error(&self) -> bool {
         self.krb_error.is_some()
+    }
+
+    /// Decrypt a successful reply's encrypted result into the stored `result`.
+    ///
+    /// Compatibility alias for callers following the gokrb5 API naming.
+    pub fn decrypt(&mut self, key: &EncryptionKey) -> Result<(), Error> {
+        self.result = Some(self.decrypt_result(key)?);
+        Ok(())
     }
 
     /// Return the password-change result, decrypting KRB-PRIV when needed.
@@ -666,4 +880,19 @@ fn parse_header(bytes: &[u8]) -> Result<Frame<'_>, Error> {
 
 fn read_u16(bytes: &[u8], offset: usize) -> u16 {
     u16::from_be_bytes([bytes[offset], bytes[offset + 1]])
+}
+
+fn random_key_material(size: usize) -> Result<Vec<u8>, Error> {
+    let mut value = vec![0_u8; size];
+    getrandom::fill(&mut value).map_err(|source| Error::Crypto {
+        message: source.to_string(),
+    })?;
+    Ok(value)
+}
+
+fn encryption_key_to_rasn(value: &EncryptionKey) -> rasn_kerberos::EncryptionKey {
+    rasn_kerberos::EncryptionKey {
+        r#type: value.etype,
+        value: value.value.clone().into(),
+    }
 }

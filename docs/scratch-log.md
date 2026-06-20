@@ -93,3 +93,22 @@
   on additional integration fixtures.
 - Review fix: updated README, crate docs, and release-surface notes to make
   `change_password*` wrapper methods part of the documented `0.1.x` preview scope.
+
+## 2026-06-24
+
+- Decision: complete `kadmin` compatibility for gokrb5-style message construction by
+  adding `ChangePasswdMessageOptions`, full message builders, and aliases
+  (`unmarshal`, `marshal`, `change_passwd_msg`,
+  `change_passwd_msg_with_confounders`, etc.) in `src/kadmin.rs`.
+- Decision: keep API-level compatibility for 9-argument constructors despite clippy
+  warnings pressure; compatibility shape is preserved while attaching narrow local
+  `#[allow(clippy::too_many_arguments)]` attributes until API stability milestones
+  permit a safe signature refactor.
+- Trade-off: `tests/kadmin.rs` now contains explicit helpers for `KerberosTime` and
+  principal/key conversions to avoid brittle fixture assumptions in assertions and to
+  keep test intent readable.
+- Review fix: aligned explicit confounder fixture sizes to the negotiated etype confounder
+  length to avoid `invalid confounder length` failures.
+- Verification: `cargo fmt --check`, `cargo check --no-default-features`, `cargo check`,
+  `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test --all-features`,
+  and compatibility-report regeneration diff are all passing with 25/25 focused kadmin tests.

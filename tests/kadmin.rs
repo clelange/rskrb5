@@ -2,15 +2,20 @@
 
 use pretty_assertions::assert_eq;
 use rasn::types::Integer;
+use rskrb5::ap_req;
 use rskrb5::crypto::KerberosEtype;
 use rskrb5::kadmin::{
-    ChangePasswdData, ChangePasswordResult, EncKrbPrivPartOptions, Error as KadminError,
-    KPASSWD_AUTHERROR, KPASSWD_SUCCESS, KRB_PRIV_MSG_TYPE, KRB_PRIV_PVNO, Reply, Request,
+    ChangePasswdData, ChangePasswdMessageOptions, ChangePasswordResult, EncKrbPrivPartOptions,
+    Error as KadminError, KPASSWD_AUTHERROR, KPASSWD_SUCCESS, KRB_PRIV_MSG_TYPE, KRB_PRIV_PVNO,
+    Reply, Request, build_change_password_message, build_change_password_message_with_confounders,
     build_change_password_request, build_change_password_request_with_confounder, build_krb_priv,
-    build_krb_priv_with_confounder, decode_enc_krb_priv_part, decode_krb_priv,
-    decrypt_krb_priv_enc_part, encode_krb_priv, ipv4_host_address, ipv6_host_address,
+    build_krb_priv_with_confounder, change_passwd_msg, change_passwd_msg_with_confounders,
+    decode_enc_krb_priv_part, decode_krb_priv, decrypt_krb_priv_enc_part, encode_krb_priv,
+    ipv4_host_address, ipv6_host_address,
 };
 use rskrb5::keytab::EncryptionKey;
+const CHG_PASSWD_MSG_AP_REQ_CONFOUNDER: &str = "00112233445566778899aabbccddeeff";
+const CHG_PASSWD_MSG_KRB_PRIV_CONFOUNDER: &str = "0a0b0c0d0e0f10111213141516171819";
 
 const MARSHALLED_CHANGE_PASSWD_DATA: &str = "3036a00d040b6e657770617373776f7264a1163014a003020101a10d300b1b09746573747573657231a20d1b0b544553542e474f4b524235";
 const MARSHALLED_KPASSWD_REQ: &str = include_str!("fixtures/kpasswd-request.hex");
@@ -58,6 +63,20 @@ fn change_passwd_data_builds_password_only_payload() {
     assert_eq!(decoded.new_passwd.as_ref(), b"newpassword");
     assert!(decoded.targ_name.is_none());
     assert!(decoded.targ_realm.is_none());
+}
+
+#[test]
+fn change_passwd_data_supports_gokrb5_aliases() {
+    let value = ChangePasswdData::unmarshal(&decode_hex(MARSHALLED_CHANGE_PASSWD_DATA))
+        .expect("targeted ChangePasswdData unmarshals");
+    let expected = ChangePasswdData::for_target(b"newpassword", 1, ["testuser1"], "TEST.GOKRB5")
+        .expect("targeted ChangePasswdData builds");
+
+    assert_eq!(value, expected);
+    assert_eq!(
+        value.marshal().expect("ChangePasswdData marshals"),
+        decode_hex(MARSHALLED_CHANGE_PASSWD_DATA)
+    );
 }
 
 #[test]
@@ -205,6 +224,14 @@ fn kpasswd_request_roundtrips_gokrb5_fixture() {
 }
 
 #[test]
+fn kpasswd_request_supports_gokrb5_aliases() {
+    let bytes = decode_hex(MARSHALLED_KPASSWD_REQ);
+    let request = Request::unmarshal(&bytes).expect("request unmarshals");
+
+    assert_eq!(request.marshal().expect("request marshals"), bytes);
+}
+
+#[test]
 fn kpasswd_request_builder_encrypts_payload_and_frames_request() {
     let fixture_request =
         Request::parse(&decode_hex(MARSHALLED_KPASSWD_REQ)).expect("fixture request parses");
@@ -285,6 +312,200 @@ fn kpasswd_request_builder_generates_krb_priv_confounder() {
 }
 
 #[test]
+fn kpasswd_request_builds_full_message_with_explicit_context() {
+    let fixture_request =
+        Request::parse(&decode_hex(MARSHALLED_KPASSWD_REQ)).expect("kpasswd request parses");
+    let service_ticket = fixture_request.ap_req.ticket.clone();
+    let service_session_key = EncryptionKey {
+        etype: fixture_request.ap_req.authenticator.etype,
+        value: vec![0x11; 32],
+    };
+    let reply_key = EncryptionKey {
+        etype: fixture_request.ap_req.authenticator.etype,
+        value: vec![0x55; 32],
+    };
+    let options = ChangePasswdMessageOptions::new(
+        kerberos_time(1_893_553_452),
+        456_789,
+        42,
+        ipv4_host_address([127, 0, 0, 1]),
+    )
+    .with_recipient_address(ipv4_host_address([127, 0, 0, 2]));
+    let change_data = ChangePasswdData::new(b"newpassword");
+
+    let built = build_change_password_message_with_confounders(
+        rasn_principal_name(1, ["testuser1"]),
+        "TEST.GOKRB5",
+        &change_data,
+        service_ticket,
+        &service_session_key,
+        options,
+        reply_key.clone(),
+        &decode_hex(CHG_PASSWD_MSG_AP_REQ_CONFOUNDER),
+        &decode_hex(CHG_PASSWD_MSG_KRB_PRIV_CONFOUNDER),
+    )
+    .expect("kpasswd message builds");
+
+    let parsed = Request::parse(&built.der).expect("built message parses");
+    let authenticator_usage = ap_req::authenticator_usage_for_ticket(&parsed.ap_req.ticket);
+    let authenticator = ap_req::decrypt_ap_req_authenticator(
+        &parsed.ap_req,
+        &service_session_key,
+        authenticator_usage,
+    )
+    .expect("AP-REQ authenticator decrypts");
+
+    assert_eq!(authenticator.cname, rasn_principal_name(1, ["testuser1"]));
+    assert_eq!(authenticator.crealm, kerberos_string("TEST.GOKRB5"));
+    assert_eq!(authenticator.cusec, Integer::from(456_789));
+    assert_eq!(authenticator.seq_number, Some(42));
+    assert_eq!(authenticator.subkey, Some(rasn_encryption_key(&reply_key)));
+
+    let enc_part =
+        decrypt_krb_priv_enc_part(&parsed.krb_priv, &reply_key).expect("KRB-PRIV decrypts");
+    let decoded_data =
+        ChangePasswdData::decode_der(enc_part.user_data.as_ref()).expect("payload decodes");
+    assert_eq!(decoded_data, change_data);
+    assert_eq!(enc_part.seq_number, Some(42));
+    assert_eq!(enc_part.sender_address, ipv4_host_address([127, 0, 0, 1]));
+    assert_eq!(
+        enc_part
+            .recipient_address
+            .as_ref()
+            .expect("recipient address"),
+        &ipv4_host_address([127, 0, 0, 2])
+    );
+    assert_eq!(enc_part.timestamp, Some(kerberos_time(1_893_553_452)));
+    assert_eq!(enc_part.usec, Some(Integer::from(456_789)));
+    assert_eq!(built.request, parsed);
+}
+
+#[test]
+fn kpasswd_request_change_passwd_msg_alias_builds_and_decrypts_payload() {
+    let fixture_request =
+        Request::parse(&decode_hex(MARSHALLED_KPASSWD_REQ)).expect("kpasswd request parses");
+    let service_ticket = fixture_request.ap_req.ticket;
+    let service_session_key = EncryptionKey {
+        etype: fixture_request.ap_req.authenticator.etype,
+        value: vec![0x22; 32],
+    };
+    let options = ChangePasswdMessageOptions::new(
+        kerberos_time(1_893_553_453),
+        654_321,
+        7,
+        ipv4_host_address([127, 0, 0, 1]),
+    );
+    let change_data =
+        ChangePasswdData::for_target(b"updated-password", 1, ["target-user"], "TEST.GOKRB5")
+            .expect("targeted ChangePasswdData builds");
+
+    let built = change_passwd_msg(
+        rasn_principal_name(1, ["testuser1"]),
+        "TEST.GOKRB5",
+        &change_data,
+        service_ticket,
+        &service_session_key,
+        options,
+    )
+    .expect("gokrb5-compatible constructor builds");
+
+    let parsed = Request::parse(&built.der).expect("gokrb5-compatible constructor parses");
+    let enc_part =
+        decrypt_krb_priv_enc_part(&parsed.krb_priv, &built.reply_key).expect("KRB-PRIV decrypts");
+    let decoded_data =
+        ChangePasswdData::decode_der(enc_part.user_data.as_ref()).expect("payload decodes");
+
+    assert_eq!(decoded_data, change_data);
+}
+
+#[test]
+fn kpasswd_request_change_passwd_msg_with_confounders_alias_builds_and_decrypts_payload() {
+    let fixture_request =
+        Request::parse(&decode_hex(MARSHALLED_KPASSWD_REQ)).expect("kpasswd request parses");
+    let service_ticket = fixture_request.ap_req.ticket;
+    let service_session_key = EncryptionKey {
+        etype: fixture_request.ap_req.authenticator.etype,
+        value: vec![0x33; 32],
+    };
+    let reply_key = EncryptionKey {
+        etype: fixture_request.ap_req.authenticator.etype,
+        value: vec![0x44; 32],
+    };
+    let options = ChangePasswdMessageOptions::new(
+        kerberos_time(1_893_553_454),
+        321_654,
+        9,
+        ipv4_host_address([127, 0, 0, 1]),
+    )
+    .with_recipient_address(ipv4_host_address([127, 0, 0, 2]));
+    let change_data =
+        ChangePasswdData::for_target(b"alias-with-confounders", 1, ["target-user"], "TEST.GOKRB5")
+            .expect("targeted ChangePasswdData builds");
+    let ap_req_confounder = vec![0x9a; 16];
+    let krb_priv_confounder = vec![0x9b; 16];
+
+    let built = change_passwd_msg_with_confounders(
+        rasn_principal_name(1, ["testuser1"]),
+        "TEST.GOKRB5",
+        &change_data,
+        service_ticket,
+        &service_session_key,
+        options,
+        reply_key.clone(),
+        &ap_req_confounder,
+        &krb_priv_confounder,
+    )
+    .expect("gokrb5-compatible alias builds");
+
+    let parsed = Request::parse(&built.der).expect("gokrb5-compatible alias parses");
+    let enc_part =
+        decrypt_krb_priv_enc_part(&parsed.krb_priv, &reply_key).expect("KRB-PRIV decrypts");
+    let decoded_data =
+        ChangePasswdData::decode_der(enc_part.user_data.as_ref()).expect("payload decodes");
+
+    assert_eq!(decoded_data, change_data);
+}
+
+#[test]
+fn kpasswd_request_build_change_password_message_generates_keys_and_keeps_context() {
+    let fixture_request =
+        Request::parse(&decode_hex(MARSHALLED_KPASSWD_REQ)).expect("kpasswd request parses");
+    let service_ticket = fixture_request.ap_req.ticket;
+    let service_session_key = EncryptionKey {
+        etype: fixture_request.ap_req.authenticator.etype,
+        value: vec![0x77; 32],
+    };
+    let options = ChangePasswdMessageOptions::new(
+        kerberos_time(1_893_553_455),
+        147_258,
+        13,
+        ipv4_host_address([127, 0, 0, 1]),
+    );
+    let change_data = ChangePasswdData::new(b"randomized-reply-key");
+
+    let built = build_change_password_message(
+        rasn_principal_name(1, ["testuser1"]),
+        "TEST.GOKRB5",
+        &change_data,
+        service_ticket,
+        &service_session_key,
+        options,
+    )
+    .expect("gokrb5-compatible message builder");
+
+    let parsed = Request::parse(&built.der).expect("message parses");
+    let encoded = ChangePasswdData::decode_der(
+        decrypt_krb_priv_enc_part(&parsed.krb_priv, &built.reply_key)
+            .expect("KRB-PRIV decrypts")
+            .user_data
+            .as_ref(),
+    )
+    .expect("payload decodes");
+
+    assert_eq!(encoded, change_data);
+}
+
+#[test]
 fn kpasswd_request_rejects_malformed_frames() {
     assert!(matches!(
         Request::parse(&[0, 6, 0, 1, 0, 0]),
@@ -329,6 +550,29 @@ fn kpasswd_reply_matches_gokrb5_fixture() {
     assert_eq!(krb_priv.pvno, Integer::from(5));
     assert_eq!(krb_priv.msg_type, Integer::from(21));
     assert_eq!(krb_priv.enc_part.etype, 18);
+}
+
+#[test]
+fn kpasswd_reply_supports_gokrb5_aliases() {
+    let bytes = kpasswd_reply_frame(0, &decode_hex(KRB_ERROR_WITH_EDATA));
+    let mut reply = Reply::unmarshal(&bytes).expect("reply unmarshals");
+    let key = EncryptionKey {
+        etype: 18,
+        value: vec![0; 32],
+    };
+    let expected = ChangePasswordResult {
+        code: u16::from_be_bytes([b'k', b'r']),
+        text: "b5data".to_owned(),
+    };
+
+    assert!(reply.result.is_some());
+    reply.decrypt(&key).expect("reply decrypts");
+    assert!(reply.result.is_some());
+    assert_eq!(reply.result, Some(expected.clone()));
+    assert_eq!(
+        reply.decrypt_result(&key).expect("result decrypts"),
+        expected
+    );
 }
 
 #[test]
@@ -481,5 +725,36 @@ fn hex_nibble(value: u8) -> u8 {
         b'a'..=b'f' => value - b'a' + 10,
         b'A'..=b'F' => value - b'A' + 10,
         _ => panic!("invalid hex digit: {value}"),
+    }
+}
+
+fn kerberos_time(seconds: i64) -> rasn_kerberos::KerberosTime {
+    let utc = chrono::DateTime::<chrono::Utc>::from_timestamp(seconds, 0).expect("valid time");
+    let offset = chrono::FixedOffset::east_opt(0).expect("UTC offset exists");
+    rasn_kerberos::KerberosTime(utc.with_timezone(&offset))
+}
+
+fn rasn_principal_name<I, S>(name_type: i32, components: I) -> rasn_kerberos::PrincipalName
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    rasn_kerberos::PrincipalName {
+        r#type: name_type,
+        string: components
+            .into_iter()
+            .map(|component| kerberos_string(component.as_ref()))
+            .collect(),
+    }
+}
+
+fn kerberos_string(value: &str) -> rasn_kerberos::KerberosString {
+    rasn_kerberos::KerberosString::try_from(value).expect("valid KerberosString")
+}
+
+fn rasn_encryption_key(key: &EncryptionKey) -> rasn_kerberos::EncryptionKey {
+    rasn_kerberos::EncryptionKey {
+        r#type: key.etype,
+        value: key.value.clone().into(),
     }
 }
