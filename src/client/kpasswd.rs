@@ -318,16 +318,12 @@ impl TokioClient {
             }
             None => self.get_service_ticket(service).await?,
         };
-        let change_data = if target == self.client {
-            crate::kadmin::ChangePasswdData::new(&new_password)
-        } else {
-            crate::kadmin::ChangePasswdData::for_target(
-                &new_password,
-                target.name_type,
-                target.components.iter().map(String::as_str),
-                &target.realm,
-            )?
-        };
+        let change_data = crate::kadmin::ChangePasswdData::for_target(
+            &new_password,
+            target.name_type,
+            target.components.iter().map(String::as_str),
+            &target.realm,
+        )?;
         let request = build_kpasswd_request(&ticket, &change_data, options)?;
         let reply = self
             .transport

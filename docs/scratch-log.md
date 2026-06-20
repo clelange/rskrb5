@@ -225,6 +225,18 @@
   closed default port) instead of adding broader network or DNS-dependent tests here.
 - Review fix: use a single explicit local listener and no hard-coded integration endpoints; avoid
   flaky remote host dependence and keep test runtime unchanged.
+
+## 2026-07-01
+
+- Decision: restore upstream-compatible self-password `ChangePasswdData` encoding for kpasswd
+  requests by always including `targ_name` and `targ_realm`, even when changing the
+  authenticated client principal.
+- Trade-off: this regresses a narrower optimization that omitted target fields for self-target
+  changes, but preserves credential-rotation behavior while matching current MIT/GOKRB5 wire
+  expectations in live kpasswd tests.
+- Review fix: adjust the targeted mock assertion in
+  `tokio_client_changes_explicit_target_does_not_rotate_password_credentials` to expect
+  self-target principal fields on the second change-password call.
 - Verification: full `cargo fmt --check`, `cargo check --no-default-features`, `cargo check`,
   `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test --all-features`,
   and compatibility-report diff all pass.

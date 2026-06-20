@@ -4006,7 +4006,16 @@ TEST.GOKRB5 = {{
                     );
                     assert_eq!(change_data.new_passwd, new_password.to_vec());
                 } else {
-                    assert_eq!(change_data.targ_name, None);
+                    assert_eq!(
+                        principal_from_parts(
+                            change_data.targ_realm.as_ref().expect("target realm set"),
+                            change_data
+                                .targ_name
+                                .as_ref()
+                                .expect("target principal set"),
+                        ),
+                        self_client.clone()
+                    );
                     assert_eq!(change_data.new_passwd, old_password.to_vec());
                 }
                 let response = kpasswd_reply_frame(
