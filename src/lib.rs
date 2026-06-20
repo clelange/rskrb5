@@ -2,7 +2,8 @@
 //!
 //! The `0.1.x` line exposes a narrow, client-oriented preview surface for
 //! projects that need Kerberos password or keytab login, FILE/WRFILE/DIR
-//! credential-cache loading, and HTTP Negotiate/SPNEGO header generation.
+//! credential-cache loading, password-change flows, and HTTP Negotiate/SPNEGO
+//! header generation.
 //! Broader `gokrb5` parity work continues behind the same lower-level modules.
 //!
 //! ```ignore

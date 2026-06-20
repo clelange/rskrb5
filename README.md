@@ -94,6 +94,8 @@ The supported public preview surface is:
 - default config loading from `KRB5_CONFIG` or platform defaults;
 - HTTP Negotiate/SPNEGO `Authorization` header generation through
   `NegotiateClient` and `BlockingNegotiateClient`;
+- password change flows (`change_password*`) through `TokioClient`,
+  `NegotiateClient`, and `BlockingNegotiateClient`;
 - explicit typed rejection of unsupported credential stores.
 
 Unsupported in `0.1.x`: API, KCM, KEYRING, and MSLSA credential stores; FAST;

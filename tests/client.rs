@@ -3606,6 +3606,291 @@ fn tokio_client_changes_explicit_target_password() {
     });
 }
 
+#[cfg(all(feature = "tokio", feature = "spnego"))]
+#[test]
+fn negotiate_client_changes_password_with_cached_changepw_ticket() {
+    runtime().block_on(async {
+        let tgt = sample_tgt_session();
+        let changepw = change_password_principal();
+        let request = build_tgs_req_with_confounder(
+            &tgt,
+            changepw,
+            TgsReqOptions::new(timestamp(1_893_553_450), 0x2233_4455).with_etypes(vec![18]),
+            timestamp(1_893_553_451),
+            654_321,
+            &decode_hex(TGS_REQ_CONFOUNDER),
+        )
+        .expect("changepw TGS-REQ builds");
+        let response = synthetic_tgs_rep(&request, request.nonce, &tgt.session_key);
+        let mut changepw_ticket =
+            process_tgs_rep(&request, &response, &tgt.session_key).expect("TGS-REP validates");
+        let now = SystemTime::now();
+        changepw_ticket.start_time = now
+            .checked_sub(Duration::from_secs(60))
+            .expect("start time");
+        changepw_ticket.end_time = now
+            .checked_add(Duration::from_secs(60 * 60))
+            .expect("end time");
+        changepw_ticket.renew_till = Some(
+            now.checked_add(Duration::from_secs(2 * 60 * 60))
+                .expect("renew time"),
+        );
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind local kpasswd listener");
+        let listener_addr = listener.local_addr().expect("local listener address");
+        let mut client = TokioClient::from_tgt_session(
+            config_with_kpasswd_server(listener_addr.to_string()),
+            KdcProtocol::Tcp,
+            tgt,
+        );
+        client.cache_service_ticket(changepw_ticket);
+        let mut client = NegotiateClient::from_tokio_client(client);
+
+        let task = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept client");
+            let mut header = [0; 4];
+            socket
+                .read_exact(&mut header)
+                .await
+                .expect("read request length");
+            let request_len = u32::from_be_bytes(header) as usize;
+            let mut request = vec![0; request_len];
+            socket.read_exact(&mut request).await.expect("read request");
+            let _ = KpasswdRequest::parse(&request).expect("kpasswd request parses");
+
+            let response = kpasswd_reply_frame(
+                0,
+                &kpasswd_result_krb_error(KPASSWD_SUCCESS, "password changed"),
+            );
+            socket
+                .write_all(&(response.len() as u32).to_be_bytes())
+                .await
+                .expect("write response length");
+            socket.write_all(&response).await.expect("write response");
+        });
+
+        let result = client
+            .change_password_with_options(
+                b"newpassword",
+                KpasswdRequestOptions::new(
+                    timestamp(1_893_553_452),
+                    456_789,
+                    42,
+                    ipv4_host_address([127, 0, 0, 1]),
+                ),
+            )
+            .await
+            .expect("change password succeeds");
+
+        task.await.expect("kpasswd listener task completes");
+        assert_eq!(result.code, KPASSWD_SUCCESS);
+        assert_eq!(result.text, "password changed");
+    });
+}
+
+#[cfg(all(feature = "tokio", feature = "spnego"))]
+#[test]
+fn negotiate_client_changes_explicit_target_password() {
+    runtime().block_on(async {
+        let tgt = sample_tgt_session();
+        let changepw = change_password_principal();
+        let request = build_tgs_req_with_confounder(
+            &tgt,
+            changepw,
+            TgsReqOptions::new(timestamp(1_893_553_450), 0x2233_4455).with_etypes(vec![18]),
+            timestamp(1_893_553_451),
+            654_321,
+            &decode_hex(TGS_REQ_CONFOUNDER),
+        )
+        .expect("changepw TGS-REQ builds");
+        let response = synthetic_tgs_rep(&request, request.nonce, &tgt.session_key);
+        let mut changepw_ticket =
+            process_tgs_rep(&request, &response, &tgt.session_key).expect("TGS-REP validates");
+        let now = SystemTime::now();
+        changepw_ticket.start_time = now
+            .checked_sub(Duration::from_secs(60))
+            .expect("start time");
+        changepw_ticket.end_time = now
+            .checked_add(Duration::from_secs(60 * 60))
+            .expect("end time");
+        changepw_ticket.renew_till = Some(
+            now.checked_add(Duration::from_secs(2 * 60 * 60))
+                .expect("renew time"),
+        );
+
+        let changepw_session_key = changepw_ticket.session_key.clone();
+        let target = Principal::new("TEST.GOKRB5", 1, ["other-user"]);
+        let target_for_server = target.clone();
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind local kpasswd listener");
+        let addr = listener.local_addr().expect("local listener address");
+        let mut client = TokioClient::from_tgt_session(
+            config_with_kpasswd_server(addr.to_string()),
+            KdcProtocol::Tcp,
+            tgt,
+        );
+        client.cache_service_ticket(changepw_ticket);
+        let mut client = NegotiateClient::from_tokio_client(client);
+
+        let task = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept client");
+            let mut header = [0; 4];
+            socket
+                .read_exact(&mut header)
+                .await
+                .expect("read request length");
+            let request_len = u32::from_be_bytes(header) as usize;
+            let mut request = vec![0; request_len];
+            socket.read_exact(&mut request).await.expect("read request");
+            let parsed = KpasswdRequest::parse(&request).expect("kpasswd request parses");
+            let authenticator = rskrb5::ap_req::decrypt_ap_req_authenticator(
+                &parsed.ap_req,
+                &changepw_session_key,
+                AP_REQ_AUTHENTICATOR_USAGE,
+            )
+            .expect("AP-REQ authenticator decrypts");
+            let reply_key = EncryptionKey {
+                etype: authenticator
+                    .subkey
+                    .as_ref()
+                    .expect("AP-REQ reply key included")
+                    .r#type,
+                value: authenticator
+                    .subkey
+                    .as_ref()
+                    .expect("AP-REQ reply key included")
+                    .value
+                    .as_ref()
+                    .to_vec(),
+            };
+            let enc_part = rskrb5::kadmin::decrypt_krb_priv_enc_part(&parsed.krb_priv, &reply_key)
+                .expect("KRB-PRIV payload decrypts");
+            let change_data = ChangePasswdData::decode_der(enc_part.user_data.as_ref())
+                .expect("ChangePasswdData decodes");
+            assert_eq!(
+                principal_from_parts(
+                    change_data.targ_realm.as_ref().expect("target realm set"),
+                    change_data
+                        .targ_name
+                        .as_ref()
+                        .expect("target principal set"),
+                ),
+                target_for_server
+            );
+            assert_eq!(change_data.new_passwd.to_vec(), b"newpassword".to_vec());
+            let response = kpasswd_reply_frame(
+                0,
+                &kpasswd_result_krb_error(KPASSWD_SUCCESS, "password changed"),
+            );
+            socket
+                .write_all(&(response.len() as u32).to_be_bytes())
+                .await
+                .expect("write response length");
+            socket.write_all(&response).await.expect("write response");
+        });
+
+        let result = client
+            .change_password_for_with_options(
+                target,
+                b"newpassword",
+                KpasswdRequestOptions::new(
+                    timestamp(1_893_553_452),
+                    456_789,
+                    42,
+                    ipv4_host_address([127, 0, 0, 1]),
+                ),
+            )
+            .await
+            .expect("change target password succeeds");
+
+        task.await.expect("kpasswd listener task completes");
+        assert_eq!(result.code, KPASSWD_SUCCESS);
+        assert_eq!(result.text, "password changed");
+    });
+}
+
+#[cfg(all(feature = "tokio", feature = "spnego"))]
+#[test]
+fn blocking_negotiate_client_changes_password_with_cached_changepw_ticket() {
+    let tgt = sample_tgt_session();
+    let changepw = change_password_principal();
+    let request = build_tgs_req_with_confounder(
+        &tgt,
+        changepw,
+        TgsReqOptions::new(timestamp(1_893_553_450), 0x2233_4455).with_etypes(vec![18]),
+        timestamp(1_893_553_451),
+        654_321,
+        &decode_hex(TGS_REQ_CONFOUNDER),
+    )
+    .expect("changepw TGS-REQ builds");
+    let response = synthetic_tgs_rep(&request, request.nonce, &tgt.session_key);
+    let mut changepw_ticket =
+        process_tgs_rep(&request, &response, &tgt.session_key).expect("TGS-REP validates");
+    let now = SystemTime::now();
+    changepw_ticket.start_time = now
+        .checked_sub(Duration::from_secs(60))
+        .expect("start time");
+    changepw_ticket.end_time = now
+        .checked_add(Duration::from_secs(60 * 60))
+        .expect("end time");
+    changepw_ticket.renew_till = Some(
+        now.checked_add(Duration::from_secs(2 * 60 * 60))
+            .expect("renew time"),
+    );
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind local kpasswd listener");
+    let listener_addr = listener.local_addr().expect("local listener address");
+    let mut client = TokioClient::from_tgt_session(
+        config_with_kpasswd_server(listener_addr.to_string()),
+        KdcProtocol::Tcp,
+        tgt,
+    );
+    client.cache_service_ticket(changepw_ticket);
+    let mut client = BlockingNegotiateClient::new(NegotiateClient::from_tokio_client(client))
+        .expect("blocking negotiate client wraps tokio client");
+
+    let server = std::thread::spawn(move || {
+        use std::io::{Read, Write};
+
+        let (mut socket, _) = listener.accept().expect("accept client");
+        let mut header = [0; 4];
+        socket.read_exact(&mut header).expect("read request length");
+        let request_len = u32::from_be_bytes(header) as usize;
+        let mut request = vec![0; request_len];
+        socket.read_exact(&mut request).expect("read request");
+        let _ = KpasswdRequest::parse(&request).expect("kpasswd request parses");
+
+        let response = kpasswd_reply_frame(
+            0,
+            &kpasswd_result_krb_error(KPASSWD_SUCCESS, "password changed"),
+        );
+        socket
+            .write_all(&(response.len() as u32).to_be_bytes())
+            .expect("write response length");
+        socket.write_all(&response).expect("write response");
+    });
+
+    let result = client
+        .change_password_with_options(
+            b"newpassword",
+            KpasswdRequestOptions::new(
+                timestamp(1_893_553_452),
+                456_789,
+                42,
+                ipv4_host_address([127, 0, 0, 1]),
+            ),
+        )
+        .expect("change password succeeds");
+
+    server.join().expect("kpasswd listener task completes");
+    assert_eq!(result.code, KPASSWD_SUCCESS);
+    assert_eq!(result.text, "password changed");
+}
+
 #[cfg(feature = "tokio")]
 #[test]
 fn tokio_client_changes_explicit_target_does_not_rotate_password_credentials() {

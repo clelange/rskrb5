@@ -3,7 +3,8 @@
 `rskrb5` is prepared for a narrow `0.1.x` crates.io preview. The first
 publishable surface is intentionally limited to client-side login,
 file-backed keytab and credential-cache handling, default config loading, and
-HTTP Negotiate/SPNEGO header generation.
+HTTP Negotiate/SPNEGO header generation and password-change flows on
+`TokioClient` plus wrapper clients.
 
 ## Distribution Model
 

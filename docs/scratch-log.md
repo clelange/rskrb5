@@ -82,3 +82,14 @@
 - Trade-off: this expands the high-level HTTP wrapper API but keeps behavior
   centralized in `client/kpasswd.rs`, avoiding duplicated logic and preserving
   existing kadmin request semantics.
+
+## 2026-06-23
+
+- Decision: add focused wrapper-path tests for `NegotiateClient` and
+  `BlockingNegotiateClient` password-change methods before advancing to broader
+  HTTP SPNEGO changes, so the preview surface extension stays regression-safe.
+- Trade-off: the tests reuse existing synthetic TGT/TGS fixtures and local TCP
+  listeners to validate `change_password*` path behavior, avoiding a dependency
+  on additional integration fixtures.
+- Review fix: updated README, crate docs, and release-surface notes to make
+  `change_password*` wrapper methods part of the documented `0.1.x` preview scope.
