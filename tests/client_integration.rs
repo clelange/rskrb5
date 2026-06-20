@@ -3,7 +3,7 @@
 use std::error::Error;
 use std::fs;
 use std::io::{Read, Write};
-use std::net::{Ipv4Addr, TcpStream};
+use std::net::{Ipv4Addr, TcpStream, ToSocketAddrs};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::Mutex;
@@ -52,8 +52,7 @@ const HTTP_KEYTAB: &str = concat!(
 
 #[test]
 fn docker_mit_kdc_as_login_through_tcp_and_udp() -> Result<(), Box<dyn Error>> {
-    if std::env::var("INTEGRATION").as_deref() != Ok("1") {
-        eprintln!("skipping Docker KDC integration test; set INTEGRATION=1 to enable");
+    if !integration_enabled() {
         return Ok(());
     }
     let _guard = INTEGRATION_LOCK.lock().expect("integration test lock");
@@ -84,8 +83,7 @@ fn docker_mit_kdc_as_login_through_tcp_and_udp() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn docker_mit_kdc_negotiated_as_login_with_password_and_keytab() -> Result<(), Box<dyn Error>> {
-    if std::env::var("INTEGRATION").as_deref() != Ok("1") {
-        eprintln!("skipping Docker KDC integration test; set INTEGRATION=1 to enable");
+    if !integration_enabled() {
         return Ok(());
     }
     let _guard = INTEGRATION_LOCK.lock().expect("integration test lock");
@@ -129,8 +127,7 @@ fn docker_mit_kdc_negotiated_as_login_with_password_and_keytab() -> Result<(), B
 
 #[test]
 fn docker_mit_kdc_rc4_hmac_as_login_through_tcp_and_udp() -> Result<(), Box<dyn Error>> {
-    if std::env::var("INTEGRATION").as_deref() != Ok("1") {
-        eprintln!("skipping Docker KDC integration test; set INTEGRATION=1 to enable");
+    if !integration_enabled() {
         return Ok(());
     }
     let _guard = INTEGRATION_LOCK.lock().expect("integration test lock");
@@ -165,8 +162,7 @@ fn docker_mit_kdc_rc4_hmac_as_login_through_tcp_and_udp() -> Result<(), Box<dyn 
 
 #[test]
 fn docker_mit_kdc_des3_as_login_through_tcp_and_udp() -> Result<(), Box<dyn Error>> {
-    if std::env::var("INTEGRATION").as_deref() != Ok("1") {
-        eprintln!("skipping Docker KDC integration test; set INTEGRATION=1 to enable");
+    if !integration_enabled() {
         return Ok(());
     }
     let _guard = INTEGRATION_LOCK.lock().expect("integration test lock");
@@ -204,8 +200,7 @@ fn docker_mit_kdc_des3_as_login_through_tcp_and_udp() -> Result<(), Box<dyn Erro
 
 #[test]
 fn docker_mit_kdc_configured_kdc_as_login() -> Result<(), Box<dyn Error>> {
-    if std::env::var("INTEGRATION").as_deref() != Ok("1") {
-        eprintln!("skipping Docker KDC integration test; set INTEGRATION=1 to enable");
+    if !integration_enabled() {
         return Ok(());
     }
     let _guard = INTEGRATION_LOCK.lock().expect("integration test lock");
@@ -251,8 +246,7 @@ fn docker_mit_kdc_configured_kdc_as_login() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn docker_mit_kdc_rejects_wrong_keytab_login() -> Result<(), Box<dyn Error>> {
-    if std::env::var("INTEGRATION").as_deref() != Ok("1") {
-        eprintln!("skipping Docker KDC integration test; set INTEGRATION=1 to enable");
+    if !integration_enabled() {
         return Ok(());
     }
     let _guard = INTEGRATION_LOCK.lock().expect("integration test lock");
@@ -277,8 +271,7 @@ fn docker_mit_kdc_rejects_wrong_keytab_login() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn docker_mit_kdc_keytab_login_for_preauth_user() -> Result<(), Box<dyn Error>> {
-    if std::env::var("INTEGRATION").as_deref() != Ok("1") {
-        eprintln!("skipping Docker KDC integration test; set INTEGRATION=1 to enable");
+    if !integration_enabled() {
         return Ok(());
     }
     let _guard = INTEGRATION_LOCK.lock().expect("integration test lock");
@@ -306,8 +299,7 @@ fn docker_mit_kdc_keytab_login_for_preauth_user() -> Result<(), Box<dyn Error>> 
 
 #[test]
 fn docker_mit_kdc_invalid_service_principal_returns_kdc_error() -> Result<(), Box<dyn Error>> {
-    if std::env::var("INTEGRATION").as_deref() != Ok("1") {
-        eprintln!("skipping Docker KDC integration test; set INTEGRATION=1 to enable");
+    if !integration_enabled() {
         return Ok(());
     }
     let _guard = INTEGRATION_LOCK.lock().expect("integration test lock");
@@ -337,8 +329,7 @@ fn docker_mit_kdc_invalid_service_principal_returns_kdc_error() -> Result<(), Bo
 
 #[test]
 fn docker_mit_kdc_tcp_login_fails_for_unreachable_kdc() -> Result<(), Box<dyn Error>> {
-    if std::env::var("INTEGRATION").as_deref() != Ok("1") {
-        eprintln!("skipping Docker KDC integration test; set INTEGRATION=1 to enable");
+    if !integration_enabled() {
         return Ok(());
     }
     let _guard = INTEGRATION_LOCK.lock().expect("integration test lock");
@@ -363,8 +354,7 @@ fn docker_mit_kdc_tcp_login_fails_for_unreachable_kdc() -> Result<(), Box<dyn Er
 
 #[test]
 fn docker_mit_kdc_tcp_login_tries_next_configured_kdc() -> Result<(), Box<dyn Error>> {
-    if std::env::var("INTEGRATION").as_deref() != Ok("1") {
-        eprintln!("skipping Docker KDC integration test; set INTEGRATION=1 to enable");
+    if !integration_enabled() {
         return Ok(());
     }
     let _guard = INTEGRATION_LOCK.lock().expect("integration test lock");
@@ -387,8 +377,7 @@ fn docker_mit_kdc_tcp_login_tries_next_configured_kdc() -> Result<(), Box<dyn Er
 
 #[test]
 fn docker_mit_kdc_tokio_client_password_cache() -> Result<(), Box<dyn Error>> {
-    if std::env::var("INTEGRATION").as_deref() != Ok("1") {
-        eprintln!("skipping Docker KDC integration test; set INTEGRATION=1 to enable");
+    if !integration_enabled() {
         return Ok(());
     }
     let _guard = INTEGRATION_LOCK.lock().expect("integration test lock");
@@ -426,8 +415,7 @@ fn docker_mit_kdc_tokio_client_password_cache() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn docker_mit_kdc_tokio_client_destroy_clears_live_state() -> Result<(), Box<dyn Error>> {
-    if std::env::var("INTEGRATION").as_deref() != Ok("1") {
-        eprintln!("skipping Docker KDC integration test; set INTEGRATION=1 to enable");
+    if !integration_enabled() {
         return Ok(());
     }
     let _guard = INTEGRATION_LOCK.lock().expect("integration test lock");
@@ -467,8 +455,7 @@ fn docker_mit_kdc_tokio_client_destroy_clears_live_state() -> Result<(), Box<dyn
 
 #[test]
 fn docker_mit_kdc_tokio_client_change_password() -> Result<(), Box<dyn Error>> {
-    if std::env::var("INTEGRATION").as_deref() != Ok("1") {
-        eprintln!("skipping Docker KDC integration test; set INTEGRATION=1 to enable");
+    if !integration_enabled() {
         return Ok(());
     }
     if std::env::var("TEST_KPASSWD").as_deref() != Ok("1") {
@@ -517,8 +504,7 @@ fn docker_mit_kdc_tokio_client_change_password() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn docker_mit_kdc_dns_srv_as_login() -> Result<(), Box<dyn Error>> {
-    if std::env::var("INTEGRATION").as_deref() != Ok("1") {
-        eprintln!("skipping Docker KDC integration test; set INTEGRATION=1 to enable");
+    if !integration_enabled() {
         return Ok(());
     }
     if std::env::var("TEST_DNS_KDC").as_deref() != Ok("1") {
@@ -558,8 +544,7 @@ fn docker_mit_kdc_dns_srv_as_login() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn docker_mit_kdc_tgs_service_ticket_through_tcp_and_udp() -> Result<(), Box<dyn Error>> {
-    if std::env::var("INTEGRATION").as_deref() != Ok("1") {
-        eprintln!("skipping Docker KDC integration test; set INTEGRATION=1 to enable");
+    if !integration_enabled() {
         return Ok(());
     }
     let _guard = INTEGRATION_LOCK.lock().expect("integration test lock");
@@ -601,8 +586,7 @@ fn docker_mit_kdc_tgs_service_ticket_through_tcp_and_udp() -> Result<(), Box<dyn
 
 #[test]
 fn docker_mit_kdc_auto_as_tgs_service_ticket() -> Result<(), Box<dyn Error>> {
-    if std::env::var("INTEGRATION").as_deref() != Ok("1") {
-        eprintln!("skipping Docker KDC integration test; set INTEGRATION=1 to enable");
+    if !integration_enabled() {
         return Ok(());
     }
     let _guard = INTEGRATION_LOCK.lock().expect("integration test lock");
@@ -643,8 +627,7 @@ fn docker_mit_kdc_auto_as_tgs_service_ticket() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn docker_mit_kdc_aes128_as_tgs_through_tcp_and_udp() -> Result<(), Box<dyn Error>> {
-    if std::env::var("INTEGRATION").as_deref() != Ok("1") {
-        eprintln!("skipping Docker KDC integration test; set INTEGRATION=1 to enable");
+    if !integration_enabled() {
         return Ok(());
     }
     let _guard = INTEGRATION_LOCK.lock().expect("integration test lock");
@@ -691,8 +674,7 @@ fn docker_mit_kdc_aes128_as_tgs_through_tcp_and_udp() -> Result<(), Box<dyn Erro
 
 #[test]
 fn docker_mit_kdc_rc4_hmac_tgs_service_ticket_through_tcp_and_udp() -> Result<(), Box<dyn Error>> {
-    if std::env::var("INTEGRATION").as_deref() != Ok("1") {
-        eprintln!("skipping Docker KDC integration test; set INTEGRATION=1 to enable");
+    if !integration_enabled() {
         return Ok(());
     }
     let _guard = INTEGRATION_LOCK.lock().expect("integration test lock");
@@ -740,8 +722,7 @@ fn docker_mit_kdc_rc4_hmac_tgs_service_ticket_through_tcp_and_udp() -> Result<()
 
 #[test]
 fn docker_mit_kdc_des3_tgs_service_ticket_through_tcp_and_udp() -> Result<(), Box<dyn Error>> {
-    if std::env::var("INTEGRATION").as_deref() != Ok("1") {
-        eprintln!("skipping Docker KDC integration test; set INTEGRATION=1 to enable");
+    if !integration_enabled() {
         return Ok(());
     }
     let _guard = INTEGRATION_LOCK.lock().expect("integration test lock");
@@ -790,8 +771,7 @@ fn docker_mit_kdc_des3_tgs_service_ticket_through_tcp_and_udp() -> Result<(), Bo
 #[test]
 fn docker_mit_old_kdc_password_and_keytab_as_tgs_through_tcp_and_udp() -> Result<(), Box<dyn Error>>
 {
-    if std::env::var("INTEGRATION").as_deref() != Ok("1") {
-        eprintln!("skipping Docker KDC integration test; set INTEGRATION=1 to enable");
+    if !integration_enabled() {
         return Ok(());
     }
     let _guard = INTEGRATION_LOCK.lock().expect("integration test lock");
@@ -806,8 +786,7 @@ fn docker_mit_old_kdc_password_and_keytab_as_tgs_through_tcp_and_udp() -> Result
 
 #[test]
 fn docker_mit_latest_kdc_aes_sha2_as_tgs_through_tcp_and_udp() -> Result<(), Box<dyn Error>> {
-    if std::env::var("INTEGRATION").as_deref() != Ok("1") {
-        eprintln!("skipping Docker KDC integration test; set INTEGRATION=1 to enable");
+    if !integration_enabled() {
         return Ok(());
     }
     let _guard = INTEGRATION_LOCK.lock().expect("integration test lock");
@@ -858,8 +837,7 @@ fn docker_mit_latest_kdc_aes_sha2_as_tgs_through_tcp_and_udp() -> Result<(), Box
 
 #[test]
 fn docker_mit_kdc_keytab_enctype_as_tgs_through_tcp_and_udp() -> Result<(), Box<dyn Error>> {
-    if std::env::var("INTEGRATION").as_deref() != Ok("1") {
-        eprintln!("skipping Docker KDC integration test; set INTEGRATION=1 to enable");
+    if !integration_enabled() {
         return Ok(());
     }
     let _guard = INTEGRATION_LOCK.lock().expect("integration test lock");
@@ -874,8 +852,7 @@ fn docker_mit_kdc_keytab_enctype_as_tgs_through_tcp_and_udp() -> Result<(), Box<
 #[test]
 fn docker_mit_latest_kdc_keytab_aes_sha2_as_tgs_through_tcp_and_udp() -> Result<(), Box<dyn Error>>
 {
-    if std::env::var("INTEGRATION").as_deref() != Ok("1") {
-        eprintln!("skipping Docker KDC integration test; set INTEGRATION=1 to enable");
+    if !integration_enabled() {
         return Ok(());
     }
     let _guard = INTEGRATION_LOCK.lock().expect("integration test lock");
@@ -989,8 +966,7 @@ fn docker_mit_kdc_tokio_client_uses_cached_service_ticket_without_kdc() -> Resul
 
 #[test]
 fn docker_mit_kdc_tgt_renewal_through_tcp_and_udp() -> Result<(), Box<dyn Error>> {
-    if std::env::var("INTEGRATION").as_deref() != Ok("1") {
-        eprintln!("skipping Docker KDC integration test; set INTEGRATION=1 to enable");
+    if !integration_enabled() {
         return Ok(());
     }
     let _guard = INTEGRATION_LOCK.lock().expect("integration test lock");
@@ -1030,8 +1006,7 @@ fn docker_mit_kdc_tgt_renewal_through_tcp_and_udp() -> Result<(), Box<dyn Error>
 
 #[test]
 fn docker_mit_kdc_tokio_client_tgt_renewal() -> Result<(), Box<dyn Error>> {
-    if std::env::var("INTEGRATION").as_deref() != Ok("1") {
-        eprintln!("skipping Docker KDC integration test; set INTEGRATION=1 to enable");
+    if !integration_enabled() {
         return Ok(());
     }
     let _guard = INTEGRATION_LOCK.lock().expect("integration test lock");
@@ -1065,8 +1040,7 @@ fn docker_mit_kdc_tokio_client_tgt_renewal() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn docker_mit_kdc_tgs_referral_to_resource_domain() -> Result<(), Box<dyn Error>> {
-    if std::env::var("INTEGRATION").as_deref() != Ok("1") {
-        eprintln!("skipping Docker KDC integration test; set INTEGRATION=1 to enable");
+    if !integration_enabled() {
         return Ok(());
     }
     let _guard = INTEGRATION_LOCK.lock().expect("integration test lock");
@@ -1115,8 +1089,7 @@ fn docker_mit_kdc_tgs_referral_to_resource_domain() -> Result<(), Box<dyn Error>
 
 #[test]
 fn docker_mit_kdc_tokio_client_caches_referral_tgt() -> Result<(), Box<dyn Error>> {
-    if std::env::var("INTEGRATION").as_deref() != Ok("1") {
-        eprintln!("skipping Docker KDC integration test; set INTEGRATION=1 to enable");
+    if !integration_enabled() {
         return Ok(());
     }
     let _guard = INTEGRATION_LOCK.lock().expect("integration test lock");
@@ -1156,8 +1129,7 @@ fn docker_mit_kdc_tokio_client_caches_referral_tgt() -> Result<(), Box<dyn Error
 #[test]
 fn docker_mit_kdc_spnego_header_round_trip_through_service_validator() -> Result<(), Box<dyn Error>>
 {
-    if std::env::var("INTEGRATION").as_deref() != Ok("1") {
-        eprintln!("skipping Docker KDC integration test; set INTEGRATION=1 to enable");
+    if !integration_enabled() {
         return Ok(());
     }
     let _guard = INTEGRATION_LOCK.lock().expect("integration test lock");
@@ -1223,8 +1195,7 @@ fn docker_mit_kdc_spnego_header_round_trip_through_service_validator() -> Result
 #[cfg(feature = "spnego")]
 #[test]
 fn docker_mit_kdc_spnego_service_rejects_replayed_headers() -> Result<(), Box<dyn Error>> {
-    if std::env::var("INTEGRATION").as_deref() != Ok("1") {
-        eprintln!("skipping Docker KDC integration test; set INTEGRATION=1 to enable");
+    if !integration_enabled() {
         return Ok(());
     }
     let _guard = INTEGRATION_LOCK.lock().expect("integration test lock");
@@ -1281,8 +1252,7 @@ fn docker_mit_kdc_spnego_service_rejects_replayed_headers() -> Result<(), Box<dy
 #[cfg(feature = "spnego")]
 #[test]
 fn docker_mit_kdc_spnego_header_authenticates_to_docker_http() -> Result<(), Box<dyn Error>> {
-    if std::env::var("INTEGRATION").as_deref() != Ok("1") {
-        eprintln!("skipping Docker KDC integration test; set INTEGRATION=1 to enable");
+    if !integration_enabled() {
         return Ok(());
     }
     let _guard = INTEGRATION_LOCK.lock().expect("integration test lock");
@@ -1312,8 +1282,7 @@ fn docker_mit_kdc_spnego_header_authenticates_to_docker_http() -> Result<(), Box
 #[cfg(feature = "spnego")]
 #[test]
 fn docker_mit_kdc_raw_krb5_header_authenticates_to_docker_http() -> Result<(), Box<dyn Error>> {
-    if std::env::var("INTEGRATION").as_deref() != Ok("1") {
-        eprintln!("skipping Docker KDC integration test; set INTEGRATION=1 to enable");
+    if !integration_enabled() {
         return Ok(());
     }
     let _guard = INTEGRATION_LOCK.lock().expect("integration test lock");
@@ -1348,8 +1317,7 @@ fn docker_mit_kdc_raw_krb5_header_authenticates_to_docker_http() -> Result<(), B
 #[test]
 fn docker_mit_kdc_rc4_hmac_spnego_header_round_trip_through_service_validator()
 -> Result<(), Box<dyn Error>> {
-    if std::env::var("INTEGRATION").as_deref() != Ok("1") {
-        eprintln!("skipping Docker KDC integration test; set INTEGRATION=1 to enable");
+    if !integration_enabled() {
         return Ok(());
     }
     let _guard = INTEGRATION_LOCK.lock().expect("integration test lock");
@@ -1425,8 +1393,7 @@ fn docker_mit_kdc_rc4_hmac_spnego_header_round_trip_through_service_validator()
 #[test]
 fn docker_mit_kdc_des3_spnego_header_round_trip_through_service_validator()
 -> Result<(), Box<dyn Error>> {
-    if std::env::var("INTEGRATION").as_deref() != Ok("1") {
-        eprintln!("skipping Docker KDC integration test; set INTEGRATION=1 to enable");
+    if !integration_enabled() {
         return Ok(());
     }
     let _guard = INTEGRATION_LOCK.lock().expect("integration test lock");
@@ -1982,8 +1949,7 @@ impl Drop for ExternalKrbEnv {
 }
 
 fn privileged_integration_enabled() -> bool {
-    if std::env::var("INTEGRATION").as_deref() != Ok("1") {
-        eprintln!("skipping Docker KDC integration test; set INTEGRATION=1 to enable");
+    if !integration_enabled() {
         return false;
     }
     if std::env::var("TESTPRIVILEGED").as_deref() != Ok("1") {
@@ -1999,6 +1965,78 @@ fn privileged_integration_enabled() -> bool {
         return false;
     }
     true
+}
+
+fn integration_enabled() -> bool {
+    if std::env::var("INTEGRATION").as_deref() != Ok("1") {
+        eprintln!("skipping Docker KDC integration test; set INTEGRATION=1 to enable");
+        return false;
+    }
+
+    let endpoints = [
+        (kdc_addr(), "primary KDC"),
+        (old_kdc_addr(), "legacy KDC"),
+        (latest_kdc_addr(), "AES-SHA2 KDC"),
+        (resdom_kdc_addr(), "resource KDC"),
+        (short_kdc_addr(), "short-ticket KDC"),
+    ];
+    for (endpoint, label) in endpoints {
+        if !tcp_reachable(&endpoint, label) {
+            eprintln!(
+                "skipping Docker KDC integration test; cannot reach {label} endpoint at {endpoint}"
+            );
+            return false;
+        }
+    }
+
+    if std::env::var("TEST_KPASSWD").as_deref() == Ok("1")
+        && !tcp_reachable(&kpasswd_addr(), "kpasswd")
+    {
+        eprintln!(
+            "skipping Docker KDC integration test; cannot reach kpasswd endpoint at {}",
+            kpasswd_addr()
+        );
+        return false;
+    }
+
+    #[cfg(feature = "spnego")]
+    if !http_service_reachable() {
+        return false;
+    }
+
+    true
+}
+
+fn tcp_reachable(endpoint: &str, label: &str) -> bool {
+    let mut addrs = match endpoint.to_socket_addrs() {
+        Ok(addrs) => addrs,
+        Err(error) => {
+            eprintln!("failed to resolve {label} {endpoint}: {error}");
+            return false;
+        }
+    };
+    let timeout = Duration::from_secs(1);
+    addrs.any(|addr| TcpStream::connect_timeout(&addr, timeout).is_ok())
+}
+
+#[cfg(feature = "spnego")]
+fn http_service_reachable() -> bool {
+    let target = match http_target("/modgssapi/index.html") {
+        Ok(target) => target.addr,
+        Err(error) => {
+            eprintln!(
+                "skipping Docker KDC integration test; invalid TEST_HTTP_URL/TEST_HTTP_ADDR: {error}"
+            );
+            return false;
+        }
+    };
+
+    if tcp_reachable(&target, "Docker HTTP fixture") {
+        return true;
+    }
+
+    eprintln!("skipping Docker KDC integration test; cannot reach Docker HTTP fixture at {target}");
+    false
 }
 
 fn privileged_kvno_integration_enabled() -> bool {

@@ -153,6 +153,19 @@
   `cargo test --all-features`, and dedicated `cargo test --all-features --test client_ad_integration`
   all pass.
 
+## 2026-06-20 (follow-up, Docker integration preflight)
+
+- Decision: add shared `integration_enabled()` gating in `tests/client_integration.rs`
+  to probe fixture TCP availability before each integration test executes.
+- Trade-off: preflight now checks `TEST_KDC_ADDR`, `TEST_OLD_KDC_ADDR`,
+  `TEST_LATEST_KDC_ADDR`, `TEST_RESDOM_KDC_ADDR`, and `TEST_SHORT_KDC_ADDR`.
+  This keeps failures deterministic but can skip the full suite when any linked
+  fixture endpoint is unavailable.
+- Decision: gate kpasswd checks on `TEST_KPASSWD=1` and only include SPNEGO HTTP
+  endpoint checks when the `spnego` feature is enabled.
+- Review fix: keep plain `INTEGRATION=1` behavior for quick local runs, while treating
+  runner-facilitated runs as the authoritative full-path validation.
+
 ## 2026-06-25
 
 - Decision: complete the narrow `kadmin::Reply` marshal/encoding parity slice for
