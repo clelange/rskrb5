@@ -1,9 +1,13 @@
 #![cfg(feature = "http")]
 
-#[cfg(feature = "tower")]
+#[cfg(feature = "tokio")]
+use std::cell::{Cell, RefCell};
+#[cfg(any(feature = "tokio", feature = "tower"))]
 use std::convert::Infallible;
 #[cfg(feature = "tower")]
 use std::future::Future;
+#[cfg(feature = "tokio")]
+use std::rc::Rc;
 #[cfg(feature = "tower")]
 use std::task::{Context, Poll, Waker};
 use std::time::{Duration, UNIX_EPOCH};
@@ -20,7 +24,7 @@ use rskrb5::spnego::{
 
 use rskrb5::client::{AsRepSession, Principal};
 #[cfg(feature = "tokio")]
-use rskrb5::client::{KdcProtocol, NegotiateClient, TokioClient};
+use rskrb5::client::{BlockingNegotiateClient, KdcProtocol, NegotiateClient, TokioClient};
 #[cfg(any(feature = "tokio", feature = "tower"))]
 use rskrb5::config::Config;
 #[cfg(feature = "tower")]
@@ -225,6 +229,177 @@ fn authorize_request_context_supports_negotiate_client_wrapper() {
         service_ticket.session_key.value = vec![0x55; 32];
         assert_ne!(context.session_key, service_ticket.session_key);
     });
+}
+
+#[cfg(feature = "tokio")]
+#[test]
+fn negotiate_http_client_retries_challenge_with_replayable_request() {
+    runtime().block_on(async {
+        let service_ticket = current_service_ticket_session();
+        let service = service_ticket.service.clone();
+        let mut tokio_client = TokioClient::with_password(
+            Config::new(),
+            KdcProtocol::Auto,
+            Principal::user("TEST.GOKRB5", "testuser1"),
+            b"unused".to_vec(),
+        );
+        tokio_client.cache_service_ticket(service_ticket);
+        let mut client = NegotiateClient::from_tokio_client(tokio_client);
+        let make_calls = Rc::new(Cell::new(0usize));
+        let make_calls_for_factory = Rc::clone(&make_calls);
+        let sent = Rc::new(RefCell::new(Vec::<(Option<String>, Vec<u8>)>::new()));
+        let sent_for_sender = Rc::clone(&sent);
+
+        let result = krb_http::send_with_negotiate_options(
+            &mut client,
+            service,
+            InitiatorContextOptions::new().with_sequence_number(Some(99)),
+            move || {
+                let call = make_calls_for_factory.get() + 1;
+                make_calls_for_factory.set(call);
+                Request::builder()
+                    .method("POST")
+                    .uri("/protected")
+                    .body(format!("payload-{call}").into_bytes())
+                    .expect("request builds")
+            },
+            move |request: Request<Vec<u8>>| {
+                let authorization = krb_http::authorization_header(&request)
+                    .ok()
+                    .map(str::to_owned);
+                let body = request.body().clone();
+                let call = {
+                    let mut sent = sent_for_sender.borrow_mut();
+                    sent.push((authorization.clone(), body));
+                    sent.len()
+                };
+                let response = if call == 1 {
+                    krb_http::challenge_response::<Vec<u8>>()
+                } else {
+                    let header = authorization.expect("retry request has authorization");
+                    assert!(
+                        header.starts_with("Negotiate "),
+                        "retry Authorization uses Negotiate"
+                    );
+                    response_with_www_authenticate_body(
+                        &spnego::accept_completed_header().expect("accept-completed header"),
+                        b"ok".to_vec(),
+                    )
+                };
+                std::future::ready(Ok::<_, Infallible>(response))
+            },
+        )
+        .await
+        .expect("Negotiate send succeeds");
+
+        assert!(result.did_negotiate());
+        assert_eq!(
+            result
+                .context
+                .as_ref()
+                .expect("context is retained")
+                .sequence_number,
+            Some(99)
+        );
+        assert!(matches!(
+            result.negotiation,
+            Some(krb_http::ClientNegotiateResponse::Accepted { ap_rep: None })
+        ));
+        assert_eq!(result.response.status(), StatusCode::OK);
+        assert_eq!(result.response.body().as_slice(), b"ok");
+        assert_eq!(make_calls.get(), 2);
+
+        let sent = sent.borrow();
+        assert_eq!(sent.len(), 2);
+        assert!(sent[0].0.is_none(), "initial request is unauthenticated");
+        assert_eq!(sent[0].1.as_slice(), b"payload-1");
+        assert!(
+            sent[1]
+                .0
+                .as_deref()
+                .expect("retry has Authorization")
+                .starts_with("Negotiate ")
+        );
+        assert_eq!(sent[1].1.as_slice(), b"payload-2");
+    });
+}
+
+#[cfg(feature = "tokio")]
+#[test]
+fn negotiate_http_client_returns_first_response_without_challenge() {
+    runtime().block_on(async {
+        let mut client = NegotiateClient::with_password(
+            Config::new(),
+            Principal::user("TEST.GOKRB5", "testuser1"),
+            b"unused".to_vec(),
+        );
+        let make_calls = Cell::new(0usize);
+        let send_calls = Cell::new(0usize);
+
+        let result = krb_http::send_with_negotiate(
+            &mut client,
+            Principal::new("TEST.GOKRB5", 1, ["HTTP", "host.test.gokrb5"]),
+            || {
+                make_calls.set(make_calls.get() + 1);
+                Request::new(())
+            },
+            |request| {
+                assert!(
+                    krb_http::authorization_header(&request).is_err(),
+                    "unchallenged request should not be preauthenticated"
+                );
+                send_calls.set(send_calls.get() + 1);
+                std::future::ready(Ok::<_, Infallible>(Response::new("public")))
+            },
+        )
+        .await
+        .expect("send succeeds");
+
+        assert!(!result.did_negotiate());
+        assert!(result.context.is_none());
+        assert!(result.negotiation.is_none());
+        assert_eq!(*result.response.body(), "public");
+        assert_eq!(make_calls.get(), 1);
+        assert_eq!(send_calls.get(), 1);
+    });
+}
+
+#[cfg(feature = "tokio")]
+#[test]
+fn blocking_negotiate_http_client_returns_first_response_without_challenge() {
+    let mut client = BlockingNegotiateClient::with_password(
+        Config::new(),
+        Principal::user("TEST.GOKRB5", "testuser1"),
+        b"unused".to_vec(),
+    )
+    .expect("blocking client builds");
+    let make_calls = Cell::new(0usize);
+    let send_calls = Cell::new(0usize);
+
+    let result = krb_http::send_with_blocking_negotiate(
+        &mut client,
+        Principal::new("TEST.GOKRB5", 1, ["HTTP", "host.test.gokrb5"]),
+        || {
+            make_calls.set(make_calls.get() + 1);
+            Request::new(())
+        },
+        |request| {
+            assert!(
+                krb_http::authorization_header(&request).is_err(),
+                "unchallenged request should not be preauthenticated"
+            );
+            send_calls.set(send_calls.get() + 1);
+            Ok::<_, Infallible>(Response::new("public"))
+        },
+    )
+    .expect("send succeeds");
+
+    assert!(!result.did_negotiate());
+    assert!(result.context.is_none());
+    assert!(result.negotiation.is_none());
+    assert_eq!(*result.response.body(), "public");
+    assert_eq!(make_calls.get(), 1);
+    assert_eq!(send_calls.get(), 1);
 }
 
 #[test]
@@ -697,12 +872,16 @@ fn service_ticket_session_from_valid_ap_req() -> AsRepSession {
 }
 
 fn response_with_www_authenticate(header: &str) -> Response<()> {
+    response_with_www_authenticate_body(header, ())
+}
+
+fn response_with_www_authenticate_body<B>(header: &str, body: B) -> Response<B> {
     let mut response = Response::new(());
     response.headers_mut().append(
         WWW_AUTHENTICATE,
         HeaderValue::from_str(header).expect("WWW-Authenticate header value"),
     );
-    response
+    response.map(|_| body)
 }
 
 #[cfg(feature = "tokio")]

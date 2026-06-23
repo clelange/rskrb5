@@ -15,7 +15,7 @@ compatibility-sensitive.
 | Keytab, ccache, and config files | File-backed keytab and MIT FILE/WRFILE/DIR ccache parsing, serialization, lookup, environment/default-name loading, and redacted metadata JSON are covered by gokrb5 fixtures. |
 | Crypto and Kerberos messages | AES-SHA1, AES-SHA2, DES3, RC4-HMAC, DER wrappers, KDC/AP/KRB-PRIV/KRB-SAFE/KRB-CRED helpers, and kpasswd frames are covered by unit vectors and fixture round-trips. |
 | High-level client | Tokio password/keytab/ccache login, AS/TGS exchange, referrals, renewal, service-ticket caching, S4U2Self/S4U2Proxy, kpasswd, diagnostics, and ccache write-back are implemented. |
-| Service and HTTP Negotiate | AP-REQ validation, replay detection, AP-REP mutual auth, SPNEGO/GSSAPI tokens, HTTP helpers, Tower middleware, and an Axum example are implemented. |
+| Service and HTTP Negotiate | AP-REQ validation, replay detection, AP-REP mutual auth, SPNEGO/GSSAPI tokens, HTTP helpers, 401 retry client wrappers, Tower middleware, and an Axum example are implemented. |
 | PAC and AD parity | PAC container, validation info, UPN/DNS, credentials, delegation/device/claims data, checksums, and AD-shaped credential summaries are implemented with gated AD tests. |
 | Dependency posture | `rasn-kerberos` and `picky-krb` remain evaluation/data-type candidates; AGPL/LGPL Kerberos crates stay out of default/core features. |
 
@@ -26,8 +26,8 @@ The next pre-`1.0` preview is focused on a smaller, clearer public API around:
 - password-backed and file keytab-backed client login;
 - FILE, WRFILE, and MIT DIR credential-cache loading/saving;
 - default config loading from `KRB5_CONFIG` or platform defaults;
-- HTTP Negotiate/SPNEGO `Authorization` header generation through high-level
-  async and blocking clients;
+- HTTP Negotiate/SPNEGO header generation and 401 retry wrappers through
+  high-level async and blocking clients;
 - password change flows through the high-level clients;
 - explicit typed rejection of unsupported credential/keytab stores.
 
@@ -50,6 +50,32 @@ let header = client
     .authorization_header_for_host("HTTP", "auth.cern.ch")
     .await?;
 ```
+
+Transport-agnostic 401 retry wrapper with a replayable request factory
+(`http` feature, plus `tokio` when default features are disabled):
+
+```rust
+let service = rskrb5::Principal::host_based_service("HTTP", "auth.cern.ch")?;
+let result = rskrb5::http::send_with_negotiate(
+    &mut client,
+    service,
+    || {
+        http::Request::builder()
+            .uri("https://auth.cern.ch/protected")
+            .body(Vec::new())
+            .expect("request builds")
+    },
+    |request| async move {
+        // Adapt this request to reqwest, hyper, or another HTTP client.
+        send_http(request).await
+    },
+)
+.await?;
+let response = result.into_response();
+```
+
+The request factory may be called twice: once for the initial request and again
+after a `401 WWW-Authenticate: Negotiate` challenge.
 
 Blocking CLI-style use:
 

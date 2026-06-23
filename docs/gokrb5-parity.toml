@@ -103,9 +103,9 @@ upstream_packages = ["gssapi", "spnego"]
 upstream_tests = ["gssapi/*_test.go", "spnego/*_test.go", "spnego/http_test.go"]
 rskrb5_modules = ["src/spnego.rs", "src/spnego/oid.rs", "src/http.rs", "src/client/negotiate.rs"]
 rskrb5_tests = ["tests/gssapi.rs", "tests/spnego.rs", "tests/http.rs", "tests/client.rs", "tests/client_integration.rs"]
-status = "partial"
-evidence = ["MIC, Wrap, SPNEGO token, raw KRB5 Negotiate, AP-REP verification, HTTP helpers, Tower middleware, and high-level header generation are covered"]
-next = ["add a ready-to-use HTTP client wrapper that retries 401 Negotiate responses and documents request body replay constraints"]
+status = "covered-with-gated-evidence"
+evidence = ["MIC, Wrap, SPNEGO token, raw KRB5 Negotiate, AP-REP verification, HTTP helpers, Tower middleware, and high-level header generation are covered", "transport-agnostic async and blocking HTTP client wrappers retry 401 Negotiate responses through replayable request factories"]
+next = ["keep HTTP wrapper tests and Docker SPNEGO integration green before release"]
 
 [[area]]
 id = "pac"
@@ -220,9 +220,10 @@ next = ["stand up or document reachable maintained USER and RESOURCE AD realm en
 [[gate]]
 id = "http-client-wrapper"
 name = "Ready-to-use HTTP Negotiate client wrapper"
-status = "missing-api"
+status = "proven"
+command = "cargo test --all-features --test http"
 proves = ["gssapi-spnego", "client"]
 required_for_release = true
 required_for_parity = true
-evidence = ["lower-level header generation, AP-REP verification, HTTP helpers, and Tower service middleware are implemented and tested"]
-next = ["add a request wrapper that retries 401 Negotiate responses", "document request body replay constraints"]
+evidence = ["async send_with_negotiate and blocking send_with_blocking_negotiate wrappers retry 401 Negotiate responses using caller-provided replayable request factories", "tests cover retry header insertion, final Negotiate classification, no-challenge pass-through, and body replay constraints"]
+next = ["keep HTTP wrapper tests green before release"]

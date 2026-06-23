@@ -24,7 +24,7 @@ required for `gokrb5/v8` parity.
 | RFC 3244 password change | covered-with-gated-evidence | Keep `TEST_KPASSWD=1` green in Linux CI. |
 | AS/TGS client flows | covered-with-gated-evidence | Keep the full Linux Docker MIT gate green. |
 | AP-REQ/AP-REP service validation | covered-with-gated-evidence | Keep Linux Docker HTTP/SPNEGO service coverage green. |
-| GSSAPI, SPNEGO, and HTTP Negotiate tokens | partial | Add a ready-to-use HTTP client wrapper for 401 Negotiate retry flows. |
+| GSSAPI, SPNEGO, and HTTP Negotiate tokens | covered-with-gated-evidence | Keep HTTP wrapper tests and Docker SPNEGO integration green. |
 | PAC and NDR parsing | covered-needs-ad-evidence | Run `TESTAD=1` against a maintained AD lab. |
 | Docker MIT KDC integration fixtures | covered-with-gated-evidence | Keep workflow-dispatched Docker-backed integration green. |
 | Active Directory integration | blocked-on-lab | Stand up or document reachable USER and RESOURCE AD realm endpoints. |
@@ -44,17 +44,16 @@ preview release unless the release notes explicitly call it out as skipped.
 | Linux Docker privileged external ccache | proven | ccache, client | `TESTPRIVILEGED=1 scripts/run-gated-integration.sh run --test client_integration` | GitHub Actions run `28060033033` passed external `kinit` and `kvno` ccache tests; keep this gate green. |
 | Linux Docker HTTP SPNEGO service integration | proven | service, gssapi-spnego, client | `scripts/run-gated-integration.sh run --test client_integration docker_mit_kdc_spnego_header_authenticates_to_docker_http -- --nocapture` | GitHub Actions run `28060033033` passed HTTP SPNEGO, raw KRB5 Negotiate, and replay rejection tests; keep this gate green. |
 | Active Directory TESTAD integration | blocked-on-lab | active-directory, PAC, client, service | Needs maintained USER and RESOURCE AD realm endpoints. | Stand up or document the lab, then run `INTEGRATION=1 TESTAD=1 cargo test --all-features --test client_ad_integration`. |
-| Ready-to-use HTTP Negotiate client wrapper | missing-api | gssapi-spnego, client | No wrapper API yet. | Add a request wrapper that retries 401 Negotiate responses and documents request body replay constraints. |
+| Ready-to-use HTTP Negotiate client wrapper | proven | gssapi-spnego, client | `cargo test --all-features --test http` | Async `send_with_negotiate` and blocking `send_with_blocking_negotiate` retry 401 Negotiate responses through replayable request factories; keep this gate green. |
 
 ## Immediate Next Slices
 
-1. Add the HTTP client wrapper: given a request and client/session state,
-   detect `WWW-Authenticate: Negotiate`, acquire/build the AP-REQ token, retry
-   with `Authorization`, and expose clear body replay constraints.
-2. Create a maintained AD lab runbook or CI secret plan for `TESTAD=1`; do not
+1. Create a maintained AD lab runbook or CI secret plan for `TESTAD=1`; do not
    claim AD parity until this gate runs green.
-3. Keep the workflow-dispatched Docker MIT gate green with `integration=true`,
+2. Keep the workflow-dispatched Docker MIT gate green with `integration=true`,
    `test_kpasswd=true`, and `test_ad=false` before the next release.
+3. Prepare release notes for the next breaking preview with the new API surface
+   and the still-skipped AD gate called out explicitly.
 
 ## Status Values
 

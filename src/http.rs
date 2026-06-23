@@ -10,7 +10,7 @@ use http_types::header::{AUTHORIZATION, HeaderValue, ToStrError, WWW_AUTHENTICAT
 use http_types::{Request, Response, StatusCode};
 
 #[cfg(feature = "tokio")]
-use crate::client::{NegotiateClient, Principal, TokioClient};
+use crate::client::{BlockingNegotiateClient, NegotiateClient, Principal, TokioClient};
 #[cfg(feature = "tower")]
 use crate::config::Config;
 #[cfg(feature = "tower")]
@@ -19,7 +19,7 @@ use crate::keytab::Keytab;
 use crate::service::{ApRepOptions, HostAddress, SharedReplayCache};
 #[cfg(feature = "tower")]
 use std::borrow::Cow;
-#[cfg(feature = "tower")]
+#[cfg(any(feature = "tokio", feature = "tower"))]
 use std::future::Future;
 #[cfg(feature = "tower")]
 use std::pin::Pin;
@@ -85,6 +85,18 @@ pub enum TowerError<E> {
     Inner(E),
 }
 
+/// Client-side HTTP Negotiate wrapper error.
+#[cfg(feature = "tokio")]
+#[derive(Debug, thiserror::Error)]
+pub enum NegotiateHttpError<E> {
+    /// HTTP Negotiate processing failed.
+    #[error("{0}")]
+    Http(#[from] Error),
+    /// The caller-provided HTTP sender failed.
+    #[error("HTTP sender failed")]
+    Sender(E),
+}
+
 /// Client-side HTTP Negotiate response classification.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ClientNegotiateResponse {
@@ -108,6 +120,59 @@ pub enum ClientNegotiateResponse {
         /// Human-readable parse or validation failure.
         message: String,
     },
+}
+
+/// Result of a client-side HTTP Negotiate send wrapper.
+#[cfg(feature = "tokio")]
+#[derive(Debug)]
+pub struct NegotiateHttpResponse<B> {
+    /// The final HTTP response.
+    ///
+    /// This is the first response when no `401 WWW-Authenticate: Negotiate`
+    /// challenge was present, or the retried authenticated response otherwise.
+    pub response: Response<B>,
+    /// Initiator context used for the retry, when a Negotiate retry happened.
+    pub context: Option<spnego::InitiatorContext>,
+    /// Classification of the final response's Negotiate authentication state.
+    ///
+    /// `None` means no Negotiate retry was attempted. When present, this is
+    /// computed with [`classify_negotiate_response`] and may be
+    /// [`ClientNegotiateResponse::NoAuthenticateHeader`] for servers that accept
+    /// the request without returning a final `WWW-Authenticate` token.
+    pub negotiation: Option<ClientNegotiateResponse>,
+}
+
+#[cfg(feature = "tokio")]
+impl<B> NegotiateHttpResponse<B> {
+    fn not_negotiated(response: Response<B>) -> Self {
+        Self {
+            response,
+            context: None,
+            negotiation: None,
+        }
+    }
+
+    fn negotiated(
+        response: Response<B>,
+        context: spnego::InitiatorContext,
+        negotiation: ClientNegotiateResponse,
+    ) -> Self {
+        Self {
+            response,
+            context: Some(context),
+            negotiation: Some(negotiation),
+        }
+    }
+
+    /// Return whether the wrapper retried after a Negotiate challenge.
+    pub fn did_negotiate(&self) -> bool {
+        self.context.is_some()
+    }
+
+    /// Consume the wrapper result and return the final HTTP response.
+    pub fn into_response(self) -> Response<B> {
+        self.response
+    }
 }
 
 /// Return the HTTP Authorization header as a string.
@@ -191,6 +256,155 @@ pub async fn authorize_request_context_with_negotiate_client_options<B>(
     Ok(context)
 }
 
+/// Send an HTTP request with a 401 Negotiate retry using a high-level client.
+///
+/// `make_request` is called once for the unauthenticated request and a second
+/// time only when the first response is `401 Unauthorized` with a Negotiate
+/// challenge. It must therefore build a fresh replayable request body each time
+/// it is called. `send_request` can adapt any HTTP client by accepting the
+/// generic `http::Request` value and returning a generic `http::Response`.
+#[cfg(feature = "tokio")]
+pub async fn send_with_negotiate<
+    ReqBody,
+    RespBody,
+    MakeRequest,
+    SendRequest,
+    SendFuture,
+    SendError,
+>(
+    client: &mut NegotiateClient,
+    service: Principal,
+    make_request: MakeRequest,
+    send_request: SendRequest,
+) -> std::result::Result<NegotiateHttpResponse<RespBody>, NegotiateHttpError<SendError>>
+where
+    MakeRequest: FnMut() -> Request<ReqBody>,
+    SendRequest: FnMut(Request<ReqBody>) -> SendFuture,
+    SendFuture: Future<Output = std::result::Result<Response<RespBody>, SendError>>,
+{
+    send_with_negotiate_options(
+        client,
+        service,
+        spnego::InitiatorContextOptions::new(),
+        make_request,
+        send_request,
+    )
+    .await
+}
+
+/// Send an HTTP request with a 401 Negotiate retry and explicit initiator options.
+///
+/// `make_request` must be replayable: the wrapper calls it again after a
+/// Negotiate challenge so request bodies are never cloned or buffered
+/// implicitly.
+#[cfg(feature = "tokio")]
+pub async fn send_with_negotiate_options<
+    ReqBody,
+    RespBody,
+    MakeRequest,
+    SendRequest,
+    SendFuture,
+    SendError,
+>(
+    client: &mut NegotiateClient,
+    service: Principal,
+    options: spnego::InitiatorContextOptions,
+    mut make_request: MakeRequest,
+    mut send_request: SendRequest,
+) -> std::result::Result<NegotiateHttpResponse<RespBody>, NegotiateHttpError<SendError>>
+where
+    MakeRequest: FnMut() -> Request<ReqBody>,
+    SendRequest: FnMut(Request<ReqBody>) -> SendFuture,
+    SendFuture: Future<Output = std::result::Result<Response<RespBody>, SendError>>,
+{
+    let first = send_request(make_request())
+        .await
+        .map_err(NegotiateHttpError::Sender)?;
+    if !should_retry_with_negotiate(&first)? {
+        return Ok(NegotiateHttpResponse::not_negotiated(first));
+    }
+
+    let mut retry = make_request();
+    let context = client
+        .authorization_context_with_options(service, options)
+        .await
+        .map_err(Error::from)?;
+    set_authorization_header(&mut retry, &context.header)?;
+
+    let response = send_request(retry)
+        .await
+        .map_err(NegotiateHttpError::Sender)?;
+    let negotiation = classify_negotiate_response(&context, &response);
+    Ok(NegotiateHttpResponse::negotiated(
+        response,
+        context,
+        negotiation,
+    ))
+}
+
+/// Send an HTTP request with a 401 Negotiate retry using a blocking client.
+///
+/// `make_request` has the same replay contract as [`send_with_negotiate`]: it
+/// is called once for the first request and again after a Negotiate challenge.
+#[cfg(feature = "tokio")]
+pub fn send_with_blocking_negotiate<ReqBody, RespBody, MakeRequest, SendRequest, SendError>(
+    client: &mut BlockingNegotiateClient,
+    service: Principal,
+    make_request: MakeRequest,
+    send_request: SendRequest,
+) -> std::result::Result<NegotiateHttpResponse<RespBody>, NegotiateHttpError<SendError>>
+where
+    MakeRequest: FnMut() -> Request<ReqBody>,
+    SendRequest: FnMut(Request<ReqBody>) -> std::result::Result<Response<RespBody>, SendError>,
+{
+    send_with_blocking_negotiate_options(
+        client,
+        service,
+        spnego::InitiatorContextOptions::new(),
+        make_request,
+        send_request,
+    )
+}
+
+/// Send an HTTP request with a blocking 401 Negotiate retry and explicit initiator options.
+#[cfg(feature = "tokio")]
+pub fn send_with_blocking_negotiate_options<
+    ReqBody,
+    RespBody,
+    MakeRequest,
+    SendRequest,
+    SendError,
+>(
+    client: &mut BlockingNegotiateClient,
+    service: Principal,
+    options: spnego::InitiatorContextOptions,
+    mut make_request: MakeRequest,
+    mut send_request: SendRequest,
+) -> std::result::Result<NegotiateHttpResponse<RespBody>, NegotiateHttpError<SendError>>
+where
+    MakeRequest: FnMut() -> Request<ReqBody>,
+    SendRequest: FnMut(Request<ReqBody>) -> std::result::Result<Response<RespBody>, SendError>,
+{
+    let first = send_request(make_request()).map_err(NegotiateHttpError::Sender)?;
+    if !should_retry_with_negotiate(&first)? {
+        return Ok(NegotiateHttpResponse::not_negotiated(first));
+    }
+
+    let mut retry = make_request();
+    let context = client
+        .authorization_context_with_options(service, options)
+        .map_err(Error::from)?;
+    set_authorization_header(&mut retry, &context.header)?;
+
+    let response = send_request(retry).map_err(NegotiateHttpError::Sender)?;
+    let negotiation = classify_negotiate_response(&context, &response);
+    Ok(NegotiateHttpResponse::negotiated(
+        response,
+        context,
+        negotiation,
+    ))
+}
+
 /// Validate the request's Negotiate header and attach the accepted context to extensions.
 pub fn accept_request<B>(
     validator: &mut ServiceValidator<'_>,
@@ -254,6 +468,19 @@ pub fn classify_negotiate_response<B>(
         ClientNegotiateResponse::NoNegotiateChallenge
     } else {
         ClientNegotiateResponse::NoAuthenticateHeader
+    }
+}
+
+#[cfg(feature = "tokio")]
+fn should_retry_with_negotiate<B>(response: &Response<B>) -> Result<bool> {
+    if response.status() != StatusCode::UNAUTHORIZED {
+        return Ok(false);
+    }
+
+    match www_authenticate_negotiate_header(response) {
+        Ok(_) => Ok(true),
+        Err(Error::MissingWwwAuthenticate | Error::MissingNegotiateChallenge) => Ok(false),
+        Err(error) => Err(error),
     }
 }
 

@@ -5,7 +5,7 @@
 //! formats, cryptographic behavior, and fixture parity compatibility-sensitive.
 //! The supported surface is centered on Kerberos password or keytab login,
 //! FILE/WRFILE/DIR credential-cache loading, password-change flows, and HTTP
-//! Negotiate/SPNEGO header generation.
+//! Negotiate/SPNEGO header generation and retry wrappers.
 //!
 //! ```ignore
 //! let config = rskrb5::Config::load_default()?;
@@ -21,7 +21,8 @@
 //! - `messages`: Kerberos ASN.1 message wrappers and protocol modules.
 //! - `spnego`: SPNEGO/GSSAPI token and HTTP Negotiate header support.
 //! - `tokio`: async KDC/kpasswd transports and high-level client flows.
-//! - `http`: generic `http` crate request/response helpers.
+//! - `http`: generic `http` crate request/response helpers; with `tokio`,
+//!   client retry wrappers.
 //! - `tower`: service-side Tower Negotiate middleware.
 //! - `serde`: JSON diagnostics and redacted metadata helpers.
 //! - `evaluation`: candidate-crate compatibility report generation.
