@@ -10,6 +10,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use crate::crypto::{self, KerberosEtype};
 use crate::keytab::EncryptionKey;
 
+mod reader;
+
+use self::reader::Reader;
+
 /// `AD-IF-RELEVANT` authorization-data type.
 pub const AD_IF_RELEVANT: i32 = 1;
 /// Microsoft `AD-WIN2K-PAC` authorization-data type.
@@ -1425,11 +1429,11 @@ struct ClaimEntryDescriptor {
 
 fn read_ndr_wrapper(reader: &mut Reader<'_>, target: &'static str) -> Result<(), Error> {
     let minimum = 20;
-    if reader.bytes.len() < minimum {
+    if reader.len() < minimum {
         return Err(Error::TooShort {
             target,
             minimum,
-            actual: reader.bytes.len(),
+            actual: reader.len(),
         });
     }
 
@@ -1445,10 +1449,10 @@ fn read_ndr_wrapper(reader: &mut Reader<'_>, target: &'static str) -> Result<(),
     let object_len = reader.read_u32()?;
     let _reserved = reader.read_u32()?;
     let object_len = usize::try_from(object_len).map_err(|_| Error::LengthOverflow)?;
-    if object_len > reader.bytes.len().saturating_sub(16) {
+    if object_len > reader.len().saturating_sub(16) {
         return Err(Error::InvalidNdrObjectLength {
             object_len,
-            remaining: reader.bytes.len().saturating_sub(16),
+            remaining: reader.len().saturating_sub(16),
         });
     }
 
@@ -2202,81 +2206,6 @@ fn utf16le_bytes_to_string(bytes: &[u8], target: &'static str) -> Result<String,
         target,
         message: error.to_string(),
     })
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct Reader<'a> {
-    bytes: &'a [u8],
-    offset: usize,
-}
-
-impl<'a> Reader<'a> {
-    fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, offset: 0 }
-    }
-
-    fn remaining(&self) -> usize {
-        self.bytes.len().saturating_sub(self.offset)
-    }
-
-    fn remaining_bytes(&self) -> &'a [u8] {
-        &self.bytes[self.offset..]
-    }
-
-    fn read_u8(&mut self) -> Result<u8, Error> {
-        Ok(self.read_bytes(1)?[0])
-    }
-
-    fn read_u16(&mut self) -> Result<u16, Error> {
-        let bytes = self.read_bytes(2)?;
-        Ok(u16::from_le_bytes([bytes[0], bytes[1]]))
-    }
-
-    fn read_u32(&mut self) -> Result<u32, Error> {
-        let bytes = self.read_bytes(4)?;
-        Ok(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
-    }
-
-    fn read_u64(&mut self) -> Result<u64, Error> {
-        let bytes = self.read_bytes(8)?;
-        Ok(u64::from_le_bytes([
-            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
-        ]))
-    }
-
-    fn read_filetime(&mut self) -> Result<FileTime, Error> {
-        Ok(FileTime::from_ticks(self.read_u64()?))
-    }
-
-    fn read_bytes(&mut self, len: usize) -> Result<&'a [u8], Error> {
-        let end = self.offset.checked_add(len).ok_or(Error::LengthOverflow)?;
-        if end > self.bytes.len() {
-            return Err(Error::Truncated {
-                offset: self.offset,
-                needed: len,
-                remaining: self.remaining(),
-            });
-        }
-        let out = &self.bytes[self.offset..end];
-        self.offset = end;
-        Ok(out)
-    }
-
-    fn align(&mut self, alignment: usize) -> Result<(), Error> {
-        if alignment == 0 || !alignment.is_power_of_two() {
-            return Err(Error::InvalidAlignment(alignment));
-        }
-        let aligned = (self.offset + alignment - 1) & !(alignment - 1);
-        if aligned > self.bytes.len() {
-            return Err(Error::Truncated {
-                offset: self.offset,
-                needed: aligned - self.offset,
-                remaining: self.remaining(),
-            });
-        }
-        self.offset = aligned;
-        Ok(())
-    }
 }
 
 /// PAC parsing errors.

@@ -1,9 +1,8 @@
-//! kadmin protocol data wrappers used by gokrb5 compatibility tests.
+//! RFC 3244 password-change protocol helpers.
 
 use crate::crypto::KerberosEtype;
 use crate::keytab::EncryptionKey;
 use rasn::prelude::*;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 pub use crate::krb_priv::{
     EncKrbPrivPartOptions, KRB_PRIV_ENCPART_USAGE, KRB_PRIV_MSG_TYPE, KRB_PRIV_PVNO, host_address,
@@ -79,23 +78,9 @@ impl ChangePasswdData {
         decode("ChangePasswdData", bytes)
     }
 
-    /// Parse DER-encoded password-change data.
-    ///
-    /// Compatibility alias for callers following the gokrb5 API naming.
-    pub fn unmarshal(bytes: &[u8]) -> Result<Self, Error> {
-        Self::decode_der(bytes)
-    }
-
     /// Encode password-change data using DER.
     pub fn encode_der(&self) -> Result<Vec<u8>, Error> {
         encode("ChangePasswdData", self)
-    }
-
-    /// Marshal password-change data as DER bytes.
-    ///
-    /// Compatibility alias for callers following the gokrb5 API naming.
-    pub fn marshal(&self) -> Result<Vec<u8>, Error> {
-        self.encode_der()
     }
 }
 
@@ -232,13 +217,6 @@ impl Request {
         Ok(Self { ap_req, krb_priv })
     }
 
-    /// Parse a password-change request frame.
-    ///
-    /// Compatibility alias for callers following the gokrb5 API naming.
-    pub fn unmarshal(bytes: &[u8]) -> Result<Self, Error> {
-        Self::parse(bytes)
-    }
-
     /// Encode a password-change request frame.
     pub fn encode(&self) -> Result<Vec<u8>, Error> {
         let ap_req = crate::ap_req::encode_ap_req(&self.ap_req).map_err(ap_req_error)?;
@@ -263,13 +241,6 @@ impl Request {
         frame.extend_from_slice(&ap_req);
         frame.extend_from_slice(&krb_priv);
         Ok(frame)
-    }
-
-    /// Marshal a password-change request frame.
-    ///
-    /// Compatibility alias for callers following the gokrb5 API naming.
-    pub fn marshal(&self) -> Result<Vec<u8>, Error> {
-        self.encode()
     }
 }
 
@@ -372,82 +343,6 @@ pub fn build_change_password_message(
     )
 }
 
-/// Compatibility alias mirroring gokrb5 naming.
-pub fn change_passwd_msg(
-    client_principal: rasn_kerberos::PrincipalName,
-    client_realm: &str,
-    new_password: impl AsRef<[u8]>,
-    service_ticket: rasn_kerberos::Ticket,
-    session_key: &EncryptionKey,
-) -> Result<BuiltChangePasswordRequest, Error> {
-    let change_data = ChangePasswdData {
-        new_passwd: new_password.as_ref().to_vec().into(),
-        targ_name: Some(client_principal.clone()),
-        targ_realm: Some(kerberos_string(client_realm)?),
-    };
-    let (timestamp, cusec) = current_kerberos_time()?;
-    let options = ChangePasswdMessageOptions::new(
-        timestamp,
-        cusec,
-        current_sequence_number(),
-        ipv4_host_address([127, 0, 0, 1]),
-    );
-
-    build_change_password_message(
-        client_principal,
-        client_realm,
-        &change_data,
-        service_ticket,
-        session_key,
-        options,
-    )
-}
-
-/// Compatibility alias mirroring gokrb5 naming with caller-provided auth context.
-pub fn change_passwd_msg_with_options(
-    client_principal: rasn_kerberos::PrincipalName,
-    client_realm: &str,
-    change_data: &ChangePasswdData,
-    service_ticket: rasn_kerberos::Ticket,
-    session_key: &EncryptionKey,
-    options: ChangePasswdMessageOptions,
-) -> Result<BuiltChangePasswordRequest, Error> {
-    build_change_password_message(
-        client_principal,
-        client_realm,
-        change_data,
-        service_ticket,
-        session_key,
-        options,
-    )
-}
-
-/// Compatibility alias mirroring gokrb5 naming with explicit confounders.
-#[allow(clippy::too_many_arguments)]
-pub fn change_passwd_msg_with_confounders(
-    client_principal: rasn_kerberos::PrincipalName,
-    client_realm: &str,
-    change_data: &ChangePasswdData,
-    service_ticket: rasn_kerberos::Ticket,
-    session_key: &EncryptionKey,
-    options: ChangePasswdMessageOptions,
-    reply_key: EncryptionKey,
-    ap_req_confounder: &[u8],
-    krb_priv_confounder: &[u8],
-) -> Result<BuiltChangePasswordRequest, Error> {
-    build_change_password_message_with_confounders(
-        client_principal,
-        client_realm,
-        change_data,
-        service_ticket,
-        session_key,
-        options,
-        reply_key,
-        ap_req_confounder,
-        krb_priv_confounder,
-    )
-}
-
 fn build_change_password_request_from_parts(
     ap_req: rasn_kerberos::ApReq,
     krb_priv: rasn_kerberos::KrbPriv,
@@ -544,36 +439,9 @@ impl Reply {
         })
     }
 
-    /// Parse a password-change reply frame.
-    ///
-    /// Compatibility alias for callers following the gokrb5 API naming.
-    pub fn unmarshal(bytes: &[u8]) -> Result<Self, Error> {
-        Self::parse(bytes)
-    }
-
     /// Whether the reply carried KRB-ERROR instead of AP-REP/KRB-PRIV.
     pub fn is_krb_error(&self) -> bool {
         self.krb_error.is_some()
-    }
-
-    /// Access the parsed change-password result code for compatibility with
-    /// gokrb5's `ResultCode`.
-    pub fn result_code(&self) -> Option<u16> {
-        self.result.as_ref().map(|result| result.code)
-    }
-
-    /// Access the parsed change-password result text for compatibility with
-    /// gokrb5's `Result`.
-    pub fn result_text(&self) -> Option<&str> {
-        self.result.as_ref().map(|result| result.text.as_str())
-    }
-
-    /// Decrypt a successful reply's encrypted result into the stored `result`.
-    ///
-    /// Compatibility alias for callers following the gokrb5 API naming.
-    pub fn decrypt(&mut self, key: &EncryptionKey) -> Result<(), Error> {
-        self.result = Some(self.decrypt_result(key)?);
-        Ok(())
     }
 
     /// Return the password-change result, decrypting KRB-PRIV when needed.
@@ -648,13 +516,6 @@ impl Reply {
         frame.extend_from_slice(&encoded_ap_rep);
         frame.extend_from_slice(&encoded_krb_priv);
         Ok(frame)
-    }
-
-    /// Re-encode this reply into a framed kpasswd response.
-    ///
-    /// Compatibility alias for callers following the gokrb5 API naming.
-    pub fn marshal(&self) -> Result<Vec<u8>, Error> {
-        self.encode()
     }
 }
 
@@ -818,9 +679,6 @@ pub enum Error {
     /// A Kerberos string value could not be constructed.
     #[error("invalid Kerberos string value: {0}")]
     InvalidKerberosString(String),
-    /// Timestamp conversion from system time overflowed.
-    #[error("system time conversion overflow")]
-    TimeOverflow,
     /// Encoded AP-REQ is too large for the two-byte kpasswd length field.
     #[error("encoded AP-REQ is too large: {actual} bytes")]
     ApReqTooLarge {
@@ -1011,29 +869,6 @@ fn random_key_material(size: usize) -> Result<Vec<u8>, Error> {
         message: source.to_string(),
     })?;
     Ok(value)
-}
-
-fn current_kerberos_time() -> Result<(rasn_kerberos::KerberosTime, u32), Error> {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|_| Error::TimeOverflow)?;
-    let seconds = i64::try_from(now.as_secs()).map_err(|_| Error::TimeOverflow)?;
-    let cusec = now.subsec_micros();
-    let utc =
-        chrono::DateTime::<chrono::Utc>::from_timestamp(seconds, 0).ok_or(Error::TimeOverflow)?;
-    let offset = chrono::FixedOffset::east_opt(0).ok_or(Error::TimeOverflow)?;
-
-    Ok((
-        rasn_kerberos::KerberosTime(utc.with_timezone(&offset)),
-        cusec,
-    ))
-}
-
-fn current_sequence_number() -> u32 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.subsec_micros())
-        .unwrap_or(0)
 }
 
 fn encryption_key_to_rasn(value: &EncryptionKey) -> rasn_kerberos::EncryptionKey {

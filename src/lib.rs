@@ -1,10 +1,11 @@
 //! Pure-Rust Kerberos v5 client/service library.
 //!
-//! The `0.1.x` line exposes a narrow, client-oriented preview surface for
-//! projects that need Kerberos password or keytab login, FILE/WRFILE/DIR
-//! credential-cache loading, password-change flows, and HTTP Negotiate/SPNEGO
-//! header generation.
-//! Broader `gokrb5` parity work continues behind the same lower-level modules.
+//! The published `0.1` line exposed a narrow, client-oriented preview surface.
+//! The next pre-`1.0` previews may break Rust APIs while keeping Kerberos wire
+//! formats, cryptographic behavior, and fixture parity compatibility-sensitive.
+//! The supported surface is centered on Kerberos password or keytab login,
+//! FILE/WRFILE/DIR credential-cache loading, password-change flows, and HTTP
+//! Negotiate/SPNEGO header generation.
 //!
 //! ```ignore
 //! let config = rskrb5::Config::load_default()?;
@@ -29,7 +30,7 @@
 //!
 //! Platform credential stores (`API`, `KCM`, `KEYRING`, `MSLSA`), FAST,
 //! PKINIT, system GSSAPI/SSPI facades, and full maintained Active Directory
-//! CI are outside the supported `0.1.x` preview scope. Unsupported credential
+//! CI are outside the supported preview scope. Unsupported credential
 //! cache stores are reported as
 //! [`ccache::Error::UnsupportedCacheType`].
 

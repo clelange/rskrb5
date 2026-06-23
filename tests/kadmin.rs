@@ -9,8 +9,7 @@ use rskrb5::kadmin::{
     Error as KadminError, KPASSWD_AUTHERROR, KPASSWD_SUCCESS, KRB_PRIV_MSG_TYPE, KRB_PRIV_PVNO,
     Reply, Request, build_change_password_message, build_change_password_message_with_confounders,
     build_change_password_request, build_change_password_request_with_confounder, build_krb_priv,
-    build_krb_priv_with_confounder, change_passwd_msg, change_passwd_msg_with_confounders,
-    change_passwd_msg_with_options, decode_enc_krb_priv_part, decode_krb_priv,
+    build_krb_priv_with_confounder, decode_enc_krb_priv_part, decode_krb_priv,
     decrypt_krb_priv_enc_part, encode_krb_priv, ipv4_host_address, ipv6_host_address,
 };
 use rskrb5::keytab::EncryptionKey;
@@ -66,15 +65,15 @@ fn change_passwd_data_builds_password_only_payload() {
 }
 
 #[test]
-fn change_passwd_data_supports_gokrb5_aliases() {
-    let value = ChangePasswdData::unmarshal(&decode_hex(MARSHALLED_CHANGE_PASSWD_DATA))
-        .expect("targeted ChangePasswdData unmarshals");
+fn change_passwd_data_decodes_and_encodes_target_payload() {
+    let value = ChangePasswdData::decode_der(&decode_hex(MARSHALLED_CHANGE_PASSWD_DATA))
+        .expect("targeted ChangePasswdData decodes");
     let expected = ChangePasswdData::for_target(b"newpassword", 1, ["testuser1"], "TEST.GOKRB5")
         .expect("targeted ChangePasswdData builds");
 
     assert_eq!(value, expected);
     assert_eq!(
-        value.marshal().expect("ChangePasswdData marshals"),
+        value.encode_der().expect("ChangePasswdData encodes"),
         decode_hex(MARSHALLED_CHANGE_PASSWD_DATA)
     );
 }
@@ -224,11 +223,11 @@ fn kpasswd_request_roundtrips_gokrb5_fixture() {
 }
 
 #[test]
-fn kpasswd_request_supports_gokrb5_aliases() {
+fn kpasswd_request_parse_and_encode_roundtrip() {
     let bytes = decode_hex(MARSHALLED_KPASSWD_REQ);
-    let request = Request::unmarshal(&bytes).expect("request unmarshals");
+    let request = Request::parse(&bytes).expect("request parses");
 
-    assert_eq!(request.marshal().expect("request marshals"), bytes);
+    assert_eq!(request.encode().expect("request encodes"), bytes);
 }
 
 #[test]
@@ -381,7 +380,7 @@ fn kpasswd_request_builds_full_message_with_explicit_context() {
 }
 
 #[test]
-fn kpasswd_request_change_passwd_msg_alias_builds_and_decrypts_payload() {
+fn kpasswd_request_build_change_password_message_builds_and_decrypts_payload() {
     let fixture_request =
         Request::parse(&decode_hex(MARSHALLED_KPASSWD_REQ)).expect("kpasswd request parses");
     let service_ticket = fixture_request.ap_req.ticket;
@@ -399,7 +398,7 @@ fn kpasswd_request_change_passwd_msg_alias_builds_and_decrypts_payload() {
         ChangePasswdData::for_target(b"updated-password", 1, ["target-user"], "TEST.GOKRB5")
             .expect("targeted ChangePasswdData builds");
 
-    let built = change_passwd_msg_with_options(
+    let built = build_change_password_message(
         rasn_principal_name(1, ["testuser1"]),
         "TEST.GOKRB5",
         &change_data,
@@ -407,9 +406,9 @@ fn kpasswd_request_change_passwd_msg_alias_builds_and_decrypts_payload() {
         &service_session_key,
         options,
     )
-    .expect("gokrb5-compatible constructor builds");
+    .expect("change-password message builds");
 
-    let parsed = Request::parse(&built.der).expect("gokrb5-compatible constructor parses");
+    let parsed = Request::parse(&built.der).expect("change-password message parses");
     let enc_part =
         decrypt_krb_priv_enc_part(&parsed.krb_priv, &built.reply_key).expect("KRB-PRIV decrypts");
     let decoded_data =
@@ -419,7 +418,7 @@ fn kpasswd_request_change_passwd_msg_alias_builds_and_decrypts_payload() {
 }
 
 #[test]
-fn kpasswd_request_change_passwd_msg_uses_upstream_style_inputs() {
+fn kpasswd_request_build_change_password_message_supports_self_target_payload() {
     let fixture_request =
         Request::parse(&decode_hex(MARSHALLED_KPASSWD_REQ)).expect("kpasswd request parses");
     let service_ticket = fixture_request.ap_req.ticket;
@@ -430,17 +429,24 @@ fn kpasswd_request_change_passwd_msg_uses_upstream_style_inputs() {
     let change_data =
         ChangePasswdData::for_target(b"default-style-password", 1, ["testuser1"], "TEST.GOKRB5")
             .expect("targeted ChangePasswdData builds");
+    let options = ChangePasswdMessageOptions::new(
+        kerberos_time(1_893_553_456),
+        123_987,
+        23,
+        ipv4_host_address([127, 0, 0, 1]),
+    );
 
-    let built = change_passwd_msg(
+    let built = build_change_password_message(
         rasn_principal_name(1, ["testuser1"]),
         "TEST.GOKRB5",
-        b"default-style-password",
+        &change_data,
         service_ticket,
         &service_session_key,
+        options,
     )
-    .expect("gokrb5-compatible constructor builds");
+    .expect("change-password message builds");
 
-    let parsed = Request::parse(&built.der).expect("gokrb5-compatible constructor parses");
+    let parsed = Request::parse(&built.der).expect("change-password message parses");
     let enc_part =
         decrypt_krb_priv_enc_part(&parsed.krb_priv, &built.reply_key).expect("KRB-PRIV decrypts");
     let decoded_data =
@@ -452,7 +458,7 @@ fn kpasswd_request_change_passwd_msg_uses_upstream_style_inputs() {
 }
 
 #[test]
-fn kpasswd_request_change_passwd_msg_with_confounders_alias_builds_and_decrypts_payload() {
+fn kpasswd_request_build_change_password_message_with_confounders_decrypts_payload() {
     let fixture_request =
         Request::parse(&decode_hex(MARSHALLED_KPASSWD_REQ)).expect("kpasswd request parses");
     let service_ticket = fixture_request.ap_req.ticket;
@@ -477,7 +483,7 @@ fn kpasswd_request_change_passwd_msg_with_confounders_alias_builds_and_decrypts_
     let ap_req_confounder = vec![0x9a; 16];
     let krb_priv_confounder = vec![0x9b; 16];
 
-    let built = change_passwd_msg_with_confounders(
+    let built = build_change_password_message_with_confounders(
         rasn_principal_name(1, ["testuser1"]),
         "TEST.GOKRB5",
         &change_data,
@@ -488,9 +494,9 @@ fn kpasswd_request_change_passwd_msg_with_confounders_alias_builds_and_decrypts_
         &ap_req_confounder,
         &krb_priv_confounder,
     )
-    .expect("gokrb5-compatible alias builds");
+    .expect("change-password message with confounders builds");
 
-    let parsed = Request::parse(&built.der).expect("gokrb5-compatible alias parses");
+    let parsed = Request::parse(&built.der).expect("change-password message parses");
     let enc_part =
         decrypt_krb_priv_enc_part(&parsed.krb_priv, &reply_key).expect("KRB-PRIV decrypts");
     let decoded_data =
@@ -586,18 +592,17 @@ fn kpasswd_reply_matches_gokrb5_fixture() {
 }
 
 #[test]
-fn kpasswd_reply_roundtrips_success_reply_with_marshal() {
+fn kpasswd_reply_roundtrips_success_reply() {
     let bytes = decode_hex(MARSHALLED_KPASSWD_REP);
     let reply = Reply::parse(&bytes).expect("kpasswd reply parses");
 
-    assert_eq!(reply.marshal().expect("reply marshals"), bytes);
     assert_eq!(reply.encode().expect("reply encodes"), bytes);
 }
 
 #[test]
-fn kpasswd_reply_supports_gokrb5_aliases() {
+fn kpasswd_reply_decrypt_result_returns_parsed_error_result() {
     let bytes = kpasswd_reply_frame(0, &decode_hex(KRB_ERROR_WITH_EDATA));
-    let mut reply = Reply::unmarshal(&bytes).expect("reply unmarshals");
+    let reply = Reply::parse(&bytes).expect("reply parses");
     let key = EncryptionKey {
         etype: 18,
         value: vec![0; 32],
@@ -608,9 +613,6 @@ fn kpasswd_reply_supports_gokrb5_aliases() {
     };
 
     assert!(reply.result.is_some());
-    reply.decrypt(&key).expect("reply decrypts");
-    assert!(reply.result.is_some());
-    assert_eq!(reply.result, Some(expected.clone()));
     assert_eq!(
         reply.decrypt_result(&key).expect("result decrypts"),
         expected
@@ -618,11 +620,10 @@ fn kpasswd_reply_supports_gokrb5_aliases() {
 }
 
 #[test]
-fn kpasswd_reply_roundtrips_error_reply_with_marshal() {
+fn kpasswd_reply_roundtrips_error_reply() {
     let bytes = kpasswd_reply_frame(0, &decode_hex(KRB_ERROR_WITH_EDATA));
     let reply = Reply::parse(&bytes).expect("KRB-ERROR reply parses");
 
-    assert_eq!(reply.marshal().expect("reply marshals"), bytes);
     assert_eq!(reply.encode().expect("reply encodes"), bytes);
 }
 
@@ -659,15 +660,6 @@ fn kpasswd_reply_rejects_success_payloads_without_ap_rep() {
 }
 
 #[test]
-fn kpasswd_reply_exposes_result_code_and_text_helpers() {
-    let reply = Reply::parse(&kpasswd_reply_frame(0, &decode_hex(KRB_ERROR_WITH_EDATA)))
-        .expect("KRB-ERROR reply parses");
-
-    assert_eq!(reply.result_code(), Some(u16::from_be_bytes([b'k', b'r'])));
-    assert_eq!(reply.result_text(), Some("b5data"));
-}
-
-#[test]
 fn kpasswd_reply_parses_krb_error_response_data() {
     let error = decode_hex(KRB_ERROR_WITH_EDATA);
     let frame = kpasswd_reply_frame(0, &error);
@@ -687,14 +679,6 @@ fn kpasswd_reply_parses_krb_error_response_data() {
             text: "b5data".to_owned(),
         })
     );
-}
-
-#[test]
-fn kpasswd_reply_result_helpers_absent_for_success_reply() {
-    let reply = Reply::parse(&decode_hex(MARSHALLED_KPASSWD_REP)).expect("KRB-REP reply parses");
-
-    assert_eq!(reply.result_code(), None);
-    assert_eq!(reply.result_text(), None);
 }
 
 #[test]

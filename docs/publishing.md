@@ -1,40 +1,39 @@
 # Publishing And Release Plan
 
-`rskrb5` is prepared for a narrow `0.1.x` crates.io preview. The first
-publishable surface is intentionally limited to client-side login,
-file-backed keytab and credential-cache handling, default config loading, and
-HTTP Negotiate/SPNEGO header generation and password-change flows on
-`TokioClient` plus wrapper clients.
+`rskrb5` has a published `0.1` preview. The next pre-`1.0` preview may make
+breaking Rust API changes to reduce compatibility shims and tighten the public
+surface around client-side login, file-backed keytab and credential-cache
+handling, default config loading, HTTP Negotiate/SPNEGO header generation, and
+password-change flows.
 
 ## Distribution Model
 
 - GitHub is the source of truth for development, CI, issues, examples, Docker
   integration tests, tags, and release notes.
-- crates.io is the right public Rust distribution channel once the decision
-  gate is complete. A Kerberos client/service library needs normal Cargo
-  dependency resolution, docs.rs rendering, semver metadata, and discoverability
-  in the Rust ecosystem.
+- crates.io is the public Rust distribution channel. A Kerberos client/service
+  library needs normal Cargo dependency resolution, docs.rs rendering, semver
+  metadata, and discoverability in the Rust ecosystem.
 - GitHub-only distribution remains acceptable for unreleased development
-  branches, but the `0.1.x` preview is intended for normal Cargo dependency
-  resolution through crates.io.
+  branches, but release previews are distributed through crates.io.
 
 ## Release Gate
 
 Before publishing a release, the crate should have:
 
 - A positive decision-gate result in `docs/compatibility-report.md`.
-- A first supported scope stated in the README, with unsupported gokrb5 features
-  called out plainly.
-- A semver version greater than `0.0.0`; use `0.1.0` for the first public API
-  preview.
+- A supported preview scope stated in the README, with unsupported gokrb5
+  features called out plainly.
+- Release notes that list intentional breaking API changes for the preview.
+- A semver version matching the release intent. Use a new minor version such as
+  `0.2.0` for breaking pre-`1.0` API changes.
 - No AGPL or LGPL dependency in default/core features. Any such dependency must
   be isolated behind a clearly named, non-default feature.
 - A clean package manifest with repository, license, README, keywords,
   categories, examples, and feature flags that match the published support
   story.
 - Local and CI success for the release preflight below.
-- A crates.io owner account and an additional owner invited before the first
-  real release, so the crate is not locked to one maintainer.
+- At least two crates.io owners before any release intended for external users,
+  so the crate is not locked to one maintainer.
 
 ## Release Preflight
 
@@ -89,13 +88,15 @@ When the gate is met:
    ```
 
 6. Tag the published revision as `vX.Y.Z` and create a GitHub release that
-   summarizes supported features, known gaps, and the matching compatibility
-   report revision.
+   summarizes supported features, known gaps, breaking API changes, and the
+   matching compatibility report revision.
 
 ## Versioning Policy
 
 - `0.x` releases may make breaking API changes, but each release should still
   state compatibility changes explicitly.
+- Prefer a minor version bump for breaking pre-`1.0` API changes, even though
+  Cargo permits broader `0.x` breakage.
 - Cryptographic behavior, wire formats, and parsed data structures should be
   treated as compatibility-sensitive even before `1.0`.
 - Raise MSRV only in a minor release and document the reason.

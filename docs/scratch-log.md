@@ -92,7 +92,22 @@
   listeners to validate `change_password*` path behavior, avoiding a dependency
   on additional integration fixtures.
 - Review fix: updated README, crate docs, and release-surface notes to make
-  `change_password*` wrapper methods part of the documented `0.1.x` preview scope.
+  `change_password*` wrapper methods part of the documented preview scope.
+- Decision: use the post-`0.1` breaking window to remove gokrb5-named kadmin
+  aliases (`unmarshal`, `marshal`, `change_passwd_msg*`, mutating
+  `Reply::decrypt`, and result-code/text accessors) from the public API.
+  Canonical Rust-facing names are now `decode_der`/`encode_der`,
+  `parse`/`encode`, `build_change_password_message*`, and `decrypt_result`.
+- Trade-off: this intentionally breaks temporary `0.1` compatibility shims while
+  preserving the same kpasswd DER/frame behavior through focused regression
+  tests.
+
+## Planned / Unverified Notes
+
+The entries below were captured as forward-looking implementation notes. The
+current date for this planning pass is 2026-06-23; do not treat later-dated
+entries as completed project history until their code changes and verification
+commands are confirmed in git.
 
 ## 2026-06-24
 
