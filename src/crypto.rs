@@ -1134,9 +1134,6 @@ impl KerberosEtype {
     }
 }
 
-/// Compatibility alias for the earlier AES-only dispatcher name.
-pub type AesEtype = KerberosEtype;
-
 /// Convert a Kerberos iteration count to RFC3962 string-to-key parameters.
 pub fn iterations_to_s2kparams(iterations: u32) -> String {
     hex_encode(&iterations.to_be_bytes())

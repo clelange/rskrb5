@@ -22,6 +22,9 @@ compatibility-sensitive.
   `Request::parse`, `Request::encode`, `Reply::parse`, `Reply::encode`,
   `Reply::decrypt_result`, `build_change_password_message`, and
   `build_change_password_message_with_confounders`.
+- `rskrb5::crypto::AesEtype` has been removed. Use
+  `rskrb5::crypto::KerberosEtype`; it covers AES-SHA1, AES-SHA2, DES3, and
+  RC4-HMAC dispatch.
 
 ### Refactor Notes
 
@@ -40,7 +43,34 @@ compatibility-sensitive.
 
 ### Release Evidence
 
+Current local evidence for the `0.2.0` preview branch, recorded on
+2026-06-23:
+
+- `cargo fmt --check`
+- `cargo check --no-default-features`
+- `cargo check`
+- `cargo clippy --all-targets --all-features -- -D warnings`
+- `cargo test --all-features`
+- `cargo doc --all-features --no-deps`
+- `cargo run --no-default-features --features evaluation --bin rskrb5-compat-report`
+  matches [`compatibility-report.md`](compatibility-report.md)
+- `cargo package --locked --allow-dirty`
+- `prek run --all-files --stage pre-push`
+
+Integration evidence:
+
+- Full local Docker MIT run attempted with
+  `scripts/run-gated-integration.sh run --test client_integration`; this local
+  direct-container-IP run failed with transport timeouts to
+  `192.168.215.x:88` endpoints.
+- Focused forwarded-port Docker MIT configured-KDC AS login passed with
+  `RSKRB5_DIRECT_CONTAINER_IP=0 TEST_DNS_KDC=0 scripts/run-gated-integration.sh run --test client_integration docker_mit_kdc_configured_kdc_as_login -- --nocapture`.
+- Focused forwarded-port kpasswd coverage passed with
+  `TEST_KPASSWD=1 RSKRB5_DIRECT_CONTAINER_IP=0 TEST_DNS_KDC=0 scripts/run-gated-integration.sh run --test client_integration docker_mit_kdc_tokio_client_change_password -- --nocapture`.
+- `TESTAD=1` was not run in this pass because no reachable maintained AD lab
+  was configured.
+
 Before publishing, rerun the release preflight in
 [`publishing.md`](publishing.md), regenerate
-[`compatibility-report.md`](compatibility-report.md), and record Docker/AD gate
-results in the GitHub release notes.
+[`compatibility-report.md`](compatibility-report.md), and record the final
+Docker/AD gate results in the GitHub release notes.
