@@ -67,6 +67,7 @@ required-features = ["evaluation"]
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
 pretty_assertions = "1.4"
 tokio = { version = "1.47", features = ["macros", "net", "rt-multi-thread"] }
+toml = "0.9"
 
 [[example]]
 name = "axum-negotiate"

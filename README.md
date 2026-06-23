@@ -79,6 +79,10 @@ The report records the gokrb5 v8 test contract and the current support matrix
 for candidate crates. Keep it current whenever a candidate or porting milestone
 changes.
 
+Track release parity against the pinned upstream target in
+[`docs/gokrb5-parity.md`](docs/gokrb5-parity.md). The machine-readable parity
+manifest is [`docs/gokrb5-parity.toml`](docs/gokrb5-parity.toml).
+
 Run the Axum Negotiate example with a service keytab:
 
 ```sh

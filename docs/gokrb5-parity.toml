@@ -1,0 +1,152 @@
+[target]
+module = "github.com/jcmturner/gokrb5/v8"
+version = "v8.4.4"
+release_date = "2023-02-25"
+release_url = "https://github.com/jcmturner/gokrb5/releases/tag/v8.4.4"
+docs_url = "https://pkg.go.dev/github.com/jcmturner/gokrb5/v8"
+usage_url = "https://github.com/jcmturner/gokrb5/blob/master/v8/USAGE.md"
+license = "Apache-2.0"
+last_reviewed = "2026-06-23"
+
+[[area]]
+id = "config"
+name = "krb5.conf configuration"
+upstream_packages = ["config"]
+upstream_tests = ["config/*_test.go"]
+rskrb5_modules = ["src/config.rs"]
+rskrb5_tests = ["tests/config.rs"]
+status = "covered"
+evidence = ["unit tests cover parsing, defaults, realm lookup, enctype mapping, path-list loading, and gokrb5-shaped JSON"]
+next = []
+
+[[area]]
+id = "keytab"
+name = "Keytab parsing, writing, and lookup"
+upstream_packages = ["keytab"]
+upstream_tests = ["keytab/keytab_test.go"]
+rskrb5_modules = ["src/keytab.rs"]
+rskrb5_tests = ["tests/keytab.rs"]
+status = "covered"
+evidence = ["unit tests cover gokrb5 fixtures, load/save, FILE names, env/default handling, generated entries, kvno and enctype lookup"]
+next = []
+
+[[area]]
+id = "ccache"
+name = "Credential cache parsing, writing, and collection names"
+upstream_packages = ["credentials"]
+upstream_tests = ["credentials/ccache_test.go", "credentials/ccache_integration_test.go"]
+rskrb5_modules = ["src/ccache.rs", "src/client.rs"]
+rskrb5_tests = ["tests/ccache.rs", "tests/client.rs", "tests/client_integration.rs"]
+status = "covered-with-gated-evidence"
+evidence = ["unit tests cover FILE/WRFILE/DIR parsing, writing, lookup, cacheconf entries, JSON, and env/default names", "gated integration has external kinit/kvno ccache coverage when TESTPRIVILEGED=1 is available"]
+next = ["keep privileged kinit/kvno coverage green in Linux CI before release"]
+
+[[area]]
+id = "crypto"
+name = "Kerberos cryptography"
+upstream_packages = ["crypto", "crypto/etype", "crypto/rfc3961", "crypto/rfc3962", "crypto/rfc4757", "crypto/rfc8009"]
+upstream_tests = ["crypto/**/*_test.go"]
+rskrb5_modules = ["src/crypto.rs"]
+rskrb5_tests = ["tests/crypto_aes.rs", "tests/crypto_des3.rs", "tests/crypto_rc4.rs"]
+status = "covered"
+evidence = ["unit vectors cover AES-SHA1, AES-SHA2, DES3-CBC-SHA1-KD, RC4-HMAC, nfold, string-to-key, checksums, message encryption, and tamper rejection"]
+next = []
+
+[[area]]
+id = "messages"
+name = "ASN.1 and Kerberos message wrappers"
+upstream_packages = ["messages", "types", "asn1tools", "krberror"]
+upstream_tests = ["messages/*_test.go", "types/*_test.go", "krberror/*_test.go"]
+rskrb5_modules = ["src/messages.rs", "src/ap_req.rs", "src/ap_rep.rs", "src/kdc_req.rs", "src/kdc_rep.rs", "src/krb_error.rs", "src/krb_priv.rs", "src/krb_safe.rs", "src/krb_cred.rs", "src/ticket.rs"]
+rskrb5_tests = ["tests/asn1_fixture_matrix.rs", "tests/messages.rs", "tests/ap_req.rs", "tests/ap_rep.rs", "tests/kdc_req.rs", "tests/kdc_rep.rs", "tests/krb_error.rs", "tests/krb_priv.rs", "tests/krb_safe.rs", "tests/krb_cred.rs", "tests/ticket.rs"]
+status = "covered"
+evidence = ["translated gokrb5 DER fixtures decode and round-trip through rasn-backed wrappers"]
+next = []
+
+[[area]]
+id = "kadmin-kpasswd"
+name = "RFC 3244 password change"
+upstream_packages = ["kadmin", "client"]
+upstream_tests = ["kadmin/*_test.go", "client/passwd.go integration paths"]
+rskrb5_modules = ["src/kadmin.rs", "src/client/kpasswd.rs"]
+rskrb5_tests = ["tests/kadmin.rs", "tests/client.rs", "tests/client_integration.rs"]
+status = "covered-with-gated-evidence"
+evidence = ["unit tests cover ChangePasswdData, request/reply frames, AP-REP verification, and reply decryption", "focused TEST_KPASSWD=1 Docker MIT password-change gate passed over forwarded ports"]
+next = ["run TEST_KPASSWD=1 in Linux CI before release"]
+
+[[area]]
+id = "client"
+name = "AS/TGS client flows"
+upstream_packages = ["client"]
+upstream_tests = ["client/*_test.go", "client/*_integration_test.go"]
+rskrb5_modules = ["src/client.rs", "src/client/options.rs", "src/client/principal.rs", "src/client/transport.rs", "src/client/kpasswd.rs"]
+rskrb5_tests = ["tests/client.rs", "tests/client_principal.rs", "tests/client_transport.rs", "tests/client_integration.rs"]
+status = "covered-with-gated-evidence"
+evidence = ["unit tests cover password/keytab/ccache login, AS/TGS exchange, referrals, renewal, S4U2Self, S4U2Proxy, diagnostics, write-back, and cache behavior", "Docker MIT integration covers live KDC paths when fixture networking is available"]
+next = ["make full Linux Docker MIT gate routine and record DNS, privileged, referral, renewal, HTTP, and kpasswd evidence"]
+
+[[area]]
+id = "service"
+name = "AP-REQ/AP-REP service validation"
+upstream_packages = ["service"]
+upstream_tests = ["service/*_test.go", "messages/Ticket_test.go"]
+rskrb5_modules = ["src/service.rs", "src/http.rs"]
+rskrb5_tests = ["tests/service.rs", "tests/http.rs", "tests/client_integration.rs"]
+status = "covered-with-gated-evidence"
+evidence = ["unit tests cover AP-REQ validation, replay cache, clock skew, client address checks, AP-REP mutual auth, keytab adapters, and PAC checksum validation", "Docker HTTP/SPNEGO tests cover live service acceptance and replay rejection when the Docker gate runs"]
+next = ["confirm Linux Docker HTTP/SPNEGO gate is stable before release"]
+
+[[area]]
+id = "gssapi-spnego"
+name = "GSSAPI, SPNEGO, and HTTP Negotiate tokens"
+upstream_packages = ["gssapi", "spnego"]
+upstream_tests = ["gssapi/*_test.go", "spnego/*_test.go", "spnego/http_test.go"]
+rskrb5_modules = ["src/spnego.rs", "src/spnego/oid.rs", "src/http.rs", "src/client/negotiate.rs"]
+rskrb5_tests = ["tests/gssapi.rs", "tests/spnego.rs", "tests/http.rs", "tests/client.rs", "tests/client_integration.rs"]
+status = "partial"
+evidence = ["MIC, Wrap, SPNEGO token, raw KRB5 Negotiate, AP-REP verification, HTTP helpers, Tower middleware, and high-level header generation are covered"]
+next = ["add a ready-to-use HTTP client wrapper that retries 401 Negotiate responses and documents request body replay constraints"]
+
+[[area]]
+id = "pac"
+name = "PAC and NDR parsing"
+upstream_packages = ["pac"]
+upstream_tests = ["pac/*_test.go", "messages/Ticket_test.go", "client/client_ad_integration_test.go"]
+rskrb5_modules = ["src/pac.rs", "src/pac/reader.rs", "src/service.rs"]
+rskrb5_tests = ["tests/pac.rs", "tests/service.rs", "tests/client_ad_integration.rs"]
+status = "covered-needs-ad-evidence"
+evidence = ["unit tests cover PAC container data, validation info, credentials, UPN/DNS, S4U delegation, device info, claims, compression, signatures, and AD credential summaries"]
+next = ["run TESTAD=1 against a maintained AD lab and keep it green before claiming full AD parity"]
+
+[[area]]
+id = "docker-mit"
+name = "Docker MIT KDC integration fixtures"
+upstream_packages = ["client", "credentials", "spnego", "test/docker"]
+upstream_tests = ["client/*_integration_test.go", "credentials/*_integration_test.go", "spnego/http_test.go"]
+rskrb5_modules = ["scripts/run-gated-integration.sh", ".github/workflows/ci.yml"]
+rskrb5_tests = ["tests/client_integration.rs"]
+status = "needs-live-evidence"
+evidence = ["focused forwarded-port configured-KDC AS login passed locally", "full local direct-container-IP run timed out to 192.168.215.x:88 on macOS Docker networking"]
+next = ["run workflow_dispatch integration=true on GitHub Actions or a Linux VM", "capture full DNS-SRV, privileged kinit/kvno, HTTP, referral, renewal, and kpasswd results"]
+
+[[area]]
+id = "active-directory"
+name = "Active Directory integration"
+upstream_packages = ["client", "pac", "service"]
+upstream_tests = ["client/client_ad_integration_test.go"]
+rskrb5_modules = ["tests/client_ad_integration.rs", "src/pac.rs", "src/client.rs"]
+rskrb5_tests = ["tests/client_ad_integration.rs"]
+status = "blocked-on-lab"
+evidence = ["gated AD tests exist and skip when TESTAD=1 is absent or configured KDCs are unreachable"]
+next = ["stand up or document reachable maintained USER and RESOURCE AD realm endpoints", "run TESTAD=1 and record keytab login, no-preauth login, user-domain PAC, and resource-trust PAC evidence"]
+
+[[area]]
+id = "non-goals"
+name = "Out-of-scope non-gokrb5 platform features"
+upstream_packages = []
+upstream_tests = []
+rskrb5_modules = ["src/ccache.rs", "src/keytab.rs"]
+rskrb5_tests = ["tests/ccache.rs", "tests/keytab.rs", "tests/client.rs"]
+status = "intentionally-out-of-scope"
+evidence = ["API, KCM, KEYRING, MSLSA, MEMORY, FAST armor, PKINIT, and system GSSAPI/SSPI facades are not required for gokrb5/v8 parity and are rejected or documented as unsupported"]
+next = ["keep unsupported-store errors typed and documented; do not block gokrb5 parity on these features"]
