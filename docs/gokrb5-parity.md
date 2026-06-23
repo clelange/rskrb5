@@ -30,6 +30,22 @@ required for `gokrb5/v8` parity.
 | Active Directory integration | blocked-on-lab | Stand up or document reachable USER and RESOURCE AD realm endpoints. |
 | Out-of-scope non-gokrb5 platform features | intentionally-out-of-scope | Keep typed unsupported-store errors and do not block parity on these. |
 
+## Unproven Gates
+
+These gates are the remaining proof points before claiming broad gokrb5 parity.
+`required_for_release` means the gate should be green before the next breaking
+preview release unless the release notes explicitly call it out as skipped.
+
+| Gate | Status | Proves | Command or blocker | Next action |
+|---|---|---|---|---|
+| Full Linux Docker MIT integration | unproven | docker-mit, client, service, ccache | `scripts/run-gated-integration.sh run --test client_integration` | Run on GitHub Actions `workflow_dispatch` with integration enabled or on a Linux VM, then fix KDC, DNS-SRV, HTTP, referral, renewal, or ccache regressions. |
+| Linux Docker MIT password-change integration | unproven | kadmin-kpasswd, client | `TEST_KPASSWD=1 scripts/run-gated-integration.sh run --test client_integration` | Run the kpasswd gate on GitHub Actions or a Linux VM. |
+| Linux Docker DNS-SRV KDC discovery | unproven | docker-mit, client | `TEST_DNS_KDC=1 scripts/run-gated-integration.sh run --test client_integration docker_mit_kdc_dns_srv_as_login -- --nocapture` | Run with resolver mutation available and record whether SRV lookup reaches the Docker MIT KDC without configured KDC addresses. |
+| Linux Docker privileged external ccache | unproven | ccache, client | `TESTPRIVILEGED=1 scripts/run-gated-integration.sh run --test client_integration` | Run with MIT `kinit` and `kvno` available and record FILE ccache import/export plus service-ticket lookup evidence. |
+| Linux Docker HTTP SPNEGO service integration | unproven | service, gssapi-spnego, client | `scripts/run-gated-integration.sh run --test client_integration docker_mit_kdc_spnego_header_authenticates_to_docker_http -- --nocapture` | Run the full HTTP/SPNEGO subset and record service acceptance plus replay rejection evidence. |
+| Active Directory TESTAD integration | blocked-on-lab | active-directory, PAC, client, service | Needs maintained USER and RESOURCE AD realm endpoints. | Stand up or document the lab, then run `INTEGRATION=1 TESTAD=1 cargo test --all-features --test client_ad_integration`. |
+| Ready-to-use HTTP Negotiate client wrapper | missing-api | gssapi-spnego, client | No wrapper API yet. | Add a request wrapper that retries 401 Negotiate responses and documents request body replay constraints. |
+
 ## Immediate Next Slices
 
 1. Run the GitHub Actions `workflow_dispatch` Docker-backed integration job
@@ -55,4 +71,8 @@ required for `gokrb5/v8` parity.
 - `needs-live-evidence`: implementation may exist, but current proof is not
   broad enough for a release parity claim.
 - `blocked-on-lab`: code exists, but external infrastructure is required.
+- `unproven`: the test, fixture, or implementation target is known, but the
+  release-blocking proof has not been captured on the required platform.
+- `missing-api`: supporting pieces exist, but the user-facing parity API is not
+  implemented yet.
 - `intentionally-out-of-scope`: not required for gokrb5/v8 parity.

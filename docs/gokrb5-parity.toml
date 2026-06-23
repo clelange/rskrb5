@@ -150,3 +150,79 @@ rskrb5_tests = ["tests/ccache.rs", "tests/keytab.rs", "tests/client.rs"]
 status = "intentionally-out-of-scope"
 evidence = ["API, KCM, KEYRING, MSLSA, MEMORY, FAST armor, PKINIT, and system GSSAPI/SSPI facades are not required for gokrb5/v8 parity and are rejected or documented as unsupported"]
 next = ["keep unsupported-store errors typed and documented; do not block gokrb5 parity on these features"]
+
+[[gate]]
+id = "linux-docker-mit-full"
+name = "Full Linux Docker MIT integration"
+status = "unproven"
+command = "scripts/run-gated-integration.sh run --test client_integration"
+proves = ["docker-mit", "client", "service", "ccache"]
+required_for_release = true
+required_for_parity = true
+evidence = ["focused forwarded-port configured-KDC AS login passed locally", "full local direct-container-IP run timed out to 192.168.215.x:88 on macOS Docker networking"]
+next = ["run on GitHub Actions workflow_dispatch integration=true or a Linux VM", "fix any KDC, DNS-SRV, HTTP, referral, renewal, or ccache regressions"]
+
+[[gate]]
+id = "linux-docker-mit-kpasswd"
+name = "Linux Docker MIT password-change integration"
+status = "unproven"
+command = "TEST_KPASSWD=1 scripts/run-gated-integration.sh run --test client_integration"
+proves = ["kadmin-kpasswd", "client"]
+required_for_release = true
+required_for_parity = true
+evidence = ["focused TEST_KPASSWD=1 Docker MIT password-change gate passed locally over forwarded ports"]
+next = ["run TEST_KPASSWD=1 on GitHub Actions or a Linux VM", "fix any RFC 3244 client or fixture regressions"]
+
+[[gate]]
+id = "linux-docker-dns-srv"
+name = "Linux Docker DNS-SRV KDC discovery"
+status = "unproven"
+command = "TEST_DNS_KDC=1 scripts/run-gated-integration.sh run --test client_integration docker_mit_kdc_dns_srv_as_login -- --nocapture"
+proves = ["docker-mit", "client"]
+required_for_release = true
+required_for_parity = true
+evidence = ["DNS-SRV integration test exists and skips when the fixture resolver path is unavailable"]
+next = ["run with resolver mutation available on GitHub Actions or a Linux VM", "record whether SRV lookup selects the Docker MIT KDC without configured KDC addresses"]
+
+[[gate]]
+id = "linux-docker-privileged-ccache"
+name = "Linux Docker privileged external ccache"
+status = "unproven"
+command = "TESTPRIVILEGED=1 scripts/run-gated-integration.sh run --test client_integration"
+proves = ["ccache", "client"]
+required_for_release = true
+required_for_parity = true
+evidence = ["external kinit/kvno ccache tests exist and skip without TESTPRIVILEGED=1 plus host tools"]
+next = ["run with MIT kinit and kvno available on GitHub Actions or a Linux VM", "record FILE ccache import/export and service-ticket lookup evidence"]
+
+[[gate]]
+id = "linux-docker-http-spnego"
+name = "Linux Docker HTTP SPNEGO service integration"
+status = "unproven"
+command = "scripts/run-gated-integration.sh run --test client_integration docker_mit_kdc_spnego_header_authenticates_to_docker_http -- --nocapture"
+proves = ["service", "gssapi-spnego", "client"]
+required_for_release = true
+required_for_parity = true
+evidence = ["Docker HTTP/SPNEGO tests exist for live service acceptance, raw KRB5 Negotiate, and replay rejection"]
+next = ["run the full HTTP/SPNEGO subset on GitHub Actions or a Linux VM", "record service acceptance and replay rejection evidence"]
+
+[[gate]]
+id = "active-directory-testad"
+name = "Active Directory TESTAD integration"
+status = "blocked-on-lab"
+command = "INTEGRATION=1 TESTAD=1 cargo test --all-features --test client_ad_integration"
+proves = ["active-directory", "pac", "client", "service"]
+required_for_release = false
+required_for_parity = true
+evidence = ["AD integration tests exist and skip when TESTAD=1 is absent or configured KDCs are unreachable"]
+next = ["stand up or document reachable maintained USER and RESOURCE AD realm endpoints", "record keytab login, no-preauth login, user-domain PAC, and resource-trust PAC evidence"]
+
+[[gate]]
+id = "http-client-wrapper"
+name = "Ready-to-use HTTP Negotiate client wrapper"
+status = "missing-api"
+proves = ["gssapi-spnego", "client"]
+required_for_release = true
+required_for_parity = true
+evidence = ["lower-level header generation, AP-REP verification, HTTP helpers, and Tower service middleware are implemented and tested"]
+next = ["add a request wrapper that retries 401 Negotiate responses", "document request body replay constraints"]
