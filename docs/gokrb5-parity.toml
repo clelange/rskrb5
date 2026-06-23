@@ -38,7 +38,7 @@ upstream_tests = ["credentials/ccache_test.go", "credentials/ccache_integration_
 rskrb5_modules = ["src/ccache.rs", "src/client.rs"]
 rskrb5_tests = ["tests/ccache.rs", "tests/client.rs", "tests/client_integration.rs"]
 status = "covered-with-gated-evidence"
-evidence = ["unit tests cover FILE/WRFILE/DIR parsing, writing, lookup, cacheconf entries, JSON, and env/default names", "gated integration has external kinit/kvno ccache coverage when TESTPRIVILEGED=1 is available"]
+evidence = ["unit tests cover FILE/WRFILE/DIR parsing, writing, lookup, cacheconf entries, JSON, and env/default names", "GitHub Actions run 28060033033 passed external kinit and kvno ccache coverage with TESTPRIVILEGED=1 on ubuntu-latest"]
 next = ["keep privileged kinit/kvno coverage green in Linux CI before release"]
 
 [[area]]
@@ -71,8 +71,8 @@ upstream_tests = ["kadmin/*_test.go", "client/passwd.go integration paths"]
 rskrb5_modules = ["src/kadmin.rs", "src/client/kpasswd.rs"]
 rskrb5_tests = ["tests/kadmin.rs", "tests/client.rs", "tests/client_integration.rs"]
 status = "covered-with-gated-evidence"
-evidence = ["unit tests cover ChangePasswdData, request/reply frames, AP-REP verification, and reply decryption", "focused TEST_KPASSWD=1 Docker MIT password-change gate passed over forwarded ports"]
-next = ["run TEST_KPASSWD=1 in Linux CI before release"]
+evidence = ["unit tests cover ChangePasswdData, request/reply frames, AP-REP verification, and reply decryption", "GitHub Actions run 28060033033 passed docker_mit_kdc_tokio_client_change_password with TEST_KPASSWD=1 on ubuntu-latest"]
+next = ["keep TEST_KPASSWD=1 green in Linux CI before release"]
 
 [[area]]
 id = "client"
@@ -82,8 +82,8 @@ upstream_tests = ["client/*_test.go", "client/*_integration_test.go"]
 rskrb5_modules = ["src/client.rs", "src/client/options.rs", "src/client/principal.rs", "src/client/transport.rs", "src/client/kpasswd.rs"]
 rskrb5_tests = ["tests/client.rs", "tests/client_principal.rs", "tests/client_transport.rs", "tests/client_integration.rs"]
 status = "covered-with-gated-evidence"
-evidence = ["unit tests cover password/keytab/ccache login, AS/TGS exchange, referrals, renewal, S4U2Self, S4U2Proxy, diagnostics, write-back, and cache behavior", "Docker MIT integration covers live KDC paths when fixture networking is available"]
-next = ["make full Linux Docker MIT gate routine and record DNS, privileged, referral, renewal, HTTP, and kpasswd evidence"]
+evidence = ["unit tests cover password/keytab/ccache login, AS/TGS exchange, referrals, renewal, S4U2Self, S4U2Proxy, diagnostics, write-back, and cache behavior", "GitHub Actions run 28060033033 passed 40 Docker MIT client_integration tests on ubuntu-latest, including DNS-SRV, referrals, renewal, cached tickets, ccache, HTTP, and kpasswd"]
+next = ["keep full Docker MIT integration green in Linux CI before release"]
 
 [[area]]
 id = "service"
@@ -93,8 +93,8 @@ upstream_tests = ["service/*_test.go", "messages/Ticket_test.go"]
 rskrb5_modules = ["src/service.rs", "src/http.rs"]
 rskrb5_tests = ["tests/service.rs", "tests/http.rs", "tests/client_integration.rs"]
 status = "covered-with-gated-evidence"
-evidence = ["unit tests cover AP-REQ validation, replay cache, clock skew, client address checks, AP-REP mutual auth, keytab adapters, and PAC checksum validation", "Docker HTTP/SPNEGO tests cover live service acceptance and replay rejection when the Docker gate runs"]
-next = ["confirm Linux Docker HTTP/SPNEGO gate is stable before release"]
+evidence = ["unit tests cover AP-REQ validation, replay cache, clock skew, client address checks, AP-REP mutual auth, keytab adapters, and PAC checksum validation", "GitHub Actions run 28060033033 passed Docker HTTP/SPNEGO service acceptance, raw KRB5 Negotiate, and replay rejection on ubuntu-latest"]
+next = ["keep Linux Docker HTTP/SPNEGO coverage green before release"]
 
 [[area]]
 id = "gssapi-spnego"
@@ -125,9 +125,9 @@ upstream_packages = ["client", "credentials", "spnego", "test/docker"]
 upstream_tests = ["client/*_integration_test.go", "credentials/*_integration_test.go", "spnego/http_test.go"]
 rskrb5_modules = ["scripts/run-gated-integration.sh", ".github/workflows/ci.yml"]
 rskrb5_tests = ["tests/client_integration.rs"]
-status = "needs-live-evidence"
-evidence = ["focused forwarded-port configured-KDC AS login passed locally", "full local direct-container-IP run timed out to 192.168.215.x:88 on macOS Docker networking"]
-next = ["run workflow_dispatch integration=true on GitHub Actions or a Linux VM", "capture full DNS-SRV, privileged kinit/kvno, HTTP, referral, renewal, and kpasswd results"]
+status = "covered-with-gated-evidence"
+evidence = ["focused forwarded-port configured-KDC AS login passed locally", "full local direct-container-IP run timed out to 192.168.215.x:88 on macOS Docker networking", "GitHub Actions workflow_dispatch run 28060033033 passed Docker-backed integration on ubuntu-latest with INTEGRATION=1, TESTPRIVILEGED=1, TEST_KPASSWD=1, and TEST_DNS_KDC=1"]
+next = ["keep workflow_dispatch integration=true and test_kpasswd=true green before release"]
 
 [[area]]
 id = "active-directory"
@@ -154,57 +154,57 @@ next = ["keep unsupported-store errors typed and documented; do not block gokrb5
 [[gate]]
 id = "linux-docker-mit-full"
 name = "Full Linux Docker MIT integration"
-status = "unproven"
+status = "proven"
 command = "scripts/run-gated-integration.sh run --test client_integration"
 proves = ["docker-mit", "client", "service", "ccache"]
 required_for_release = true
 required_for_parity = true
-evidence = ["focused forwarded-port configured-KDC AS login passed locally", "full local direct-container-IP run timed out to 192.168.215.x:88 on macOS Docker networking"]
-next = ["run on GitHub Actions workflow_dispatch integration=true or a Linux VM", "fix any KDC, DNS-SRV, HTTP, referral, renewal, or ccache regressions"]
+evidence = ["GitHub Actions run 28060033033 passed the Docker-backed integration job on ubuntu-latest with 40 client_integration tests green"]
+next = ["keep this gate green before release"]
 
 [[gate]]
 id = "linux-docker-mit-kpasswd"
 name = "Linux Docker MIT password-change integration"
-status = "unproven"
+status = "proven"
 command = "TEST_KPASSWD=1 scripts/run-gated-integration.sh run --test client_integration"
 proves = ["kadmin-kpasswd", "client"]
 required_for_release = true
 required_for_parity = true
-evidence = ["focused TEST_KPASSWD=1 Docker MIT password-change gate passed locally over forwarded ports"]
-next = ["run TEST_KPASSWD=1 on GitHub Actions or a Linux VM", "fix any RFC 3244 client or fixture regressions"]
+evidence = ["GitHub Actions run 28060033033 passed docker_mit_kdc_tokio_client_change_password with TEST_KPASSWD=1 on ubuntu-latest"]
+next = ["keep this gate green before release"]
 
 [[gate]]
 id = "linux-docker-dns-srv"
 name = "Linux Docker DNS-SRV KDC discovery"
-status = "unproven"
+status = "proven"
 command = "TEST_DNS_KDC=1 scripts/run-gated-integration.sh run --test client_integration docker_mit_kdc_dns_srv_as_login -- --nocapture"
 proves = ["docker-mit", "client"]
 required_for_release = true
 required_for_parity = true
-evidence = ["DNS-SRV integration test exists and skips when the fixture resolver path is unavailable"]
-next = ["run with resolver mutation available on GitHub Actions or a Linux VM", "record whether SRV lookup selects the Docker MIT KDC without configured KDC addresses"]
+evidence = ["GitHub Actions run 28060033033 passed docker_mit_kdc_dns_srv_as_login with TEST_DNS_KDC=1 on ubuntu-latest"]
+next = ["keep this gate green before release"]
 
 [[gate]]
 id = "linux-docker-privileged-ccache"
 name = "Linux Docker privileged external ccache"
-status = "unproven"
+status = "proven"
 command = "TESTPRIVILEGED=1 scripts/run-gated-integration.sh run --test client_integration"
 proves = ["ccache", "client"]
 required_for_release = true
 required_for_parity = true
-evidence = ["external kinit/kvno ccache tests exist and skip without TESTPRIVILEGED=1 plus host tools"]
-next = ["run with MIT kinit and kvno available on GitHub Actions or a Linux VM", "record FILE ccache import/export and service-ticket lookup evidence"]
+evidence = ["GitHub Actions run 28060033033 passed docker_mit_kdc_loads_external_kinit_ccache and docker_mit_kdc_reads_external_kvno_service_ticket_ccache with TESTPRIVILEGED=1 on ubuntu-latest"]
+next = ["keep this gate green before release"]
 
 [[gate]]
 id = "linux-docker-http-spnego"
 name = "Linux Docker HTTP SPNEGO service integration"
-status = "unproven"
+status = "proven"
 command = "scripts/run-gated-integration.sh run --test client_integration docker_mit_kdc_spnego_header_authenticates_to_docker_http -- --nocapture"
 proves = ["service", "gssapi-spnego", "client"]
 required_for_release = true
 required_for_parity = true
-evidence = ["Docker HTTP/SPNEGO tests exist for live service acceptance, raw KRB5 Negotiate, and replay rejection"]
-next = ["run the full HTTP/SPNEGO subset on GitHub Actions or a Linux VM", "record service acceptance and replay rejection evidence"]
+evidence = ["GitHub Actions run 28060033033 passed Docker HTTP/SPNEGO service acceptance, raw KRB5 Negotiate, and replay rejection on ubuntu-latest"]
+next = ["keep this gate green before release"]
 
 [[gate]]
 id = "active-directory-testad"

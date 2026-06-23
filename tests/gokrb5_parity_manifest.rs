@@ -113,7 +113,7 @@ fn gokrb5_parity_manifest_has_expected_target_and_areas() {
         "active-directory-testad",
         "http-client-wrapper",
     ];
-    let allowed_gate_statuses = ["unproven", "blocked-on-lab", "missing-api"];
+    let allowed_gate_statuses = ["proven", "unproven", "blocked-on-lab", "missing-api"];
 
     let mut gate_ids = BTreeSet::new();
     for gate in gates {

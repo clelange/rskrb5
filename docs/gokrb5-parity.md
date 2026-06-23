@@ -21,43 +21,40 @@ required for `gokrb5/v8` parity.
 | Credential cache parsing, writing, and collection names | covered-with-gated-evidence | Keep privileged `kinit`/`kvno` ccache coverage green in Linux CI. |
 | Kerberos cryptography | covered | Keep RFC/gokrb5 vectors current. |
 | ASN.1 and Kerberos message wrappers | covered | Keep fixture matrix current. |
-| RFC 3244 password change | covered-with-gated-evidence | Run `TEST_KPASSWD=1` in Linux CI before release. |
-| AS/TGS client flows | covered-with-gated-evidence | Make the full Linux Docker MIT gate routine. |
-| AP-REQ/AP-REP service validation | covered-with-gated-evidence | Confirm Linux Docker HTTP/SPNEGO service gate is stable. |
+| RFC 3244 password change | covered-with-gated-evidence | Keep `TEST_KPASSWD=1` green in Linux CI. |
+| AS/TGS client flows | covered-with-gated-evidence | Keep the full Linux Docker MIT gate green. |
+| AP-REQ/AP-REP service validation | covered-with-gated-evidence | Keep Linux Docker HTTP/SPNEGO service coverage green. |
 | GSSAPI, SPNEGO, and HTTP Negotiate tokens | partial | Add a ready-to-use HTTP client wrapper for 401 Negotiate retry flows. |
 | PAC and NDR parsing | covered-needs-ad-evidence | Run `TESTAD=1` against a maintained AD lab. |
-| Docker MIT KDC integration fixtures | needs-live-evidence | Use GitHub Actions or a Linux VM for DNS/privileged/full fixture evidence. |
+| Docker MIT KDC integration fixtures | covered-with-gated-evidence | Keep workflow-dispatched Docker-backed integration green. |
 | Active Directory integration | blocked-on-lab | Stand up or document reachable USER and RESOURCE AD realm endpoints. |
 | Out-of-scope non-gokrb5 platform features | intentionally-out-of-scope | Keep typed unsupported-store errors and do not block parity on these. |
 
-## Unproven Gates
+## Parity Gates
 
-These gates are the remaining proof points before claiming broad gokrb5 parity.
-`required_for_release` means the gate should be green before the next breaking
+These gates are the release and parity proof points for gokrb5 behavior.
+`required_for_release` means the gate should stay green before the next breaking
 preview release unless the release notes explicitly call it out as skipped.
 
 | Gate | Status | Proves | Command or blocker | Next action |
 |---|---|---|---|---|
-| Full Linux Docker MIT integration | unproven | docker-mit, client, service, ccache | `scripts/run-gated-integration.sh run --test client_integration` | Run on GitHub Actions `workflow_dispatch` with integration enabled or on a Linux VM, then fix KDC, DNS-SRV, HTTP, referral, renewal, or ccache regressions. |
-| Linux Docker MIT password-change integration | unproven | kadmin-kpasswd, client | `TEST_KPASSWD=1 scripts/run-gated-integration.sh run --test client_integration` | Run the kpasswd gate on GitHub Actions or a Linux VM. |
-| Linux Docker DNS-SRV KDC discovery | unproven | docker-mit, client | `TEST_DNS_KDC=1 scripts/run-gated-integration.sh run --test client_integration docker_mit_kdc_dns_srv_as_login -- --nocapture` | Run with resolver mutation available and record whether SRV lookup reaches the Docker MIT KDC without configured KDC addresses. |
-| Linux Docker privileged external ccache | unproven | ccache, client | `TESTPRIVILEGED=1 scripts/run-gated-integration.sh run --test client_integration` | Run with MIT `kinit` and `kvno` available and record FILE ccache import/export plus service-ticket lookup evidence. |
-| Linux Docker HTTP SPNEGO service integration | unproven | service, gssapi-spnego, client | `scripts/run-gated-integration.sh run --test client_integration docker_mit_kdc_spnego_header_authenticates_to_docker_http -- --nocapture` | Run the full HTTP/SPNEGO subset and record service acceptance plus replay rejection evidence. |
+| Full Linux Docker MIT integration | proven | docker-mit, client, service, ccache | `scripts/run-gated-integration.sh run --test client_integration` | GitHub Actions run `28060033033` passed 40 Docker MIT `client_integration` tests on `ubuntu-latest`; keep this gate green. |
+| Linux Docker MIT password-change integration | proven | kadmin-kpasswd, client | `TEST_KPASSWD=1 scripts/run-gated-integration.sh run --test client_integration` | GitHub Actions run `28060033033` passed `docker_mit_kdc_tokio_client_change_password`; keep this gate green. |
+| Linux Docker DNS-SRV KDC discovery | proven | docker-mit, client | `TEST_DNS_KDC=1 scripts/run-gated-integration.sh run --test client_integration docker_mit_kdc_dns_srv_as_login -- --nocapture` | GitHub Actions run `28060033033` passed `docker_mit_kdc_dns_srv_as_login`; keep this gate green. |
+| Linux Docker privileged external ccache | proven | ccache, client | `TESTPRIVILEGED=1 scripts/run-gated-integration.sh run --test client_integration` | GitHub Actions run `28060033033` passed external `kinit` and `kvno` ccache tests; keep this gate green. |
+| Linux Docker HTTP SPNEGO service integration | proven | service, gssapi-spnego, client | `scripts/run-gated-integration.sh run --test client_integration docker_mit_kdc_spnego_header_authenticates_to_docker_http -- --nocapture` | GitHub Actions run `28060033033` passed HTTP SPNEGO, raw KRB5 Negotiate, and replay rejection tests; keep this gate green. |
 | Active Directory TESTAD integration | blocked-on-lab | active-directory, PAC, client, service | Needs maintained USER and RESOURCE AD realm endpoints. | Stand up or document the lab, then run `INTEGRATION=1 TESTAD=1 cargo test --all-features --test client_ad_integration`. |
 | Ready-to-use HTTP Negotiate client wrapper | missing-api | gssapi-spnego, client | No wrapper API yet. | Add a request wrapper that retries 401 Negotiate responses and documents request body replay constraints. |
 
 ## Immediate Next Slices
 
-1. Run the GitHub Actions `workflow_dispatch` Docker-backed integration job
-   with DNS enabled. Record whether DNS-SRV, external `kinit`/`kvno`, HTTP,
-   referrals, renewal, and ccache import/export all pass.
-2. Run the same job with `test_kpasswd=true` and record password-change
-   evidence.
-3. Add the HTTP client wrapper: given a request and client/session state,
+1. Add the HTTP client wrapper: given a request and client/session state,
    detect `WWW-Authenticate: Negotiate`, acquire/build the AP-REQ token, retry
    with `Authorization`, and expose clear body replay constraints.
-4. Create a maintained AD lab runbook or CI secret plan for `TESTAD=1`; do not
+2. Create a maintained AD lab runbook or CI secret plan for `TESTAD=1`; do not
    claim AD parity until this gate runs green.
+3. Keep the workflow-dispatched Docker MIT gate green with `integration=true`,
+   `test_kpasswd=true`, and `test_ad=false` before the next release.
 
 ## Status Values
 
@@ -71,6 +68,8 @@ preview release unless the release notes explicitly call it out as skipped.
 - `needs-live-evidence`: implementation may exist, but current proof is not
   broad enough for a release parity claim.
 - `blocked-on-lab`: code exists, but external infrastructure is required.
+- `proven`: the named gate has been captured green on the required platform and
+  should stay green before release.
 - `unproven`: the test, fixture, or implementation target is known, but the
   release-blocking proof has not been captured on the required platform.
 - `missing-api`: supporting pieces exist, but the user-facing parity API is not
