@@ -103,12 +103,29 @@ For release or parity evidence, require the lab to be reachable:
 
 ```sh
 TESTAD=1 TESTAD_REQUIRED=1 \
+  scripts/check-ad-integration-env.py
+TESTAD=1 TESTAD_REQUIRED=1 \
   cargo test --all-features --test client_ad_integration -- --nocapture
 ```
 
 `TESTAD_REQUIRED=1` fails the test when `TESTAD=1` is missing or either AD KDC
 cannot be reached. Without it, the tests keep the upstream-style behavior of
 returning `Ok(())` after printing a skip diagnostic.
+
+`scripts/check-ad-integration-env.py` validates the strict gate before running
+Rust tests. It checks `TESTAD=1`, `TESTAD_REQUIRED=1`, effective AD endpoints,
+KDC TCP reachability, and any supplied keytab overrides without printing secret
+values. CI can make the check stricter with:
+
+```sh
+export TEST_AD_REQUIRE_EXPLICIT_ENDPOINTS=1
+export TEST_AD_REQUIRE_KEYTAB_OVERRIDES=1
+```
+
+Use `TEST_AD_SKIP_REACHABILITY=1` only for dry-run validation of secret shape
+when the lab network is intentionally unavailable. Use
+`TEST_AD_CHECK_ADMIN_REACHABILITY=1` to also require TCP reachability for the
+admin server endpoints.
 
 When running through the Docker MIT fixture helper, AD remains separate from the
 Docker environment. The helper preserves `TEST_AD_*` endpoint and keytab values

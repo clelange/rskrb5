@@ -7,6 +7,8 @@
   soft-skipping unreachable lab endpoints.
 - Added AD keytab override variables for lab-specific keytab files, hex
   secrets, or base64 secrets.
+- Added `scripts/check-ad-integration-env.py` to preflight strict AD gate
+  environment, reachability, and keytab secret shape.
 
 ## 0.2.0 Preview - 2026-06-24
 

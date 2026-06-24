@@ -56,6 +56,7 @@ the release:
 ```sh
 scripts/run-gated-integration.sh run --test client_integration
 TEST_KPASSWD=1 scripts/run-gated-integration.sh run --test client_integration
+INTEGRATION=1 TESTAD=1 TESTAD_REQUIRED=1 scripts/check-ad-integration-env.py
 INTEGRATION=1 TESTAD=1 TESTAD_REQUIRED=1 cargo test --all-features --test client_ad_integration -- --nocapture
 ```
 
