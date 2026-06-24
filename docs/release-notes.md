@@ -11,6 +11,8 @@
   environment, reachability, and keytab secret shape.
 - Split the GitHub Actions AD gate into a strict self-hosted `rskrb5-ad` job so
   Docker MIT integration stays separate from live AD parity evidence.
+- Added `scripts/check-github-ad-gate.py` to verify required GitHub Actions
+  secrets and an online `rskrb5-ad` runner before dispatching `test_ad=true`.
 
 ## 0.2.0 Preview - 2026-06-24
 

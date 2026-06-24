@@ -143,6 +143,19 @@ To run the GitHub Actions gate, use `workflow_dispatch` with `test_ad=true`.
 The Docker-backed MIT integration job remains separate; use `integration=true`
 when that gate should run in the same workflow dispatch.
 
+Check GitHub-side readiness before dispatching:
+
+```sh
+scripts/check-github-ad-gate.py
+```
+
+After the required secrets and an online self-hosted runner with labels
+`self-hosted`, `linux`, `x64`, and `rskrb5-ad` are present, dispatch the gate:
+
+```sh
+scripts/check-github-ad-gate.py --dispatch
+```
+
 When running through the Docker MIT fixture helper, AD remains separate from the
 Docker environment. The helper preserves `TEST_AD_*` endpoint and keytab values
 in `target/gated-integration.env` for split `start` and `test` workflows, but

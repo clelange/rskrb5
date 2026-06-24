@@ -68,7 +68,9 @@ documents fixture setup in [`gated-integration.md`](gated-integration.md).
 maintained in CI. Use `TESTAD_REQUIRED=1` whenever an AD run is used as release
 evidence. The manual GitHub Actions `test_ad=true` gate runs on a self-hosted
 `rskrb5-ad` runner and preflights the required endpoint and keytab secrets
-before running `tests/client_ad_integration.rs`.
+before running `tests/client_ad_integration.rs`. Use
+`scripts/check-github-ad-gate.py` to verify those GitHub-side prerequisites
+before dispatching the AD gate.
 
 ## crates.io Release
 
