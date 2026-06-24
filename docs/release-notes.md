@@ -13,6 +13,8 @@
   Docker MIT integration stays separate from live AD parity evidence.
 - Added `scripts/check-github-ad-gate.py` to verify required GitHub Actions
   secrets and an online `rskrb5-ad` runner before dispatching `test_ad=true`.
+- Added dedicated runbooks for provisioning the AD lab and configuring the
+  GitHub self-hosted AD runner plus required `TEST_AD_*` secrets.
 
 ## 0.2.0 Preview - 2026-06-24
 

@@ -137,8 +137,8 @@ upstream_tests = ["client/client_ad_integration_test.go"]
 rskrb5_modules = ["tests/client_ad_integration.rs", "src/pac.rs", "src/client.rs"]
 rskrb5_tests = ["tests/client_ad_integration.rs"]
 status = "blocked-on-lab"
-evidence = ["AD integration tests exist, the lab contract is documented in docs/ad-integration.md, TESTAD_REQUIRED=1 fails when the strict gate would otherwise soft-skip, lab-specific keytab path/hex/base64 overrides are supported, scripts/check-ad-integration-env.py preflights strict AD runs, workflow_dispatch test_ad=true targets a self-hosted rskrb5-ad runner, and scripts/check-github-ad-gate.py checks GitHub runner/secret readiness"]
-next = ["configure the self-hosted rskrb5-ad runner and required TEST_AD_* secrets", "stand up reachable maintained USER and RESOURCE AD realm endpoints", "run scripts/check-github-ad-gate.py before dispatching test_ad=true", "run scripts/check-ad-integration-env.py before TESTAD=1 TESTAD_REQUIRED=1 with lab-specific keytabs as needed and record keytab login, no-preauth login, user-domain PAC, and resource-trust PAC evidence"]
+evidence = ["AD integration tests exist, the lab contract is documented in docs/ad-integration.md, TESTAD_REQUIRED=1 fails when the strict gate would otherwise soft-skip, lab-specific keytab path/hex/base64 overrides are supported, scripts/check-ad-integration-env.py preflights strict AD runs, workflow_dispatch test_ad=true targets a self-hosted rskrb5-ad runner, scripts/check-github-ad-gate.py checks GitHub runner/secret readiness, docs/ad-lab-provisioning.md documents the live AD lab contract, and docs/github-ad-gate-setup.md documents the GitHub runner and secret setup"]
+next = ["provision the maintained USER and RESOURCE AD realms from docs/ad-lab-provisioning.md", "configure the self-hosted rskrb5-ad runner and required TEST_AD_* secrets from docs/github-ad-gate-setup.md", "run scripts/check-github-ad-gate.py before dispatching test_ad=true", "run scripts/check-ad-integration-env.py before TESTAD=1 TESTAD_REQUIRED=1 with lab-specific keytabs as needed and record keytab login, no-preauth login, user-domain PAC, and resource-trust PAC evidence"]
 
 [[area]]
 id = "non-goals"
@@ -210,12 +210,12 @@ next = ["keep this gate green before release"]
 id = "active-directory-testad"
 name = "Active Directory TESTAD integration"
 status = "blocked-on-lab"
-command = "INTEGRATION=1 TESTAD=1 TESTAD_REQUIRED=1 cargo test --all-features --test client_ad_integration -- --nocapture"
+command = "scripts/check-github-ad-gate.py --dispatch"
 proves = ["active-directory", "pac", "client", "service"]
 required_for_release = false
 required_for_parity = true
-evidence = ["AD integration tests exist, docs/ad-integration.md defines the lab contract, TESTAD_REQUIRED=1 prevents unreachable-lab soft skips from counting as evidence, keytab path/hex/base64 overrides allow lab-specific account keys, scripts/check-ad-integration-env.py validates strict gate readiness, workflow_dispatch test_ad=true targets a self-hosted rskrb5-ad runner, and scripts/check-github-ad-gate.py checks GitHub runner/secret readiness"]
-next = ["configure the self-hosted rskrb5-ad runner and required TEST_AD_* secrets", "run scripts/check-github-ad-gate.py before dispatching test_ad=true", "record keytab login, no-preauth login, user-domain PAC, and resource-trust PAC evidence from scripts/check-ad-integration-env.py plus a strict TESTAD_REQUIRED=1 run with lab-specific keytabs as needed"]
+evidence = ["AD integration tests exist, docs/ad-integration.md defines the test contract, docs/ad-lab-provisioning.md defines the live AD lab contract, TESTAD_REQUIRED=1 prevents unreachable-lab soft skips from counting as evidence, keytab path/hex/base64 overrides allow lab-specific account keys, scripts/check-ad-integration-env.py validates strict gate readiness, workflow_dispatch test_ad=true targets a self-hosted rskrb5-ad runner, docs/github-ad-gate-setup.md defines the GitHub setup, and scripts/check-github-ad-gate.py checks GitHub runner/secret readiness"]
+next = ["provision the maintained USER and RESOURCE AD realms from docs/ad-lab-provisioning.md", "configure the self-hosted rskrb5-ad runner and required TEST_AD_* secrets from docs/github-ad-gate-setup.md", "run scripts/check-github-ad-gate.py before dispatching test_ad=true", "record keytab login, no-preauth login, user-domain PAC, and resource-trust PAC evidence from scripts/check-ad-integration-env.py plus a strict TESTAD_REQUIRED=1 run with lab-specific keytabs as needed"]
 
 [[gate]]
 id = "http-client-wrapper"

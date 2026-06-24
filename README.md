@@ -147,7 +147,11 @@ from the localhost defaults.
 The Active Directory integration tests mirror gokrb5's `TESTAD=1` cases but
 require a maintained two-domain AD lab. Use
 [`docs/ad-integration.md`](docs/ad-integration.md) for the realm, principal,
-SPN, endpoint, and strict `TESTAD_REQUIRED=1` release-evidence contract.
+SPN, endpoint, and strict `TESTAD_REQUIRED=1` release-evidence contract. The
+operational setup is split into
+[`docs/ad-lab-provisioning.md`](docs/ad-lab-provisioning.md) for the lab and
+[`docs/github-ad-gate-setup.md`](docs/github-ad-gate-setup.md) for the
+self-hosted Actions runner and secrets.
 
 ## Distribution Direction
 

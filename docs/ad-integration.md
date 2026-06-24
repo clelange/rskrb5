@@ -5,6 +5,12 @@ The `TESTAD=1` tests mirror the upstream `gokrb5/v8` Active Directory cases for
 Docker MIT fixture tests, and require a maintained two-domain AD lab before they
 prove parity.
 
+Use this document for the Rust test contract and environment variables. Use
+[`ad-lab-provisioning.md`](ad-lab-provisioning.md) for the domain, trust,
+account, SPN, enctype, and keytab provisioning checklist. Use
+[`github-ad-gate-setup.md`](github-ad-gate-setup.md) for the self-hosted
+Actions runner and repository secret setup.
+
 ## What This Gate Proves
 
 The current rskrb5 gate is `tests/client_ad_integration.rs` and covers:
@@ -47,6 +53,10 @@ Fallback endpoint names remain supported for compatibility:
 `TEST_AD_KDC_ADDR`, `TEST_AD_RES_KDC_ADDR`, `TEST_AD_ADMIN_ADDR`, and
 `TEST_AD_RES_ADMIN_ADDR`.
 
+The concrete provisioning checklist lives in
+[`ad-lab-provisioning.md`](ad-lab-provisioning.md). Keep the lab contract there
+and the test behavior here in sync when the AD gate changes.
+
 The domains must have a bidirectional trust. The test config sets
 `forwardable = yes`, `noaddresses = false`, AES256-SHA1 enctypes by default,
 and RC4-HMAC plus canonicalization for the trust tests.
@@ -80,7 +90,7 @@ and hex takes precedence over base64.
 For GitHub Actions, the manual integration job reads the corresponding
 `*_BASE64` secret names when `test_ad=true`. That job runs on a self-hosted
 Linux x64 runner with the `rskrb5-ad` label so it can route to the AD lab. The
-required repository or environment secrets are:
+required repository or organization repository-selected secrets are:
 
 - `TEST_AD_USER_KDC_ADDR`
 - `TEST_AD_RESOURCE_KDC_ADDR`
@@ -90,6 +100,11 @@ required repository or environment secrets are:
 - `TEST_AD_TESTUSER2_KEYTAB_BASE64`
 - `TEST_AD_TESTUSER3_KEYTAB_BASE64`
 - `TEST_AD_SYSHTTP_KEYTAB_BASE64`
+
+The exact GitHub setup checklist is in
+[`github-ad-gate-setup.md`](github-ad-gate-setup.md). The current workflow does
+not set an Actions `environment:`, so plain Environment secrets are not visible
+to the AD job unless the workflow is changed.
 
 For local or self-hosted shell runs, file paths are usually simpler:
 
@@ -155,6 +170,10 @@ After the required secrets and an online self-hosted runner with labels
 ```sh
 scripts/check-github-ad-gate.py --dispatch
 ```
+
+If this script reports missing secrets or runner labels, follow
+[`github-ad-gate-setup.md`](github-ad-gate-setup.md). Do not dispatch the strict
+gate until the readiness check is green.
 
 When running through the Docker MIT fixture helper, AD remains separate from the
 Docker environment. The helper preserves `TEST_AD_*` endpoint and keytab values

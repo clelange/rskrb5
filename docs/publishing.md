@@ -64,11 +64,14 @@ INTEGRATION=1 TESTAD=1 TESTAD_REQUIRED=1 cargo test --all-features --test client
 `INTEGRATION=1`; the local runner enables `TESTPRIVILEGED=1` by default and
 documents fixture setup in [`gated-integration.md`](gated-integration.md).
 `TESTAD=1` uses the Active Directory lab endpoints documented in
-[`ad-integration.md`](ad-integration.md) and remains optional until that lab is
-maintained in CI. Use `TESTAD_REQUIRED=1` whenever an AD run is used as release
-evidence. The manual GitHub Actions `test_ad=true` gate runs on a self-hosted
-`rskrb5-ad` runner and preflights the required endpoint and keytab secrets
-before running `tests/client_ad_integration.rs`. Use
+[`ad-integration.md`](ad-integration.md). Provisioning details live in
+[`ad-lab-provisioning.md`](ad-lab-provisioning.md), and the self-hosted Actions
+runner plus repository secret checklist lives in
+[`github-ad-gate-setup.md`](github-ad-gate-setup.md). The gate remains optional
+until that lab is maintained in CI. Use `TESTAD_REQUIRED=1` whenever an AD run
+is used as release evidence. The manual GitHub Actions `test_ad=true` gate runs
+on a self-hosted `rskrb5-ad` runner and preflights the required endpoint and
+keytab secrets before running `tests/client_ad_integration.rs`. Use
 `scripts/check-github-ad-gate.py` to verify those GitHub-side prerequisites
 before dispatching the AD gate.
 

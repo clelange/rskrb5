@@ -50,29 +50,45 @@ def main() -> int:
     else:
         print("Actions secrets: all required AD secrets are present.")
 
-    matching_runners = ready_ad_runners(repo)
+    matching_runners, runners = ad_runner_inventory(repo)
     if matching_runners:
         print("AD runners:")
         for runner in matching_runners:
             labels = ", ".join(sorted(runner["labels"]))
             print(f"  - {runner['name']} ({runner['status']}, labels: {labels})")
-    else:
+    elif runners:
+        print("Registered self-hosted runners:")
+        for runner in runners:
+            labels = ", ".join(sorted(runner["labels"]))
+            print(f"  - {runner['name']} ({runner['status']}, labels: {labels})")
         print(
-            "No online self-hosted runner has labels: "
+            "No online runner has the complete required label set: "
             + ", ".join(sorted(REQUIRED_RUNNER_LABELS))
         )
+    else:
+        print("No self-hosted runners are registered for this repository.")
+        print("Required runner labels: " + ", ".join(sorted(REQUIRED_RUNNER_LABELS)))
 
     errors = []
     if missing_secrets:
         errors.append("required Actions secrets are missing")
     if not matching_runners:
-        errors.append("no online rskrb5-ad self-hosted runner is registered")
+        if runners:
+            errors.append(
+                "no online self-hosted runner has the complete rskrb5-ad label set"
+            )
+        else:
+            errors.append("no self-hosted runner is registered")
 
     if errors:
         sys.stdout.flush()
         print("\nGitHub AD gate is not ready:", file=sys.stderr)
         for error in errors:
             print(f"  - {error}", file=sys.stderr)
+        print(
+            "\nSee docs/github-ad-gate-setup.md for the runner and secret setup.",
+            file=sys.stderr,
+        )
         return 1
 
     print("GitHub AD gate is ready.")
@@ -101,20 +117,23 @@ def actions_secret_names() -> set[str]:
     return {secret["name"] for secret in result.get("secrets", [])}
 
 
-def ready_ad_runners(repo: str) -> list[dict[str, object]]:
+def ad_runner_inventory(
+    repo: str,
+) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
     result = gh_json(["api", f"repos/{repo}/actions/runners"])
+    inventory = []
     runners = []
     for runner in result.get("runners", []):
         labels = {label["name"] for label in runner.get("labels", [])}
+        entry = {
+            "name": runner["name"],
+            "status": runner["status"],
+            "labels": labels,
+        }
+        inventory.append(entry)
         if REQUIRED_RUNNER_LABELS.issubset(labels) and runner.get("status") == "online":
-            runners.append(
-                {
-                    "name": runner["name"],
-                    "status": runner["status"],
-                    "labels": labels,
-                }
-            )
-    return runners
+            runners.append(entry)
+    return runners, inventory
 
 
 def gh_json(args: list[str]) -> dict[str, object]:
