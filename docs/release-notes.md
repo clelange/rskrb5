@@ -1,6 +1,6 @@
 # Release Notes
 
-## Unreleased 0.2.0 Preview
+## 0.2.0 Preview - 2026-06-24
 
 `0.2.0` is the next breaking pre-`1.0` preview after the published `0.1`
 release. The release goal is a smaller, more maintainable Rust API while
@@ -25,6 +25,12 @@ compatibility-sensitive.
 - `rskrb5::crypto::AesEtype` has been removed. Use
   `rskrb5::crypto::KerberosEtype`; it covers AES-SHA1, AES-SHA2, DES3, and
   RC4-HMAC dispatch.
+- `rskrb5::http` now exposes transport-agnostic 401 retry wrappers:
+  `send_with_negotiate`, `send_with_negotiate_options`,
+  `send_with_blocking_negotiate`, and
+  `send_with_blocking_negotiate_options`. These APIs require a replayable
+  request factory so request bodies are rebuilt explicitly when a server
+  responds with `WWW-Authenticate: Negotiate`.
 
 ### Refactor Notes
 
@@ -43,8 +49,7 @@ compatibility-sensitive.
 
 ### Release Evidence
 
-Current local evidence for the `0.2.0` preview branch, recorded on
-2026-06-23:
+Final local evidence for `0.2.0`, recorded on 2026-06-24:
 
 - `cargo fmt --check`
 - `cargo check --no-default-features`
@@ -54,23 +59,21 @@ Current local evidence for the `0.2.0` preview branch, recorded on
 - `cargo doc --all-features --no-deps`
 - `cargo run --no-default-features --features evaluation --bin rskrb5-compat-report`
   matches [`compatibility-report.md`](compatibility-report.md)
-- `cargo package --locked --allow-dirty`
+- `cargo package --locked`
+- `cargo publish --locked --dry-run`
 - `prek run --all-files --stage pre-push`
 
 Integration evidence:
 
-- Full local Docker MIT run attempted with
-  `scripts/run-gated-integration.sh run --test client_integration`; this local
-  direct-container-IP run failed with transport timeouts to
-  `192.168.215.x:88` endpoints.
-- Focused forwarded-port Docker MIT configured-KDC AS login passed with
-  `RSKRB5_DIRECT_CONTAINER_IP=0 TEST_DNS_KDC=0 scripts/run-gated-integration.sh run --test client_integration docker_mit_kdc_configured_kdc_as_login -- --nocapture`.
-- Focused forwarded-port kpasswd coverage passed with
-  `TEST_KPASSWD=1 RSKRB5_DIRECT_CONTAINER_IP=0 TEST_DNS_KDC=0 scripts/run-gated-integration.sh run --test client_integration docker_mit_kdc_tokio_client_change_password -- --nocapture`.
-- `TESTAD=1` was not run in this pass because no reachable maintained AD lab
-  was configured.
-
-Before publishing, rerun the release preflight in
-[`publishing.md`](publishing.md), regenerate
-[`compatibility-report.md`](compatibility-report.md), and record the final
-Docker/AD gate results in the GitHub release notes.
+- GitHub Actions workflow-dispatch run
+  [`28073249506`](https://github.com/clelange/rskrb5/actions/runs/28073249506)
+  passed on release commit `78ab19ebc10ecd7e33244490097742276af24d75`.
+- The Docker-backed integration job ran on `ubuntu-latest` with
+  `INTEGRATION=1`, `TESTPRIVILEGED=1`, `TEST_KPASSWD=1`, and `TEST_DNS_KDC=1`.
+- `tests/client_integration.rs` passed 40 Docker MIT tests, including DNS-SRV
+  KDC discovery, external `kinit`/`kvno` ccache import, HTTP SPNEGO/raw KRB5
+  Negotiate acceptance, replay rejection, referrals, renewal, cached service
+  tickets, and kpasswd password change.
+- `TESTAD=1` remains skipped for this preview because no reachable maintained
+  AD lab is configured. Do not claim full AD parity until the
+  `active-directory-testad` parity gate is green.
