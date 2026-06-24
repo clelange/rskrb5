@@ -15,6 +15,11 @@ on:
         required: false
         type: boolean
         default: false
+      test_ad_dry_run:
+        description: Validate AD keytab secret shape without live AD endpoints
+        required: false
+        type: boolean
+        default: false
       test_kpasswd:
         description: Set TEST_KPASSWD=1 for live password-change integration coverage
         required: false
@@ -127,3 +132,21 @@ jobs:
         run: scripts/check-ad-integration-env.py
       - name: Run Active Directory integration tests
         run: cargo test --all-features --test client_ad_integration -- --nocapture
+
+  active-directory-secret-dry-run:
+    name: Active Directory secret dry-run
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.test_ad_dry_run == true }}
+    env:
+      TESTAD: "1"
+      TESTAD_REQUIRED: "1"
+      TEST_AD_REQUIRE_KEYTAB_OVERRIDES: "1"
+      TEST_AD_SKIP_REACHABILITY: "1"
+      TEST_AD_TESTUSER1_KEYTAB_BASE64: ${{ secrets.TEST_AD_TESTUSER1_KEYTAB_BASE64 }}
+      TEST_AD_TESTUSER2_KEYTAB_BASE64: ${{ secrets.TEST_AD_TESTUSER2_KEYTAB_BASE64 }}
+      TEST_AD_TESTUSER3_KEYTAB_BASE64: ${{ secrets.TEST_AD_TESTUSER3_KEYTAB_BASE64 }}
+      TEST_AD_SYSHTTP_KEYTAB_BASE64: ${{ secrets.TEST_AD_SYSHTTP_KEYTAB_BASE64 }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Check Active Directory keytab secret shape
+        run: scripts/check-ad-integration-env.py

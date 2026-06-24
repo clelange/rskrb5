@@ -106,6 +106,23 @@ The readiness script must report all required secrets present. It does not
 prove that GitHub-hosted runners can reach the AD endpoints; the workflow
 preflight checks that from inside GitHub Actions.
 
+To validate only the keytab secret shape without requiring live AD endpoints,
+run the non-live dry-run check:
+
+```sh
+scripts/check-github-ad-gate.py --dry-run
+```
+
+Dispatching the dry-run job is allowed while the endpoint secrets are absent:
+
+```sh
+scripts/check-github-ad-gate.py --dry-run --dispatch --ref main
+```
+
+This runs `test_ad_dry_run=true` on GitHub-hosted `ubuntu-latest`, checks that
+the four keytab secrets decode as complete keytabs, and skips endpoint
+reachability. It does not prove AD parity.
+
 To also check the legacy self-hosted runner labels, pass
 `--require-self-hosted-runner`.
 
@@ -121,6 +138,7 @@ Direct equivalent:
 gh workflow run ci.yml --repo clelange/rskrb5 --ref main \
   -f integration=false \
   -f test_ad=true \
+  -f test_ad_dry_run=false \
   -f test_kpasswd=false
 ```
 

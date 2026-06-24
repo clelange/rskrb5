@@ -165,6 +165,13 @@ Check GitHub-side readiness before dispatching:
 scripts/check-github-ad-gate.py
 ```
 
+While endpoint secrets are unavailable, validate only keytab secret shape
+without making the workflow red:
+
+```sh
+scripts/check-github-ad-gate.py --dry-run --dispatch
+```
+
 After the required secrets are present, dispatch the gate:
 
 ```sh

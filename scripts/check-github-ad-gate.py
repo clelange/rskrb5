@@ -9,11 +9,14 @@ import subprocess
 import sys
 
 
-REQUIRED_SECRETS = [
+ENDPOINT_SECRETS = [
     "TEST_AD_USER_KDC_ADDR",
     "TEST_AD_RESOURCE_KDC_ADDR",
     "TEST_AD_USER_ADMIN_ADDR",
     "TEST_AD_RESOURCE_ADMIN_ADDR",
+]
+
+KEYTAB_SECRETS = [
     "TEST_AD_TESTUSER1_KEYTAB_BASE64",
     "TEST_AD_TESTUSER2_KEYTAB_BASE64",
     "TEST_AD_TESTUSER3_KEYTAB_BASE64",
@@ -30,7 +33,15 @@ def main() -> int:
     parser.add_argument(
         "--dispatch",
         action="store_true",
-        help="Dispatch CI with test_ad=true when all prerequisites are ready.",
+        help="Dispatch CI when all prerequisites for the selected mode are ready.",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help=(
+            "Check or dispatch the non-live AD keytab-secret dry run. "
+            "Only keytab secrets are required, and AD parity is not proven."
+        ),
     )
     parser.add_argument(
         "--ref",
@@ -50,13 +61,22 @@ def main() -> int:
     repo = gh_json(["repo", "view", "--json", "nameWithOwner"])["nameWithOwner"]
     print(f"Repository: {repo}")
 
-    missing_secrets = sorted(set(REQUIRED_SECRETS) - actions_secret_names())
+    required_secrets = KEYTAB_SECRETS if args.dry_run else ENDPOINT_SECRETS + KEYTAB_SECRETS
+    missing_secrets = sorted(set(required_secrets) - actions_secret_names())
     if missing_secrets:
         print("Missing Actions secrets:")
         for name in missing_secrets:
             print(f"  - {name}")
     else:
         print("Actions secrets: all required AD secrets are present.")
+
+    if args.dry_run:
+        print(
+            "Mode: AD keytab-secret dry run. Endpoint secrets and live AD "
+            "reachability are not checked."
+        )
+    else:
+        print("Mode: strict live AD gate.")
 
     errors = []
     if missing_secrets:
@@ -107,6 +127,8 @@ def main() -> int:
 
     print("GitHub AD gate is ready.")
     if args.dispatch:
+        test_ad = "false" if args.dry_run else "true"
+        test_ad_dry_run = "true" if args.dry_run else "false"
         gh(
             [
                 "workflow",
@@ -117,12 +139,15 @@ def main() -> int:
                 "--field",
                 "integration=false",
                 "--field",
-                "test_ad=true",
+                f"test_ad={test_ad}",
+                "--field",
+                f"test_ad_dry_run={test_ad_dry_run}",
                 "--field",
                 "test_kpasswd=false",
             ]
         )
-        print(f"Dispatched ci.yml with test_ad=true on {args.ref}.")
+        dispatched_input = "test_ad_dry_run=true" if args.dry_run else "test_ad=true"
+        print(f"Dispatched ci.yml with {dispatched_input} on {args.ref}.")
     return 0
 
 
