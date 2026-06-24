@@ -107,3 +107,6 @@ Integration evidence:
 - `TESTAD=1` remains skipped for this preview because no reachable maintained
   AD lab is configured. Do not claim full AD parity until the
   `active-directory-testad` parity gate is green.
+- The strict AD gate is explicitly deferred from the `0.2.0` release path
+  because the four `TEST_AD_*_ADDR` endpoint secrets are unavailable. The
+  blocker remains tracked in the parity docs.

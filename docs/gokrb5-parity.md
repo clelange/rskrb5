@@ -27,7 +27,7 @@ required for `gokrb5/v8` parity.
 | GSSAPI, SPNEGO, and HTTP Negotiate tokens | covered-with-gated-evidence | Keep HTTP wrapper tests and Docker SPNEGO integration green. |
 | PAC and NDR parsing | covered-needs-ad-evidence | Run `TESTAD=1` against a maintained AD lab. |
 | Docker MIT KDC integration fixtures | covered-with-gated-evidence | Keep workflow-dispatched Docker-backed integration green. |
-| Active Directory integration | blocked-on-lab | Provision reachable USER/RESOURCE AD endpoints, configure required secrets, then dispatch strict `test_ad=true` on GitHub-hosted Linux. |
+| Active Directory integration | blocked-on-lab | Deferred for 0.2.0 until reachable USER/RESOURCE AD endpoints are available; keep the dry-run evidence green and do not claim AD parity. |
 | Out-of-scope non-gokrb5 platform features | intentionally-out-of-scope | Keep typed unsupported-store errors and do not block parity on these. |
 
 ## Parity Gates
@@ -43,22 +43,27 @@ preview release unless the release notes explicitly call it out as skipped.
 | Linux Docker DNS-SRV KDC discovery | proven | docker-mit, client | `TEST_DNS_KDC=1 scripts/run-gated-integration.sh run --test client_integration docker_mit_kdc_dns_srv_as_login -- --nocapture` | GitHub Actions run `28073249506` passed `docker_mit_kdc_dns_srv_as_login`; keep this gate green. |
 | Linux Docker privileged external ccache | proven | ccache, client | `TESTPRIVILEGED=1 scripts/run-gated-integration.sh run --test client_integration` | GitHub Actions run `28073249506` passed external `kinit` and `kvno` ccache tests; keep this gate green. |
 | Linux Docker HTTP SPNEGO service integration | proven | service, gssapi-spnego, client | `scripts/run-gated-integration.sh run --test client_integration docker_mit_kdc_spnego_header_authenticates_to_docker_http -- --nocapture` | GitHub Actions run `28073249506` passed HTTP SPNEGO, raw KRB5 Negotiate, and replay rejection tests; keep this gate green. |
-| Active Directory TESTAD integration | blocked-on-lab | active-directory, PAC, client, service | GitHub Actions run [`28119806826`](https://github.com/clelange/rskrb5/actions/runs/28119806826) passed the hosted keytab-secret dry-run; strict run [`28117082548`](https://github.com/clelange/rskrb5/actions/runs/28117082548) reached hosted `ubuntu-latest` and decoded the four keytab secrets before failing because the endpoint secrets are absent. | Keep `scripts/check-github-ad-gate.py --dry-run --dispatch` green for secret shape, set reachable `TEST_AD_*_ADDR` secrets, then run `scripts/check-github-ad-gate.py --dispatch`. |
+| Active Directory TESTAD integration | blocked-on-lab | active-directory, PAC, client, service | GitHub Actions run [`28119806826`](https://github.com/clelange/rskrb5/actions/runs/28119806826) passed the hosted keytab-secret dry-run; strict run [`28117082548`](https://github.com/clelange/rskrb5/actions/runs/28117082548) reached hosted `ubuntu-latest` and decoded the four keytab secrets before failing because the endpoint secrets are absent. | Deferred for 0.2.0; revisit after reachable `TEST_AD_*_ADDR` secrets exist, then run `scripts/check-github-ad-gate.py --dispatch`. |
 | Ready-to-use HTTP Negotiate client wrapper | proven | gssapi-spnego, client | `cargo test --all-features --test http` | Async `send_with_negotiate` and blocking `send_with_blocking_negotiate` retry 401 Negotiate responses through replayable request factories; keep this gate green. |
+
+## Deferred Blockers
+
+- Active Directory parity remains blocked on reachable endpoint secrets:
+  `TEST_AD_USER_KDC_ADDR`, `TEST_AD_RESOURCE_KDC_ADDR`,
+  `TEST_AD_USER_ADMIN_ADDR`, and `TEST_AD_RESOURCE_ADMIN_ADDR`. This is
+  recorded but explicitly not a `0.2.0` release blocker.
+- The current acceptable 0.2.0 evidence is the green hosted keytab-secret
+  dry-run plus static AD keytab fixture coverage. These do not prove Windows AD
+  PAC parity.
 
 ## Immediate Next Slices
 
-1. Stand up the AD lab documented in
-   [`ad-lab-provisioning.md`](ad-lab-provisioning.md), configure reachable
-   endpoint secrets from
-   [`github-ad-gate-setup.md`](github-ad-gate-setup.md), and do not claim AD
-   parity until the strict `TESTAD_REQUIRED=1` gate runs green.
-2. Use [`samba-ad-feasibility.md`](samba-ad-feasibility.md) as a backup spike
-   only; do not treat Samba results as Windows AD parity evidence.
-3. Keep the workflow-dispatched Docker MIT gate green with `integration=true`,
+1. Keep the workflow-dispatched Docker MIT gate green with `integration=true`,
    `test_kpasswd=true`, and `test_ad=false` before the next release.
-4. Prepare release notes for the next breaking preview with the new API surface
-   and the still-skipped AD gate called out explicitly.
+2. Prepare release notes for the next breaking preview with the new API surface
+   and the explicitly deferred AD gate called out.
+3. Use [`samba-ad-feasibility.md`](samba-ad-feasibility.md) as a backup spike
+   only; do not treat Samba results as Windows AD parity evidence.
 
 ## Status Values
 

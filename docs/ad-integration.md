@@ -179,6 +179,19 @@ The first captured green hosted dry-run is GitHub Actions run
 It validates only keytab secret shape; strict AD evidence still requires
 reachable endpoint secrets and `test_ad=true`.
 
+## Current Deferred Blocker
+
+The strict AD gate is deferred from the `0.2.0` release path until these
+endpoint secrets exist and are reachable from GitHub-hosted runners:
+
+- `TEST_AD_USER_KDC_ADDR`
+- `TEST_AD_RESOURCE_KDC_ADDR`
+- `TEST_AD_USER_ADMIN_ADDR`
+- `TEST_AD_RESOURCE_ADMIN_ADDR`
+
+Keep the dry-run green while this blocker is deferred. Do not claim Windows AD
+PAC parity until `test_ad=true` passes without soft-skip.
+
 After the required secrets are present, dispatch the gate:
 
 ```sh
