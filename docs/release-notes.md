@@ -67,7 +67,9 @@ Integration evidence:
 
 - GitHub Actions workflow-dispatch run
   [`28073249506`](https://github.com/clelange/rskrb5/actions/runs/28073249506)
-  passed on release commit `78ab19ebc10ecd7e33244490097742276af24d75`.
+  passed on the HTTP-wrapper implementation commit
+  `78ab19ebc10ecd7e33244490097742276af24d75`; later release-prep commits
+  changed docs and package metadata only.
 - The Docker-backed integration job ran on `ubuntu-latest` with
   `INTEGRATION=1`, `TESTPRIVILEGED=1`, `TEST_KPASSWD=1`, and `TEST_DNS_KDC=1`.
 - `tests/client_integration.rs` passed 40 Docker MIT tests, including DNS-SRV

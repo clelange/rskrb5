@@ -9,7 +9,7 @@ repository = "https://github.com/clelange/rskrb5"
 readme = "README.md"
 keywords = ["kerberos", "krb5", "spnego", "gssapi", "authentication"]
 categories = ["authentication", "cryptography", "network-programming"]
-exclude = [".github/"]
+exclude = [".github/", "docs/scratch-log.md"]
 
 [features]
 default = ["spnego", "tokio", "serde"]
