@@ -27,6 +27,8 @@
   spike path that does not count as Windows AD parity evidence.
 - Added static coverage for the embedded AD keytab fixtures so the required
   account principals and AES/RC4 key material are checked without a live lab.
+- Split private SPNEGO DER/TLV helpers into a dedicated module; no public API or
+  wire-format behavior changes are intended.
 
 ## 0.2.0 Preview - 2026-06-24
 
