@@ -11,7 +11,7 @@ on:
         type: boolean
         default: false
       test_ad:
-        description: Run strict Active Directory gated tests on the AD lab runner
+        description: Run strict Active Directory gated tests from GitHub-hosted Linux
         required: false
         type: boolean
         default: false
@@ -103,7 +103,7 @@ jobs:
 
   active-directory-integration:
     name: Active Directory integration
-    runs-on: [self-hosted, linux, x64, rskrb5-ad]
+    runs-on: ubuntu-latest
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.test_ad == true }}
     env:
       TESTAD: "1"

@@ -8,8 +8,8 @@ prove parity.
 Use this document for the Rust test contract and environment variables. Use
 [`ad-lab-provisioning.md`](ad-lab-provisioning.md) for the domain, trust,
 account, SPN, enctype, and keytab provisioning checklist. Use
-[`github-ad-gate-setup.md`](github-ad-gate-setup.md) for the self-hosted
-Actions runner and repository secret setup.
+[`github-ad-gate-setup.md`](github-ad-gate-setup.md) for the GitHub Actions
+runner mode and repository secret setup.
 
 ## What This Gate Proves
 
@@ -88,9 +88,10 @@ and hex takes precedence over base64.
 | `sysHTTP@RES.GOKRB5` | `TEST_AD_SYSHTTP_KEYTAB_PATH` | `TEST_AD_SYSHTTP_KEYTAB_HEX` | `TEST_AD_SYSHTTP_KEYTAB_BASE64` |
 
 For GitHub Actions, the manual integration job reads the corresponding
-`*_BASE64` secret names when `test_ad=true`. That job runs on a self-hosted
-Linux x64 runner with the `rskrb5-ad` label so it can route to the AD lab. The
-required repository or organization repository-selected secrets are:
+`*_BASE64` secret names when `test_ad=true`. The current job runs on
+GitHub-hosted `ubuntu-latest`, so the AD endpoints must be reachable from
+GitHub-hosted runners. The required repository or organization
+repository-selected secrets are:
 
 - `TEST_AD_USER_KDC_ADDR`
 - `TEST_AD_RESOURCE_KDC_ADDR`
@@ -164,14 +165,13 @@ Check GitHub-side readiness before dispatching:
 scripts/check-github-ad-gate.py
 ```
 
-After the required secrets and an online self-hosted runner with labels
-`self-hosted`, `linux`, `x64`, and `rskrb5-ad` are present, dispatch the gate:
+After the required secrets are present, dispatch the gate:
 
 ```sh
 scripts/check-github-ad-gate.py --dispatch
 ```
 
-If this script reports missing secrets or runner labels, follow
+If this script reports missing endpoint or keytab secrets, follow
 [`github-ad-gate-setup.md`](github-ad-gate-setup.md). Do not dispatch the strict
 gate until the readiness check is green.
 

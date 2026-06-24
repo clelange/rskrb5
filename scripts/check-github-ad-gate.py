@@ -25,7 +25,7 @@ REQUIRED_RUNNER_LABELS = {"self-hosted", "linux", "x64", "rskrb5-ad"}
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Check required GitHub runner/secrets for test_ad=true."
+        description="Check required GitHub Actions secrets for test_ad=true."
     )
     parser.add_argument(
         "--dispatch",
@@ -36,6 +36,14 @@ def main() -> int:
         "--ref",
         default="main",
         help="Git ref to dispatch when --dispatch is used. Defaults to main.",
+    )
+    parser.add_argument(
+        "--require-self-hosted-runner",
+        action="store_true",
+        help=(
+            "Also require an online self-hosted runner with the legacy "
+            "rskrb5-ad labels. The default workflow uses ubuntu-latest."
+        ),
     )
     args = parser.parse_args()
 
@@ -50,35 +58,41 @@ def main() -> int:
     else:
         print("Actions secrets: all required AD secrets are present.")
 
-    matching_runners, runners = ad_runner_inventory(repo)
-    if matching_runners:
-        print("AD runners:")
-        for runner in matching_runners:
-            labels = ", ".join(sorted(runner["labels"]))
-            print(f"  - {runner['name']} ({runner['status']}, labels: {labels})")
-    elif runners:
-        print("Registered self-hosted runners:")
-        for runner in runners:
-            labels = ", ".join(sorted(runner["labels"]))
-            print(f"  - {runner['name']} ({runner['status']}, labels: {labels})")
-        print(
-            "No online runner has the complete required label set: "
-            + ", ".join(sorted(REQUIRED_RUNNER_LABELS))
-        )
-    else:
-        print("No self-hosted runners are registered for this repository.")
-        print("Required runner labels: " + ", ".join(sorted(REQUIRED_RUNNER_LABELS)))
-
     errors = []
     if missing_secrets:
         errors.append("required Actions secrets are missing")
-    if not matching_runners:
-        if runners:
-            errors.append(
-                "no online self-hosted runner has the complete rskrb5-ad label set"
+
+    if args.require_self_hosted_runner:
+        matching_runners, runners = ad_runner_inventory(repo)
+        if matching_runners:
+            print("AD runners:")
+            for runner in matching_runners:
+                labels = ", ".join(sorted(runner["labels"]))
+                print(f"  - {runner['name']} ({runner['status']}, labels: {labels})")
+        elif runners:
+            print("Registered self-hosted runners:")
+            for runner in runners:
+                labels = ", ".join(sorted(runner["labels"]))
+                print(f"  - {runner['name']} ({runner['status']}, labels: {labels})")
+            print(
+                "No online runner has the complete required label set: "
+                + ", ".join(sorted(REQUIRED_RUNNER_LABELS))
             )
         else:
-            errors.append("no self-hosted runner is registered")
+            print("No self-hosted runners are registered for this repository.")
+            print(
+                "Required runner labels: " + ", ".join(sorted(REQUIRED_RUNNER_LABELS))
+            )
+
+        if not matching_runners:
+            if runners:
+                errors.append(
+                    "no online self-hosted runner has the complete rskrb5-ad label set"
+                )
+            else:
+                errors.append("no self-hosted runner is registered")
+    else:
+        print("Runner: GitHub-hosted ubuntu-latest; no self-hosted runner required.")
 
     if errors:
         sys.stdout.flush()
@@ -86,7 +100,7 @@ def main() -> int:
         for error in errors:
             print(f"  - {error}", file=sys.stderr)
         print(
-            "\nSee docs/github-ad-gate-setup.md for the runner and secret setup.",
+            "\nSee docs/github-ad-gate-setup.md for the runner mode and secret setup.",
             file=sys.stderr,
         )
         return 1

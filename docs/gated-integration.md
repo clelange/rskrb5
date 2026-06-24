@@ -116,6 +116,7 @@ TESTAD=1 TESTAD_REQUIRED=1 cargo test --all-features --test client_ad_integratio
 ```
 
 In GitHub Actions, `workflow_dispatch` with `test_ad=true` runs a separate
-strict AD job on a self-hosted `rskrb5-ad` runner. The Docker-backed integration
+strict AD job on GitHub-hosted `ubuntu-latest`. The Docker-backed integration
 job stays MIT-only; dispatch with both `integration=true` and `test_ad=true` to
-run both gates in one workflow.
+run both gates in one workflow. The AD job only proves live parity when the AD
+endpoints are reachable from GitHub-hosted runners.

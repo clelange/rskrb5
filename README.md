@@ -151,7 +151,7 @@ SPN, endpoint, and strict `TESTAD_REQUIRED=1` release-evidence contract. The
 operational setup is split into
 [`docs/ad-lab-provisioning.md`](docs/ad-lab-provisioning.md) for the lab and
 [`docs/github-ad-gate-setup.md`](docs/github-ad-gate-setup.md) for the
-self-hosted Actions runner and secrets.
+Actions runner mode and secrets.
 
 ## Distribution Direction
 

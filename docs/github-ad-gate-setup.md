@@ -2,26 +2,28 @@
 
 This runbook prepares the strict `TESTAD=1 TESTAD_REQUIRED=1` GitHub Actions
 gate. The gate is live infrastructure evidence, not a Docker fixture. Keep it
-blocked until the repository has the required secrets and an online self-hosted
-runner that can route to the maintained AD lab.
+blocked until the repository has the required secrets and reachable AD
+endpoints.
 
-## Required Runner
+## Runner Mode
 
-Register a Linux x64 self-hosted runner for `clelange/rskrb5` with the default
-GitHub runner labels plus the custom label `rskrb5-ad`.
+The default `active-directory-integration` job runs on GitHub-hosted
+`ubuntu-latest`. No self-hosted runner is required for the current workflow.
 
-Required labels:
+GitHub-hosted runners can prove the strict AD gate only when the AD endpoints
+are reachable from GitHub's network or through a tunnel started by the workflow.
+If the AD lab is private, either expose a controlled route or switch the job
+back to a self-hosted Linux x64 runner near the lab.
+
+The legacy self-hosted runner mode expects these labels:
 
 - `self-hosted`
 - `linux`
 - `x64`
 - `rskrb5-ad`
 
-The `active-directory-integration` job in `.github/workflows/ci.yml` targets
-exactly those labels and only runs from `workflow_dispatch` with
-`test_ad=true`.
-
-Example registration sequence on the runner host:
+Use this registration sequence only if the workflow is changed back to the
+self-hosted runner labels:
 
 ```sh
 REPO=clelange/rskrb5
@@ -36,7 +38,7 @@ TOKEN=$(gh api --method POST "repos/$REPO/actions/runners/registration-token" --
 Do not store the registration token. It is short-lived and should only be used
 on the runner host.
 
-## Runner Requirements
+## Network Requirements
 
 The runner must satisfy these operational requirements:
 
@@ -49,8 +51,8 @@ The runner must satisfy these operational requirements:
   tolerance.
 - Access to the AD lab described in [`ad-lab-provisioning.md`](ad-lab-provisioning.md).
 
-The workflow installs the Rust toolchain itself. No keytabs need to live on disk
-on the runner; the job reads keytab bytes from Actions secrets.
+The workflow installs the Rust toolchain itself. No keytabs live on disk on the
+runner before the job starts; the job reads keytab bytes from Actions secrets.
 
 ## Required Secrets
 
@@ -81,15 +83,15 @@ Example secret setup:
 ```sh
 REPO=clelange/rskrb5
 
-printf '%s' '192.168.88.100:88'  | gh secret set TEST_AD_USER_KDC_ADDR --repo "$REPO" --body-file -
-printf '%s' '192.168.88.101:88'  | gh secret set TEST_AD_RESOURCE_KDC_ADDR --repo "$REPO" --body-file -
-printf '%s' '192.168.88.100:464' | gh secret set TEST_AD_USER_ADMIN_ADDR --repo "$REPO" --body-file -
-printf '%s' '192.168.88.101:464' | gh secret set TEST_AD_RESOURCE_ADMIN_ADDR --repo "$REPO" --body-file -
+printf '%s' '192.168.88.100:88'  | gh secret set TEST_AD_USER_KDC_ADDR --repo "$REPO" --app actions
+printf '%s' '192.168.88.101:88'  | gh secret set TEST_AD_RESOURCE_KDC_ADDR --repo "$REPO" --app actions
+printf '%s' '192.168.88.100:464' | gh secret set TEST_AD_USER_ADMIN_ADDR --repo "$REPO" --app actions
+printf '%s' '192.168.88.101:464' | gh secret set TEST_AD_RESOURCE_ADMIN_ADDR --repo "$REPO" --app actions
 
-base64 < /secure/ad/testuser1.keytab | tr -d '\n' | gh secret set TEST_AD_TESTUSER1_KEYTAB_BASE64 --repo "$REPO" --body-file -
-base64 < /secure/ad/testuser2.keytab | tr -d '\n' | gh secret set TEST_AD_TESTUSER2_KEYTAB_BASE64 --repo "$REPO" --body-file -
-base64 < /secure/ad/testuser3.keytab | tr -d '\n' | gh secret set TEST_AD_TESTUSER3_KEYTAB_BASE64 --repo "$REPO" --body-file -
-base64 < /secure/ad/sysHTTP.keytab   | tr -d '\n' | gh secret set TEST_AD_SYSHTTP_KEYTAB_BASE64 --repo "$REPO" --body-file -
+base64 < /secure/ad/testuser1.keytab | tr -d '\n' | gh secret set TEST_AD_TESTUSER1_KEYTAB_BASE64 --repo "$REPO" --app actions
+base64 < /secure/ad/testuser2.keytab | tr -d '\n' | gh secret set TEST_AD_TESTUSER2_KEYTAB_BASE64 --repo "$REPO" --app actions
+base64 < /secure/ad/testuser3.keytab | tr -d '\n' | gh secret set TEST_AD_TESTUSER3_KEYTAB_BASE64 --repo "$REPO" --app actions
+base64 < /secure/ad/sysHTTP.keytab   | tr -d '\n' | gh secret set TEST_AD_SYSHTTP_KEYTAB_BASE64 --repo "$REPO" --app actions
 ```
 
 ## Readiness And Dispatch
@@ -100,9 +102,12 @@ Check GitHub-side readiness before dispatching the strict gate:
 scripts/check-github-ad-gate.py
 ```
 
-The readiness script must report all required secrets present and at least one
-online runner with the complete `self-hosted`, `linux`, `x64`, `rskrb5-ad`
-label set.
+The readiness script must report all required secrets present. It does not
+prove that GitHub-hosted runners can reach the AD endpoints; the workflow
+preflight checks that from inside GitHub Actions.
+
+To also check the legacy self-hosted runner labels, pass
+`--require-self-hosted-runner`.
 
 Dispatch the strict AD job only after readiness is green:
 
@@ -124,8 +129,7 @@ gh workflow run ci.yml --repo clelange/rskrb5 --ref main \
 Common external blockers:
 
 - required secret missing or set to an empty value;
-- runner not registered, offline, busy, or missing `rskrb5-ad`;
-- runner cannot reach one or both KDCs on TCP `88`;
+- GitHub-hosted runner cannot reach one or both KDCs on TCP `88`;
 - endpoint secret is not `host:port`;
 - keytab secret is not valid base64 or is not a complete MIT keytab;
 - keytab principal, kvno, enctype, or password is stale relative to AD;
