@@ -31,6 +31,8 @@
   wire-format behavior changes are intended.
 - Split private PAC NDR/deferred-pointer parsing helpers into a dedicated
   module; no public API or wire-format behavior changes are intended.
+- Split the large client integration test file into focused AS exchange,
+  TGS/S4U/renewal, session cache, password-change, and preauth/login modules.
 
 ## 0.2.0 Preview - 2026-06-24
 
