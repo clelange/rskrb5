@@ -78,6 +78,14 @@ jobs:
       TESTAD: ${{ inputs.test_ad && '1' || '0' }}
       TESTAD_REQUIRED: ${{ inputs.test_ad && '1' || '0' }}
       TEST_KPASSWD: ${{ inputs.test_kpasswd && '1' || '0' }}
+      TEST_AD_USER_KDC_ADDR: ${{ secrets.TEST_AD_USER_KDC_ADDR }}
+      TEST_AD_RESOURCE_KDC_ADDR: ${{ secrets.TEST_AD_RESOURCE_KDC_ADDR }}
+      TEST_AD_USER_ADMIN_ADDR: ${{ secrets.TEST_AD_USER_ADMIN_ADDR }}
+      TEST_AD_RESOURCE_ADMIN_ADDR: ${{ secrets.TEST_AD_RESOURCE_ADMIN_ADDR }}
+      TEST_AD_TESTUSER1_KEYTAB_BASE64: ${{ secrets.TEST_AD_TESTUSER1_KEYTAB_BASE64 }}
+      TEST_AD_TESTUSER2_KEYTAB_BASE64: ${{ secrets.TEST_AD_TESTUSER2_KEYTAB_BASE64 }}
+      TEST_AD_TESTUSER3_KEYTAB_BASE64: ${{ secrets.TEST_AD_TESTUSER3_KEYTAB_BASE64 }}
+      TEST_AD_SYSHTTP_KEYTAB_BASE64: ${{ secrets.TEST_AD_SYSHTTP_KEYTAB_BASE64 }}
       TEST_KDC_ADDR: 127.0.0.1
       TEST_HTTP_URL: http://cname.test.gokrb5
       TEST_HTTP_ADDR: 127.0.0.1

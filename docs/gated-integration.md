@@ -103,6 +103,10 @@ PATH="/opt/homebrew/opt/krb5/bin:$PATH" scripts/run-gated-integration.sh run
 documented in [`ad-integration.md`](ad-integration.md) or equivalent endpoints
 supplied through `TEST_AD_USER_KDC_ADDR`, `TEST_AD_RESOURCE_KDC_ADDR`,
 `TEST_AD_USER_ADMIN_ADDR`, and `TEST_AD_RESOURCE_ADMIN_ADDR`.
+Lab-specific keytabs can be supplied with the `TEST_AD_*_KEYTAB_PATH`,
+`TEST_AD_*_KEYTAB_HEX`, or `TEST_AD_*_KEYTAB_BASE64` variables documented in
+the AD runbook; the runner preserves those values in
+`target/gated-integration.env`.
 
 Use `TESTAD_REQUIRED=1` for release or parity evidence so unreachable AD
 endpoints fail instead of soft-skipping:

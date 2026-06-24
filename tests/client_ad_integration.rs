@@ -2,9 +2,12 @@
 
 use std::env;
 use std::error::Error;
+use std::ffi::{OsStr, OsString};
+use std::fs;
 use std::net::{TcpStream, ToSocketAddrs};
+use std::path::PathBuf;
 use std::sync::Mutex;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rskrb5::client::{
     ApReqOptions, KdcProtocol, Principal, TgsRepSession, TokioClient, build_ap_req_with_confounder,
@@ -32,12 +35,53 @@ const KEYTAB_SYSHTTP_RES_GOKRB5: &str = "0502000000380001000a5245532e474f4b52423
 
 static AD_LOCK: Mutex<()> = Mutex::new(());
 
+#[derive(Clone, Copy)]
+struct AdKeytabFixture {
+    label: &'static str,
+    default_hex: &'static str,
+    path_env: &'static str,
+    hex_env: &'static str,
+    base64_env: &'static str,
+}
+
+const TESTUSER1_KEYTAB: AdKeytabFixture = AdKeytabFixture {
+    label: "testuser1@USER.GOKRB5",
+    default_hex: KEYTAB_TESTUSER1_USER_GOKRB5,
+    path_env: "TEST_AD_TESTUSER1_KEYTAB_PATH",
+    hex_env: "TEST_AD_TESTUSER1_KEYTAB_HEX",
+    base64_env: "TEST_AD_TESTUSER1_KEYTAB_BASE64",
+};
+
+const TESTUSER2_KEYTAB: AdKeytabFixture = AdKeytabFixture {
+    label: "testuser2@USER.GOKRB5",
+    default_hex: KEYTAB_TESTUSER2_USER_GOKRB5,
+    path_env: "TEST_AD_TESTUSER2_KEYTAB_PATH",
+    hex_env: "TEST_AD_TESTUSER2_KEYTAB_HEX",
+    base64_env: "TEST_AD_TESTUSER2_KEYTAB_BASE64",
+};
+
+const TESTUSER3_KEYTAB: AdKeytabFixture = AdKeytabFixture {
+    label: "testuser3@USER.GOKRB5",
+    default_hex: KEYTAB_TESTUSER3_USER_GOKRB5,
+    path_env: "TEST_AD_TESTUSER3_KEYTAB_PATH",
+    hex_env: "TEST_AD_TESTUSER3_KEYTAB_HEX",
+    base64_env: "TEST_AD_TESTUSER3_KEYTAB_BASE64",
+};
+
+const SYSHTTP_KEYTAB: AdKeytabFixture = AdKeytabFixture {
+    label: "sysHTTP@RES.GOKRB5",
+    default_hex: KEYTAB_SYSHTTP_RES_GOKRB5,
+    path_env: "TEST_AD_SYSHTTP_KEYTAB_PATH",
+    hex_env: "TEST_AD_SYSHTTP_KEYTAB_HEX",
+    base64_env: "TEST_AD_SYSHTTP_KEYTAB_BASE64",
+};
+
 #[test]
 fn active_directory_keytab_login() -> Result<(), Box<dyn Error>> {
+    let _guard = AD_LOCK.lock().expect("AD integration test lock");
     if !ad_enabled()? {
         return Ok(());
     }
-    let _guard = AD_LOCK.lock().expect("AD integration test lock");
 
     runtime().block_on(async {
         let mut client = ad_client(TESTUSER1, testuser1_keytab()?, false)?;
@@ -53,13 +97,13 @@ fn active_directory_keytab_login() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn active_directory_keytab_login_without_preauth() -> Result<(), Box<dyn Error>> {
+    let _guard = AD_LOCK.lock().expect("AD integration test lock");
     if !ad_enabled()? {
         return Ok(());
     }
-    let _guard = AD_LOCK.lock().expect("AD integration test lock");
 
     runtime().block_on(async {
-        let mut client = ad_client(TESTUSER3, keytab(KEYTAB_TESTUSER3_USER_GOKRB5)?, false)?;
+        let mut client = ad_client(TESTUSER3, testuser3_keytab()?, false)?;
         let tgt = client.login().await?;
 
         assert_eq!(tgt.client, Principal::user(USER_REALM, TESTUSER3));
@@ -72,10 +116,10 @@ fn active_directory_keytab_login_without_preauth() -> Result<(), Box<dyn Error>>
 
 #[test]
 fn active_directory_service_ticket_validates_user_domain_pac() -> Result<(), Box<dyn Error>> {
+    let _guard = AD_LOCK.lock().expect("AD integration test lock");
     if !ad_enabled()? {
         return Ok(());
     }
-    let _guard = AD_LOCK.lock().expect("AD integration test lock");
 
     runtime().block_on(async {
         let mut client = ad_client(TESTUSER1, testuser1_keytab()?, false)?;
@@ -87,7 +131,7 @@ fn active_directory_service_ticket_validates_user_domain_pac() -> Result<(), Box
         assert_eq!(ticket.service.name(), format!("HTTP/{USER_SERVICE_HOST}"));
         assert_eq!(ticket.session_key.etype, AES256_ETYPE);
 
-        let service_keytab = keytab(KEYTAB_TESTUSER2_USER_GOKRB5)?;
+        let service_keytab = testuser2_keytab()?;
         let validated = validate_service_ticket(&ticket, &service_keytab, [TESTUSER2])?;
         let pac = validated.pac.as_ref().expect("AD service ticket has a PAC");
         let credentials = pac.ad_credentials().expect("PAC has validation info");
@@ -100,10 +144,10 @@ fn active_directory_service_ticket_validates_user_domain_pac() -> Result<(), Box
 #[test]
 fn active_directory_trust_resource_domain_service_ticket_validates_pac()
 -> Result<(), Box<dyn Error>> {
+    let _guard = AD_LOCK.lock().expect("AD integration test lock");
     if !ad_enabled()? {
         return Ok(());
     }
-    let _guard = AD_LOCK.lock().expect("AD integration test lock");
 
     runtime().block_on(async {
         let mut client = ad_client(TESTUSER1, testuser1_keytab()?, true)?;
@@ -118,7 +162,7 @@ fn active_directory_trust_resource_domain_service_ticket_validates_pac()
         );
         assert_eq!(ticket.session_key.etype, RC4_HMAC_ETYPE);
 
-        let service_keytab = keytab(KEYTAB_SYSHTTP_RES_GOKRB5)?;
+        let service_keytab = syshttp_keytab()?;
         let validated = validate_service_ticket(&ticket, &service_keytab, [SYSHTTP])?;
         let pac = validated.pac.as_ref().expect("AD service ticket has a PAC");
         let credentials = pac.ad_credentials().expect("PAC has validation info");
@@ -130,10 +174,10 @@ fn active_directory_trust_resource_domain_service_ticket_validates_pac()
 
 #[test]
 fn active_directory_trust_user_domain_service_ticket_validates_pac() -> Result<(), Box<dyn Error>> {
+    let _guard = AD_LOCK.lock().expect("AD integration test lock");
     if !ad_enabled()? {
         return Ok(());
     }
-    let _guard = AD_LOCK.lock().expect("AD integration test lock");
 
     runtime().block_on(async {
         let mut client = ad_client(TESTUSER1, testuser1_keytab()?, true)?;
@@ -144,7 +188,7 @@ fn active_directory_trust_user_domain_service_ticket_validates_pac() -> Result<(
             .await?;
         assert_eq!(ticket.service.name(), format!("HTTP/{USER_SERVICE_HOST}"));
 
-        let service_keytab = keytab(KEYTAB_TESTUSER2_USER_GOKRB5)?;
+        let service_keytab = testuser2_keytab()?;
         let validated = validate_service_ticket(&ticket, &service_keytab, [TESTUSER2])?;
         let pac = validated.pac.as_ref().expect("AD service ticket has a PAC");
         let credentials = pac.ad_credentials().expect("PAC has validation info");
@@ -337,21 +381,131 @@ fn validate_service_ticket<const N: usize>(
 }
 
 fn testuser1_keytab() -> Result<Keytab, Box<dyn Error>> {
-    keytab(KEYTAB_TESTUSER1_USER_GOKRB5)
+    ad_keytab(TESTUSER1_KEYTAB)
+}
+
+fn testuser2_keytab() -> Result<Keytab, Box<dyn Error>> {
+    ad_keytab(TESTUSER2_KEYTAB)
+}
+
+fn testuser3_keytab() -> Result<Keytab, Box<dyn Error>> {
+    ad_keytab(TESTUSER3_KEYTAB)
+}
+
+fn syshttp_keytab() -> Result<Keytab, Box<dyn Error>> {
+    ad_keytab(SYSHTTP_KEYTAB)
+}
+
+fn ad_keytab(fixture: AdKeytabFixture) -> Result<Keytab, Box<dyn Error>> {
+    if let Some(path) = env_path_optional(fixture.path_env) {
+        let bytes = fs::read(&path).map_err(|error| {
+            ad_gate_error(format!(
+                "failed to read AD keytab {} from {}={}: {error}",
+                fixture.label,
+                fixture.path_env,
+                path.display()
+            ))
+        })?;
+        return parse_keytab_bytes(
+            fixture.label,
+            format!("{}={}", fixture.path_env, path.display()),
+            &bytes,
+        );
+    }
+
+    if let Some(hex) = env_string_optional(fixture.hex_env) {
+        let bytes = decode_hex_value(&hex).map_err(|error| {
+            ad_gate_error(format!(
+                "failed to decode AD keytab {} from {}: {error}",
+                fixture.label, fixture.hex_env
+            ))
+        })?;
+        return parse_keytab_bytes(fixture.label, fixture.hex_env.to_owned(), &bytes);
+    }
+
+    if let Some(base64) = env_string_optional(fixture.base64_env) {
+        let bytes = decode_base64_value(&base64).map_err(|error| {
+            ad_gate_error(format!(
+                "failed to decode AD keytab {} from {}: {error}",
+                fixture.label, fixture.base64_env
+            ))
+        })?;
+        return parse_keytab_bytes(fixture.label, fixture.base64_env.to_owned(), &bytes);
+    }
+
+    keytab(fixture.default_hex)
 }
 
 fn keytab(hex: &str) -> Result<Keytab, Box<dyn Error>> {
-    Ok(Keytab::parse(&decode_hex(hex))?)
+    let bytes = decode_hex_value(hex)?;
+    Ok(Keytab::parse(&bytes)?)
 }
 
-fn decode_hex(input: &str) -> Vec<u8> {
-    let mut out = Vec::with_capacity(input.len() / 2);
-    for chunk in input.as_bytes().chunks_exact(2) {
-        let hi = (chunk[0] as char).to_digit(16).expect("hex high nibble") as u8;
-        let lo = (chunk[1] as char).to_digit(16).expect("hex low nibble") as u8;
+fn parse_keytab_bytes(label: &str, source: String, bytes: &[u8]) -> Result<Keytab, Box<dyn Error>> {
+    Keytab::parse(bytes).map_err(|error| {
+        ad_gate_error(format!(
+            "failed to parse AD keytab {label} from {source}: {error}"
+        ))
+    })
+}
+
+fn env_path_optional(name: &str) -> Option<PathBuf> {
+    env::var_os(name)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+}
+
+fn env_string_optional(name: &str) -> Option<String> {
+    env::var(name).ok().filter(|value| !value.is_empty())
+}
+
+fn decode_hex_value(input: &str) -> Result<Vec<u8>, Box<dyn Error>> {
+    let compact: Vec<u8> = input
+        .bytes()
+        .filter(|byte| !byte.is_ascii_whitespace())
+        .collect();
+    if !compact.len().is_multiple_of(2) {
+        return Err(ad_gate_error(format!(
+            "hex input has odd length after whitespace removal: {}",
+            compact.len()
+        )));
+    }
+
+    let mut out = Vec::with_capacity(compact.len() / 2);
+    for chunk in compact.chunks_exact(2) {
+        let hi = hex_nibble(chunk[0])?;
+        let lo = hex_nibble(chunk[1])?;
         out.push((hi << 4) | lo);
     }
-    out
+    Ok(out)
+}
+
+fn hex_nibble(byte: u8) -> Result<u8, Box<dyn Error>> {
+    match byte {
+        b'0'..=b'9' => Ok(byte - b'0'),
+        b'a'..=b'f' => Ok(byte - b'a' + 10),
+        b'A'..=b'F' => Ok(byte - b'A' + 10),
+        _ => Err(ad_gate_error(format!(
+            "invalid hex byte 0x{byte:02x} in keytab override"
+        ))),
+    }
+}
+
+#[cfg(feature = "spnego")]
+fn decode_base64_value(input: &str) -> Result<Vec<u8>, Box<dyn Error>> {
+    use base64::Engine as _;
+
+    let compact: String = input.chars().filter(|ch| !ch.is_whitespace()).collect();
+    base64::engine::general_purpose::STANDARD
+        .decode(compact)
+        .map_err(|error| ad_gate_error(format!("base64 decode error: {error}")))
+}
+
+#[cfg(not(feature = "spnego"))]
+fn decode_base64_value(_input: &str) -> Result<Vec<u8>, Box<dyn Error>> {
+    Err(ad_gate_error(
+        "base64 keytab overrides require the spnego/default feature".to_owned(),
+    ))
 }
 
 fn runtime() -> tokio::runtime::Runtime {
@@ -360,4 +514,123 @@ fn runtime() -> tokio::runtime::Runtime {
         .enable_time()
         .build()
         .expect("tokio runtime builds")
+}
+
+#[test]
+fn ad_keytab_uses_path_override() -> Result<(), Box<dyn Error>> {
+    let _guard = AD_LOCK.lock().expect("AD integration test lock");
+    let _env = clear_keytab_env(TESTUSER1_KEYTAB);
+    let bytes = decode_hex_value(KEYTAB_TESTUSER1_USER_GOKRB5)?;
+    let path = temp_keytab_path("testuser1");
+    fs::write(&path, &bytes)?;
+    let _path_env = EnvOverride::set(TESTUSER1_KEYTAB.path_env, path.as_os_str());
+
+    assert_eq!(testuser1_keytab()?, keytab(KEYTAB_TESTUSER1_USER_GOKRB5)?);
+
+    let _ = fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
+fn ad_keytab_uses_hex_override() -> Result<(), Box<dyn Error>> {
+    let _guard = AD_LOCK.lock().expect("AD integration test lock");
+    let _env = clear_keytab_env(TESTUSER2_KEYTAB);
+    let spaced_hex = KEYTAB_TESTUSER2_USER_GOKRB5
+        .as_bytes()
+        .chunks(64)
+        .map(|chunk| std::str::from_utf8(chunk).expect("fixture hex is utf8"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let _hex_env = EnvOverride::set(TESTUSER2_KEYTAB.hex_env, spaced_hex.as_str());
+
+    assert_eq!(testuser2_keytab()?, keytab(KEYTAB_TESTUSER2_USER_GOKRB5)?);
+
+    Ok(())
+}
+
+#[cfg(feature = "spnego")]
+#[test]
+fn ad_keytab_uses_base64_override() -> Result<(), Box<dyn Error>> {
+    use base64::Engine as _;
+
+    let _guard = AD_LOCK.lock().expect("AD integration test lock");
+    let _env = clear_keytab_env(SYSHTTP_KEYTAB);
+    let bytes = decode_hex_value(KEYTAB_SYSHTTP_RES_GOKRB5)?;
+    let base64 = base64::engine::general_purpose::STANDARD.encode(bytes);
+    let _base64_env = EnvOverride::set(SYSHTTP_KEYTAB.base64_env, base64.as_str());
+
+    assert_eq!(syshttp_keytab()?, keytab(KEYTAB_SYSHTTP_RES_GOKRB5)?);
+
+    Ok(())
+}
+
+#[test]
+fn ad_keytab_path_override_takes_precedence_over_encoded_values() -> Result<(), Box<dyn Error>> {
+    let _guard = AD_LOCK.lock().expect("AD integration test lock");
+    let _env = clear_keytab_env(TESTUSER3_KEYTAB);
+    let path = temp_keytab_path("testuser3");
+    fs::write(&path, decode_hex_value(KEYTAB_TESTUSER3_USER_GOKRB5)?)?;
+    let _path_env = EnvOverride::set(TESTUSER3_KEYTAB.path_env, path.as_os_str());
+    let _hex_env = EnvOverride::set(TESTUSER3_KEYTAB.hex_env, "00");
+
+    assert_eq!(testuser3_keytab()?, keytab(KEYTAB_TESTUSER3_USER_GOKRB5)?);
+
+    let _ = fs::remove_file(path);
+    Ok(())
+}
+
+fn clear_keytab_env(fixture: AdKeytabFixture) -> Vec<EnvOverride> {
+    vec![
+        EnvOverride::remove(fixture.path_env),
+        EnvOverride::remove(fixture.hex_env),
+        EnvOverride::remove(fixture.base64_env),
+    ]
+}
+
+fn temp_keytab_path(label: &str) -> PathBuf {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system time is after epoch")
+        .as_nanos();
+    env::temp_dir().join(format!(
+        "rskrb5-ad-{label}-{}-{nanos}.keytab",
+        std::process::id()
+    ))
+}
+
+struct EnvOverride {
+    key: &'static str,
+    previous: Option<OsString>,
+}
+
+impl EnvOverride {
+    fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
+        let previous = env::var_os(key);
+        // SAFETY: callers hold AD_LOCK while mutating and restoring AD test env vars.
+        unsafe {
+            env::set_var(key, value);
+        }
+        Self { key, previous }
+    }
+
+    fn remove(key: &'static str) -> Self {
+        let previous = env::var_os(key);
+        // SAFETY: callers hold AD_LOCK while mutating and restoring AD test env vars.
+        unsafe {
+            env::remove_var(key);
+        }
+        Self { key, previous }
+    }
+}
+
+impl Drop for EnvOverride {
+    fn drop(&mut self) {
+        // SAFETY: callers hold AD_LOCK while dropping guards created in these tests.
+        unsafe {
+            match &self.previous {
+                Some(value) => env::set_var(self.key, value),
+                None => env::remove_var(self.key),
+            }
+        }
+    }
 }

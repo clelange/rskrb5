@@ -5,6 +5,8 @@
 - Added a dedicated Active Directory integration runbook and strict
   `TESTAD_REQUIRED=1` mode so future AD parity evidence cannot pass by
   soft-skipping unreachable lab endpoints.
+- Added AD keytab override variables for lab-specific keytab files, hex
+  secrets, or base64 secrets.
 
 ## 0.2.0 Preview - 2026-06-24
 

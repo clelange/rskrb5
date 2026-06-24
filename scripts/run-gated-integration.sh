@@ -30,6 +30,9 @@ Useful environment:
   TEST_KPASSWD=1                 Enable live password-change coverage.
   TESTAD=1                       Enable Active Directory tests, if the lab is reachable.
   TESTAD_REQUIRED=1              Fail instead of soft-skipping when TESTAD setup is unreachable.
+  TEST_AD_*_KEYTAB_PATH          AD lab-specific keytab file overrides.
+  TEST_AD_*_KEYTAB_HEX           AD lab-specific keytab hex secret overrides.
+  TEST_AD_*_KEYTAB_BASE64        AD lab-specific keytab base64 secret overrides.
   TEST_DNS_KDC=1                 Enable DNS-SRV KDC discovery tests.
                                  Defaults to resolver configuration mode.
   TESTPRIVILEGED=1               Enable external kinit/kvno coverage. Defaults to 1.
@@ -243,6 +246,18 @@ export TEST_AD_KDC_ADDR=${TEST_AD_KDC_ADDR:-}
 export TEST_AD_RES_KDC_ADDR=${TEST_AD_RES_KDC_ADDR:-}
 export TEST_AD_ADMIN_ADDR=${TEST_AD_ADMIN_ADDR:-}
 export TEST_AD_RES_ADMIN_ADDR=${TEST_AD_RES_ADMIN_ADDR:-}
+export TEST_AD_TESTUSER1_KEYTAB_PATH=${TEST_AD_TESTUSER1_KEYTAB_PATH:-}
+export TEST_AD_TESTUSER1_KEYTAB_HEX=${TEST_AD_TESTUSER1_KEYTAB_HEX:-}
+export TEST_AD_TESTUSER1_KEYTAB_BASE64=${TEST_AD_TESTUSER1_KEYTAB_BASE64:-}
+export TEST_AD_TESTUSER2_KEYTAB_PATH=${TEST_AD_TESTUSER2_KEYTAB_PATH:-}
+export TEST_AD_TESTUSER2_KEYTAB_HEX=${TEST_AD_TESTUSER2_KEYTAB_HEX:-}
+export TEST_AD_TESTUSER2_KEYTAB_BASE64=${TEST_AD_TESTUSER2_KEYTAB_BASE64:-}
+export TEST_AD_TESTUSER3_KEYTAB_PATH=${TEST_AD_TESTUSER3_KEYTAB_PATH:-}
+export TEST_AD_TESTUSER3_KEYTAB_HEX=${TEST_AD_TESTUSER3_KEYTAB_HEX:-}
+export TEST_AD_TESTUSER3_KEYTAB_BASE64=${TEST_AD_TESTUSER3_KEYTAB_BASE64:-}
+export TEST_AD_SYSHTTP_KEYTAB_PATH=${TEST_AD_SYSHTTP_KEYTAB_PATH:-}
+export TEST_AD_SYSHTTP_KEYTAB_HEX=${TEST_AD_SYSHTTP_KEYTAB_HEX:-}
+export TEST_AD_SYSHTTP_KEYTAB_BASE64=${TEST_AD_SYSHTTP_KEYTAB_BASE64:-}
 export TEST_KDC_ADDR=$primary_addr
 export TEST_OLD_KDC_ADDR=$old_addr
 export TEST_LATEST_KDC_ADDR=$latest_addr

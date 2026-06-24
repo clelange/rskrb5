@@ -60,9 +60,36 @@ The required principals and SPNs are:
 | `testuser3` | `USER.GOKRB5` | preauthentication disabled |
 | `sysHTTP` | `RES.GOKRB5` | service account for `HTTP/host.res.gokrb5` |
 
-The checked-in tests use embedded upstream-compatible keytab bytes for those
-accounts. A maintained lab must preserve those account keys and kvnos, or the
-tests need to be changed to load lab-specific keytabs from secrets.
+The checked-in tests default to embedded upstream-compatible keytab bytes for
+those accounts. A maintained lab can either preserve those account keys and
+kvnos or supply lab-specific keytabs through environment variables.
+
+## Keytab Overrides
+
+Each AD identity can be supplied as a file path, hex-encoded keytab bytes, or
+standard base64-encoded keytab bytes. Path overrides take precedence over hex,
+and hex takes precedence over base64.
+
+| Identity | Path variable | Hex variable | Base64 variable |
+|---|---|---|---|
+| `testuser1@USER.GOKRB5` | `TEST_AD_TESTUSER1_KEYTAB_PATH` | `TEST_AD_TESTUSER1_KEYTAB_HEX` | `TEST_AD_TESTUSER1_KEYTAB_BASE64` |
+| `testuser2@USER.GOKRB5` | `TEST_AD_TESTUSER2_KEYTAB_PATH` | `TEST_AD_TESTUSER2_KEYTAB_HEX` | `TEST_AD_TESTUSER2_KEYTAB_BASE64` |
+| `testuser3@USER.GOKRB5` | `TEST_AD_TESTUSER3_KEYTAB_PATH` | `TEST_AD_TESTUSER3_KEYTAB_HEX` | `TEST_AD_TESTUSER3_KEYTAB_BASE64` |
+| `sysHTTP@RES.GOKRB5` | `TEST_AD_SYSHTTP_KEYTAB_PATH` | `TEST_AD_SYSHTTP_KEYTAB_HEX` | `TEST_AD_SYSHTTP_KEYTAB_BASE64` |
+
+For GitHub Actions, the manual integration job reads the corresponding
+`*_BASE64` secret names when `test_ad=true`. For local or self-hosted runs,
+file paths are usually simpler:
+
+```sh
+export TEST_AD_TESTUSER1_KEYTAB_PATH=/secure/ad/testuser1.keytab
+export TEST_AD_TESTUSER2_KEYTAB_PATH=/secure/ad/testuser2.keytab
+export TEST_AD_TESTUSER3_KEYTAB_PATH=/secure/ad/testuser3.keytab
+export TEST_AD_SYSHTTP_KEYTAB_PATH=/secure/ad/sysHTTP.keytab
+```
+
+Hex and base64 values may contain whitespace. The decoded bytes must be a
+complete MIT keytab containing keys for the named account.
 
 ## Running The Gate
 
@@ -84,9 +111,9 @@ cannot be reached. Without it, the tests keep the upstream-style behavior of
 returning `Ok(())` after printing a skip diagnostic.
 
 When running through the Docker MIT fixture helper, AD remains separate from the
-Docker environment. The helper preserves `TEST_AD_*` values in
-`target/gated-integration.env` for split `start` and `test` workflows, but it
-does not create AD domains:
+Docker environment. The helper preserves `TEST_AD_*` endpoint and keytab values
+in `target/gated-integration.env` for split `start` and `test` workflows, but
+it does not create AD domains:
 
 ```sh
 TESTAD=1 TESTAD_REQUIRED=1 scripts/run-gated-integration.sh test \
