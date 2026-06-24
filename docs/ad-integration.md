@@ -174,6 +174,11 @@ without making the workflow red:
 scripts/check-github-ad-gate.py --dry-run --dispatch
 ```
 
+The first captured green hosted dry-run is GitHub Actions run
+[`28119806826`](https://github.com/clelange/rskrb5/actions/runs/28119806826).
+It validates only keytab secret shape; strict AD evidence still requires
+reachable endpoint secrets and `test_ad=true`.
+
 After the required secrets are present, dispatch the gate:
 
 ```sh

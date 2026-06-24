@@ -20,8 +20,13 @@
 - Added a non-live `test_ad_dry_run=true` workflow path and
   `scripts/check-github-ad-gate.py --dry-run` so keytab secret wiring can stay
   green while AD endpoints remain unavailable.
+- Captured green hosted AD keytab-secret dry-run evidence in GitHub Actions run
+  `28119806826`; the strict AD gate remains blocked on reachable endpoint
+  secrets.
 - Added a Samba AD feasibility runbook and local preflight script as a backup
   spike path that does not count as Windows AD parity evidence.
+- Added static coverage for the embedded AD keytab fixtures so the required
+  account principals and AES/RC4 key material are checked without a live lab.
 
 ## 0.2.0 Preview - 2026-06-24
 
