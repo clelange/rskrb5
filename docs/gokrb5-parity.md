@@ -53,9 +53,11 @@ preview release unless the release notes explicitly call it out as skipped.
    endpoint secrets from
    [`github-ad-gate-setup.md`](github-ad-gate-setup.md), and do not claim AD
    parity until the strict `TESTAD_REQUIRED=1` gate runs green.
-2. Keep the workflow-dispatched Docker MIT gate green with `integration=true`,
+2. Use [`samba-ad-feasibility.md`](samba-ad-feasibility.md) as a backup spike
+   only; do not treat Samba results as Windows AD parity evidence.
+3. Keep the workflow-dispatched Docker MIT gate green with `integration=true`,
    `test_kpasswd=true`, and `test_ad=false` before the next release.
-3. Prepare release notes for the next breaking preview with the new API surface
+4. Prepare release notes for the next breaking preview with the new API surface
    and the still-skipped AD gate called out explicitly.
 
 ## Status Values

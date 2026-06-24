@@ -9,7 +9,9 @@ Use this document for the Rust test contract and environment variables. Use
 [`ad-lab-provisioning.md`](ad-lab-provisioning.md) for the domain, trust,
 account, SPN, enctype, and keytab provisioning checklist. Use
 [`github-ad-gate-setup.md`](github-ad-gate-setup.md) for the GitHub Actions
-runner mode and repository secret setup.
+runner mode and repository secret setup. Use
+[`samba-ad-feasibility.md`](samba-ad-feasibility.md) only as a backup
+feasibility path while the intended AD lab is unavailable.
 
 ## What This Gate Proves
 
