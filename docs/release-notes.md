@@ -1,5 +1,11 @@
 # Release Notes
 
+## Unreleased
+
+- Added a dedicated Active Directory integration runbook and strict
+  `TESTAD_REQUIRED=1` mode so future AD parity evidence cannot pass by
+  soft-skipping unreachable lab endpoints.
+
 ## 0.2.0 Preview - 2026-06-24
 
 `0.2.0` is the next breaking pre-`1.0` preview after the published `0.1`

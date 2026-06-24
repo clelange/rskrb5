@@ -100,5 +100,13 @@ PATH="/opt/homebrew/opt/krb5/bin:$PATH" scripts/run-gated-integration.sh run
 ## Active Directory Gate
 
 `TESTAD=1` is not bootstrapped by this script. It needs the separate AD lab
-documented in the README or equivalent endpoints supplied through
-`TEST_AD_USER_KDC_ADDR` and `TEST_AD_RESOURCE_KDC_ADDR`.
+documented in [`ad-integration.md`](ad-integration.md) or equivalent endpoints
+supplied through `TEST_AD_USER_KDC_ADDR`, `TEST_AD_RESOURCE_KDC_ADDR`,
+`TEST_AD_USER_ADMIN_ADDR`, and `TEST_AD_RESOURCE_ADMIN_ADDR`.
+
+Use `TESTAD_REQUIRED=1` for release or parity evidence so unreachable AD
+endpoints fail instead of soft-skipping:
+
+```sh
+TESTAD=1 TESTAD_REQUIRED=1 cargo test --all-features --test client_ad_integration -- --nocapture
+```

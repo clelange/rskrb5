@@ -76,6 +76,7 @@ jobs:
       INTEGRATION: "1"
       TESTPRIVILEGED: "1"
       TESTAD: ${{ inputs.test_ad && '1' || '0' }}
+      TESTAD_REQUIRED: ${{ inputs.test_ad && '1' || '0' }}
       TEST_KPASSWD: ${{ inputs.test_kpasswd && '1' || '0' }}
       TEST_KDC_ADDR: 127.0.0.1
       TEST_HTTP_URL: http://cname.test.gokrb5

@@ -43,13 +43,13 @@ preview release unless the release notes explicitly call it out as skipped.
 | Linux Docker DNS-SRV KDC discovery | proven | docker-mit, client | `TEST_DNS_KDC=1 scripts/run-gated-integration.sh run --test client_integration docker_mit_kdc_dns_srv_as_login -- --nocapture` | GitHub Actions run `28073249506` passed `docker_mit_kdc_dns_srv_as_login`; keep this gate green. |
 | Linux Docker privileged external ccache | proven | ccache, client | `TESTPRIVILEGED=1 scripts/run-gated-integration.sh run --test client_integration` | GitHub Actions run `28073249506` passed external `kinit` and `kvno` ccache tests; keep this gate green. |
 | Linux Docker HTTP SPNEGO service integration | proven | service, gssapi-spnego, client | `scripts/run-gated-integration.sh run --test client_integration docker_mit_kdc_spnego_header_authenticates_to_docker_http -- --nocapture` | GitHub Actions run `28073249506` passed HTTP SPNEGO, raw KRB5 Negotiate, and replay rejection tests; keep this gate green. |
-| Active Directory TESTAD integration | blocked-on-lab | active-directory, PAC, client, service | Needs maintained USER and RESOURCE AD realm endpoints. | Stand up or document the lab, then run `INTEGRATION=1 TESTAD=1 cargo test --all-features --test client_ad_integration`. |
+| Active Directory TESTAD integration | blocked-on-lab | active-directory, PAC, client, service | Needs maintained USER and RESOURCE AD realm endpoints. | Follow [`ad-integration.md`](ad-integration.md), then run `INTEGRATION=1 TESTAD=1 TESTAD_REQUIRED=1 cargo test --all-features --test client_ad_integration -- --nocapture`. |
 | Ready-to-use HTTP Negotiate client wrapper | proven | gssapi-spnego, client | `cargo test --all-features --test http` | Async `send_with_negotiate` and blocking `send_with_blocking_negotiate` retry 401 Negotiate responses through replayable request factories; keep this gate green. |
 
 ## Immediate Next Slices
 
-1. Create a maintained AD lab runbook or CI secret plan for `TESTAD=1`; do not
-   claim AD parity until this gate runs green.
+1. Stand up the AD lab documented in [`ad-integration.md`](ad-integration.md);
+   do not claim AD parity until the strict `TESTAD_REQUIRED=1` gate runs green.
 2. Keep the workflow-dispatched Docker MIT gate green with `integration=true`,
    `test_kpasswd=true`, and `test_ad=false` before the next release.
 3. Prepare release notes for the next breaking preview with the new API surface

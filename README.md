@@ -144,10 +144,10 @@ restoring it. Use `TEST_KPASSWD_ADDR`, `TEST_KPASSWD_PORT`, and
 `TEST_KPASSWD_SADDR` when the password-change service or sender address differs
 from the localhost defaults.
 
-The Active Directory integration tests mirror gokrb5's `TESTAD=1` cases and
-default to the gokrb5 lab addresses `192.168.88.100:88` and
-`192.168.88.101:88`. Use `TEST_AD_USER_KDC_ADDR` and
-`TEST_AD_RESOURCE_KDC_ADDR` to point them at another AD test environment.
+The Active Directory integration tests mirror gokrb5's `TESTAD=1` cases but
+require a maintained two-domain AD lab. Use
+[`docs/ad-integration.md`](docs/ad-integration.md) for the realm, principal,
+SPN, endpoint, and strict `TESTAD_REQUIRED=1` release-evidence contract.
 
 ## Distribution Direction
 

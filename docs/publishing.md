@@ -56,14 +56,16 @@ the release:
 ```sh
 scripts/run-gated-integration.sh run --test client_integration
 TEST_KPASSWD=1 scripts/run-gated-integration.sh run --test client_integration
-INTEGRATION=1 TESTAD=1 cargo test --all-features --test client_ad_integration
+INTEGRATION=1 TESTAD=1 TESTAD_REQUIRED=1 cargo test --all-features --test client_ad_integration -- --nocapture
 ```
 
 `TESTPRIVILEGED=1` and `TEST_KPASSWD=1` are additive gates on top of
 `INTEGRATION=1`; the local runner enables `TESTPRIVILEGED=1` by default and
 documents fixture setup in [`gated-integration.md`](gated-integration.md).
-`TESTAD=1` uses the Active Directory lab endpoints documented in the README and
-remains optional until that lab is maintained in CI.
+`TESTAD=1` uses the Active Directory lab endpoints documented in
+[`ad-integration.md`](ad-integration.md) and remains optional until that lab is
+maintained in CI. Use `TESTAD_REQUIRED=1` whenever an AD run is used as release
+evidence.
 
 ## crates.io Release
 

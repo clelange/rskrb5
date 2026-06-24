@@ -29,6 +29,7 @@ Commands:
 Useful environment:
   TEST_KPASSWD=1                 Enable live password-change coverage.
   TESTAD=1                       Enable Active Directory tests, if the lab is reachable.
+  TESTAD_REQUIRED=1              Fail instead of soft-skipping when TESTAD setup is unreachable.
   TEST_DNS_KDC=1                 Enable DNS-SRV KDC discovery tests.
                                  Defaults to resolver configuration mode.
   TESTPRIVILEGED=1               Enable external kinit/kvno coverage. Defaults to 1.
@@ -231,8 +232,17 @@ write_env() {
 export INTEGRATION=1
 export TESTPRIVILEGED=${TESTPRIVILEGED:-1}
 export TESTAD=${TESTAD:-0}
+export TESTAD_REQUIRED=${TESTAD_REQUIRED:-0}
 export TEST_KPASSWD=${TEST_KPASSWD:-0}
 export TEST_DNS_KDC=$test_dns_kdc
+export TEST_AD_USER_KDC_ADDR=${TEST_AD_USER_KDC_ADDR:-}
+export TEST_AD_RESOURCE_KDC_ADDR=${TEST_AD_RESOURCE_KDC_ADDR:-}
+export TEST_AD_USER_ADMIN_ADDR=${TEST_AD_USER_ADMIN_ADDR:-}
+export TEST_AD_RESOURCE_ADMIN_ADDR=${TEST_AD_RESOURCE_ADMIN_ADDR:-}
+export TEST_AD_KDC_ADDR=${TEST_AD_KDC_ADDR:-}
+export TEST_AD_RES_KDC_ADDR=${TEST_AD_RES_KDC_ADDR:-}
+export TEST_AD_ADMIN_ADDR=${TEST_AD_ADMIN_ADDR:-}
+export TEST_AD_RES_ADMIN_ADDR=${TEST_AD_RES_ADMIN_ADDR:-}
 export TEST_KDC_ADDR=$primary_addr
 export TEST_OLD_KDC_ADDR=$old_addr
 export TEST_LATEST_KDC_ADDR=$latest_addr

@@ -34,7 +34,7 @@ static AD_LOCK: Mutex<()> = Mutex::new(());
 
 #[test]
 fn active_directory_keytab_login() -> Result<(), Box<dyn Error>> {
-    if !ad_enabled() {
+    if !ad_enabled()? {
         return Ok(());
     }
     let _guard = AD_LOCK.lock().expect("AD integration test lock");
@@ -53,7 +53,7 @@ fn active_directory_keytab_login() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn active_directory_keytab_login_without_preauth() -> Result<(), Box<dyn Error>> {
-    if !ad_enabled() {
+    if !ad_enabled()? {
         return Ok(());
     }
     let _guard = AD_LOCK.lock().expect("AD integration test lock");
@@ -72,7 +72,7 @@ fn active_directory_keytab_login_without_preauth() -> Result<(), Box<dyn Error>>
 
 #[test]
 fn active_directory_service_ticket_validates_user_domain_pac() -> Result<(), Box<dyn Error>> {
-    if !ad_enabled() {
+    if !ad_enabled()? {
         return Ok(());
     }
     let _guard = AD_LOCK.lock().expect("AD integration test lock");
@@ -100,7 +100,7 @@ fn active_directory_service_ticket_validates_user_domain_pac() -> Result<(), Box
 #[test]
 fn active_directory_trust_resource_domain_service_ticket_validates_pac()
 -> Result<(), Box<dyn Error>> {
-    if !ad_enabled() {
+    if !ad_enabled()? {
         return Ok(());
     }
     let _guard = AD_LOCK.lock().expect("AD integration test lock");
@@ -130,7 +130,7 @@ fn active_directory_trust_resource_domain_service_ticket_validates_pac()
 
 #[test]
 fn active_directory_trust_user_domain_service_ticket_validates_pac() -> Result<(), Box<dyn Error>> {
-    if !ad_enabled() {
+    if !ad_enabled()? {
         return Ok(());
     }
     let _guard = AD_LOCK.lock().expect("AD integration test lock");
@@ -154,30 +154,58 @@ fn active_directory_trust_user_domain_service_ticket_validates_pac() -> Result<(
     })
 }
 
-fn ad_enabled() -> bool {
+fn ad_enabled() -> Result<bool, Box<dyn Error>> {
+    let required = ad_required();
     if !ad_prefetch_gate() {
-        eprintln!("skipping AD integration test; set TESTAD=1 to enable");
-        return false;
+        let message = "skipping AD integration test; set TESTAD=1 to enable";
+        if required {
+            return Err(ad_gate_error(format!(
+                "{message}; TESTAD_REQUIRED=1 forbids soft skips"
+            )));
+        }
+        eprintln!("{message}");
+        return Ok(false);
     }
 
     let user_kdc = ad_user_kdc_addr();
     let resource_kdc = ad_resource_kdc_addr();
 
     if !tcp_reachable(&user_kdc, "USER realm KDC") {
-        eprintln!("skipping AD integration test; cannot reach user KDC at {user_kdc}");
-        return false;
+        let message = format!("skipping AD integration test; cannot reach user KDC at {user_kdc}");
+        if required {
+            return Err(ad_gate_error(format!(
+                "{message}; TESTAD_REQUIRED=1 forbids soft skips"
+            )));
+        }
+        eprintln!("{message}");
+        return Ok(false);
     }
 
     if !tcp_reachable(&resource_kdc, "RESOURCE realm KDC") {
-        eprintln!("skipping AD integration test; cannot reach resource KDC at {resource_kdc}");
-        return false;
+        let message =
+            format!("skipping AD integration test; cannot reach resource KDC at {resource_kdc}");
+        if required {
+            return Err(ad_gate_error(format!(
+                "{message}; TESTAD_REQUIRED=1 forbids soft skips"
+            )));
+        }
+        eprintln!("{message}");
+        return Ok(false);
     }
 
-    true
+    Ok(true)
 }
 
 fn ad_prefetch_gate() -> bool {
     env::var("TESTAD").as_deref() == Ok("1")
+}
+
+fn ad_required() -> bool {
+    env::var("TESTAD_REQUIRED").as_deref() == Ok("1")
+}
+
+fn ad_gate_error(message: String) -> Box<dyn Error> {
+    std::io::Error::other(message).into()
 }
 
 fn ad_user_kdc_addr() -> String {
