@@ -114,3 +114,8 @@ endpoints fail instead of soft-skipping:
 ```sh
 TESTAD=1 TESTAD_REQUIRED=1 cargo test --all-features --test client_ad_integration -- --nocapture
 ```
+
+In GitHub Actions, `workflow_dispatch` with `test_ad=true` runs a separate
+strict AD job on a self-hosted `rskrb5-ad` runner. The Docker-backed integration
+job stays MIT-only; dispatch with both `integration=true` and `test_ad=true` to
+run both gates in one workflow.

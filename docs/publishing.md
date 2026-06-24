@@ -66,7 +66,9 @@ documents fixture setup in [`gated-integration.md`](gated-integration.md).
 `TESTAD=1` uses the Active Directory lab endpoints documented in
 [`ad-integration.md`](ad-integration.md) and remains optional until that lab is
 maintained in CI. Use `TESTAD_REQUIRED=1` whenever an AD run is used as release
-evidence.
+evidence. The manual GitHub Actions `test_ad=true` gate runs on a self-hosted
+`rskrb5-ad` runner and preflights the required endpoint and keytab secrets
+before running `tests/client_ad_integration.rs`.
 
 ## crates.io Release
 

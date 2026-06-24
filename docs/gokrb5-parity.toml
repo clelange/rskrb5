@@ -137,8 +137,8 @@ upstream_tests = ["client/client_ad_integration_test.go"]
 rskrb5_modules = ["tests/client_ad_integration.rs", "src/pac.rs", "src/client.rs"]
 rskrb5_tests = ["tests/client_ad_integration.rs"]
 status = "blocked-on-lab"
-evidence = ["AD integration tests exist, the lab contract is documented in docs/ad-integration.md, TESTAD_REQUIRED=1 fails when the strict gate would otherwise soft-skip, lab-specific keytab path/hex/base64 overrides are supported, and scripts/check-ad-integration-env.py preflights strict AD runs"]
-next = ["stand up reachable maintained USER and RESOURCE AD realm endpoints", "run scripts/check-ad-integration-env.py before TESTAD=1 TESTAD_REQUIRED=1 with lab-specific keytabs as needed and record keytab login, no-preauth login, user-domain PAC, and resource-trust PAC evidence"]
+evidence = ["AD integration tests exist, the lab contract is documented in docs/ad-integration.md, TESTAD_REQUIRED=1 fails when the strict gate would otherwise soft-skip, lab-specific keytab path/hex/base64 overrides are supported, scripts/check-ad-integration-env.py preflights strict AD runs, and workflow_dispatch test_ad=true targets a self-hosted rskrb5-ad runner"]
+next = ["configure the self-hosted rskrb5-ad runner and required TEST_AD_* secrets", "stand up reachable maintained USER and RESOURCE AD realm endpoints", "run scripts/check-ad-integration-env.py before TESTAD=1 TESTAD_REQUIRED=1 with lab-specific keytabs as needed and record keytab login, no-preauth login, user-domain PAC, and resource-trust PAC evidence"]
 
 [[area]]
 id = "non-goals"
@@ -214,8 +214,8 @@ command = "INTEGRATION=1 TESTAD=1 TESTAD_REQUIRED=1 cargo test --all-features --
 proves = ["active-directory", "pac", "client", "service"]
 required_for_release = false
 required_for_parity = true
-evidence = ["AD integration tests exist, docs/ad-integration.md defines the lab contract, TESTAD_REQUIRED=1 prevents unreachable-lab soft skips from counting as evidence, keytab path/hex/base64 overrides allow lab-specific account keys, and scripts/check-ad-integration-env.py validates strict gate readiness"]
-next = ["stand up reachable maintained USER and RESOURCE AD realm endpoints", "record keytab login, no-preauth login, user-domain PAC, and resource-trust PAC evidence from scripts/check-ad-integration-env.py plus a strict TESTAD_REQUIRED=1 run with lab-specific keytabs as needed"]
+evidence = ["AD integration tests exist, docs/ad-integration.md defines the lab contract, TESTAD_REQUIRED=1 prevents unreachable-lab soft skips from counting as evidence, keytab path/hex/base64 overrides allow lab-specific account keys, scripts/check-ad-integration-env.py validates strict gate readiness, and workflow_dispatch test_ad=true targets a self-hosted rskrb5-ad runner"]
+next = ["configure the self-hosted rskrb5-ad runner and required TEST_AD_* secrets", "record keytab login, no-preauth login, user-domain PAC, and resource-trust PAC evidence from scripts/check-ad-integration-env.py plus a strict TESTAD_REQUIRED=1 run with lab-specific keytabs as needed"]
 
 [[gate]]
 id = "http-client-wrapper"

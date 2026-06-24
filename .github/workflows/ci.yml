@@ -11,7 +11,7 @@ on:
         type: boolean
         default: false
       test_ad:
-        description: Set TESTAD=1 for Active Directory gated tests
+        description: Run strict Active Directory gated tests on the AD lab runner
         required: false
         type: boolean
         default: false
@@ -75,17 +75,9 @@ jobs:
     env:
       INTEGRATION: "1"
       TESTPRIVILEGED: "1"
-      TESTAD: ${{ inputs.test_ad && '1' || '0' }}
-      TESTAD_REQUIRED: ${{ inputs.test_ad && '1' || '0' }}
+      TESTAD: "0"
+      TESTAD_REQUIRED: "0"
       TEST_KPASSWD: ${{ inputs.test_kpasswd && '1' || '0' }}
-      TEST_AD_USER_KDC_ADDR: ${{ secrets.TEST_AD_USER_KDC_ADDR }}
-      TEST_AD_RESOURCE_KDC_ADDR: ${{ secrets.TEST_AD_RESOURCE_KDC_ADDR }}
-      TEST_AD_USER_ADMIN_ADDR: ${{ secrets.TEST_AD_USER_ADMIN_ADDR }}
-      TEST_AD_RESOURCE_ADMIN_ADDR: ${{ secrets.TEST_AD_RESOURCE_ADMIN_ADDR }}
-      TEST_AD_TESTUSER1_KEYTAB_BASE64: ${{ secrets.TEST_AD_TESTUSER1_KEYTAB_BASE64 }}
-      TEST_AD_TESTUSER2_KEYTAB_BASE64: ${{ secrets.TEST_AD_TESTUSER2_KEYTAB_BASE64 }}
-      TEST_AD_TESTUSER3_KEYTAB_BASE64: ${{ secrets.TEST_AD_TESTUSER3_KEYTAB_BASE64 }}
-      TEST_AD_SYSHTTP_KEYTAB_BASE64: ${{ secrets.TEST_AD_SYSHTTP_KEYTAB_BASE64 }}
       TEST_KDC_ADDR: 127.0.0.1
       TEST_HTTP_URL: http://cname.test.gokrb5
       TEST_HTTP_ADDR: 127.0.0.1
@@ -108,3 +100,30 @@ jobs:
       - name: Stop gokrb5 integration dependencies
         if: always()
         run: scripts/run-gated-integration.sh stop
+
+  active-directory-integration:
+    name: Active Directory integration
+    runs-on: [self-hosted, linux, x64, rskrb5-ad]
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.test_ad == true }}
+    env:
+      TESTAD: "1"
+      TESTAD_REQUIRED: "1"
+      TEST_AD_REQUIRE_EXPLICIT_ENDPOINTS: "1"
+      TEST_AD_REQUIRE_KEYTAB_OVERRIDES: "1"
+      TEST_AD_USER_KDC_ADDR: ${{ secrets.TEST_AD_USER_KDC_ADDR }}
+      TEST_AD_RESOURCE_KDC_ADDR: ${{ secrets.TEST_AD_RESOURCE_KDC_ADDR }}
+      TEST_AD_USER_ADMIN_ADDR: ${{ secrets.TEST_AD_USER_ADMIN_ADDR }}
+      TEST_AD_RESOURCE_ADMIN_ADDR: ${{ secrets.TEST_AD_RESOURCE_ADMIN_ADDR }}
+      TEST_AD_TESTUSER1_KEYTAB_BASE64: ${{ secrets.TEST_AD_TESTUSER1_KEYTAB_BASE64 }}
+      TEST_AD_TESTUSER2_KEYTAB_BASE64: ${{ secrets.TEST_AD_TESTUSER2_KEYTAB_BASE64 }}
+      TEST_AD_TESTUSER3_KEYTAB_BASE64: ${{ secrets.TEST_AD_TESTUSER3_KEYTAB_BASE64 }}
+      TEST_AD_SYSHTTP_KEYTAB_BASE64: ${{ secrets.TEST_AD_SYSHTTP_KEYTAB_BASE64 }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+      - name: Check Active Directory environment
+        run: scripts/check-ad-integration-env.py
+      - name: Run Active Directory integration tests
+        run: cargo test --all-features --test client_ad_integration -- --nocapture

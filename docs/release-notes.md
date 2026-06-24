@@ -9,6 +9,8 @@
   secrets, or base64 secrets.
 - Added `scripts/check-ad-integration-env.py` to preflight strict AD gate
   environment, reachability, and keytab secret shape.
+- Split the GitHub Actions AD gate into a strict self-hosted `rskrb5-ad` job so
+  Docker MIT integration stays separate from live AD parity evidence.
 
 ## 0.2.0 Preview - 2026-06-24
 

@@ -78,8 +78,20 @@ and hex takes precedence over base64.
 | `sysHTTP@RES.GOKRB5` | `TEST_AD_SYSHTTP_KEYTAB_PATH` | `TEST_AD_SYSHTTP_KEYTAB_HEX` | `TEST_AD_SYSHTTP_KEYTAB_BASE64` |
 
 For GitHub Actions, the manual integration job reads the corresponding
-`*_BASE64` secret names when `test_ad=true`. For local or self-hosted runs,
-file paths are usually simpler:
+`*_BASE64` secret names when `test_ad=true`. That job runs on a self-hosted
+Linux x64 runner with the `rskrb5-ad` label so it can route to the AD lab. The
+required repository or environment secrets are:
+
+- `TEST_AD_USER_KDC_ADDR`
+- `TEST_AD_RESOURCE_KDC_ADDR`
+- `TEST_AD_USER_ADMIN_ADDR`
+- `TEST_AD_RESOURCE_ADMIN_ADDR`
+- `TEST_AD_TESTUSER1_KEYTAB_BASE64`
+- `TEST_AD_TESTUSER2_KEYTAB_BASE64`
+- `TEST_AD_TESTUSER3_KEYTAB_BASE64`
+- `TEST_AD_SYSHTTP_KEYTAB_BASE64`
+
+For local or self-hosted shell runs, file paths are usually simpler:
 
 ```sh
 export TEST_AD_TESTUSER1_KEYTAB_PATH=/secure/ad/testuser1.keytab
@@ -126,6 +138,10 @@ Use `TEST_AD_SKIP_REACHABILITY=1` only for dry-run validation of secret shape
 when the lab network is intentionally unavailable. Use
 `TEST_AD_CHECK_ADMIN_REACHABILITY=1` to also require TCP reachability for the
 admin server endpoints.
+
+To run the GitHub Actions gate, use `workflow_dispatch` with `test_ad=true`.
+The Docker-backed MIT integration job remains separate; use `integration=true`
+when that gate should run in the same workflow dispatch.
 
 When running through the Docker MIT fixture helper, AD remains separate from the
 Docker environment. The helper preserves `TEST_AD_*` endpoint and keytab values
