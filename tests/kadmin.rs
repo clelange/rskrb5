@@ -608,7 +608,7 @@ fn kpasswd_reply_decrypt_result_returns_parsed_error_result() {
         value: vec![0; 32],
     };
     let expected = ChangePasswordResult {
-        code: u16::from_be_bytes([b'k', b'r']),
+        code: u16::from_be_bytes(*b"kr"),
         text: "b5data".to_owned(),
     };
 
@@ -675,7 +675,7 @@ fn kpasswd_reply_parses_krb_error_response_data() {
     assert_eq!(
         reply.result,
         Some(ChangePasswordResult {
-            code: u16::from_be_bytes([b'k', b'r']),
+            code: u16::from_be_bytes(*b"kr"),
             text: "b5data".to_owned(),
         })
     );
@@ -695,7 +695,7 @@ fn kpasswd_reply_decrypt_result_returns_krb_error_result() {
             .decrypt_result(&key)
             .expect("KRB-ERROR result needs no decrypt"),
         ChangePasswordResult {
-            code: u16::from_be_bytes([b'k', b'r']),
+            code: u16::from_be_bytes(*b"kr"),
             text: "b5data".to_owned(),
         }
     );
@@ -776,7 +776,9 @@ fn decode_hex(input: &str) -> Vec<u8> {
     assert_eq!(input.len() % 2, 0, "hex input has even length");
     input
         .as_bytes()
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| {
             let hi = hex_nibble(pair[0]);
             let lo = hex_nibble(pair[1]);

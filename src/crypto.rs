@@ -1146,7 +1146,7 @@ pub fn s2kparams_to_iterations(s2kparams: &str) -> Result<u32, Error> {
     }
 
     let mut bytes = [0; 4];
-    for (idx, pair) in s2kparams.as_bytes().chunks_exact(2).enumerate() {
+    for (idx, pair) in s2kparams.as_bytes().as_chunks::<2>().0.iter().enumerate() {
         bytes[idx] = hex_pair(pair[0], pair[1])?;
     }
 
@@ -1404,7 +1404,7 @@ fn cbc_encrypt(key: &[u8], iv: &[u8; AES_BLOCK_SIZE], plaintext: &[u8]) -> Vec<u
 
     let mut previous = *iv;
     let mut out = Vec::with_capacity(plaintext.len());
-    for chunk in plaintext.chunks_exact(AES_BLOCK_SIZE) {
+    for chunk in plaintext.as_chunks::<AES_BLOCK_SIZE>().0 {
         let mut block = [0; AES_BLOCK_SIZE];
         for i in 0..AES_BLOCK_SIZE {
             block[i] = chunk[i] ^ previous[i];
@@ -1421,7 +1421,7 @@ fn cbc_decrypt(key: &[u8], iv: &[u8; AES_BLOCK_SIZE], ciphertext: &[u8]) -> Vec<
 
     let mut previous = *iv;
     let mut out = Vec::with_capacity(ciphertext.len());
-    for chunk in ciphertext.chunks_exact(AES_BLOCK_SIZE) {
+    for chunk in ciphertext.as_chunks::<AES_BLOCK_SIZE>().0 {
         let mut block = [0; AES_BLOCK_SIZE];
         block.copy_from_slice(chunk);
         let cipher_block = block;
@@ -1493,7 +1493,7 @@ fn des3_cbc_encrypt(key: &[u8], plaintext: &[u8]) -> Result<(Vec<u8>, Vec<u8>), 
 
     let mut previous = [0; DES3_BLOCK_SIZE];
     let mut out = Vec::with_capacity(padded.len());
-    for chunk in padded.chunks_exact(DES3_BLOCK_SIZE) {
+    for chunk in padded.as_chunks::<DES3_BLOCK_SIZE>().0 {
         let mut block = [0; DES3_BLOCK_SIZE];
         for i in 0..DES3_BLOCK_SIZE {
             block[i] = chunk[i] ^ previous[i];
@@ -1522,7 +1522,7 @@ fn des3_cbc_decrypt(key: &[u8], ciphertext: &[u8]) -> Result<Vec<u8>, Error> {
 
     let mut previous = [0; DES3_BLOCK_SIZE];
     let mut out = Vec::with_capacity(ciphertext.len());
-    for chunk in ciphertext.chunks_exact(DES3_BLOCK_SIZE) {
+    for chunk in ciphertext.as_chunks::<DES3_BLOCK_SIZE>().0 {
         let mut block = [0; DES3_BLOCK_SIZE];
         block.copy_from_slice(chunk);
         let cipher_block = block;
@@ -1568,7 +1568,7 @@ fn des3_random_to_key(bytes: &[u8]) -> Result<Vec<u8>, Error> {
     }
 
     let mut key = Vec::with_capacity(DES3_KEY_SIZE);
-    for seed in bytes.chunks_exact(7) {
+    for seed in bytes.as_chunks::<7>().0 {
         let mut block = des3_stretch_56_bits(seed);
         des3_fix_weak_key(&mut block);
         key.extend_from_slice(&block);

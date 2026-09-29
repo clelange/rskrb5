@@ -524,7 +524,7 @@ fn decode_hex_value(input: &str) -> Result<Vec<u8>, Box<dyn Error>> {
     }
 
     let mut out = Vec::with_capacity(compact.len() / 2);
-    for chunk in compact.chunks_exact(2) {
+    for chunk in compact.as_chunks::<2>().0 {
         let hi = hex_nibble(chunk[0])?;
         let lo = hex_nibble(chunk[1])?;
         out.push((hi << 4) | lo);

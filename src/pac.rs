@@ -1478,7 +1478,9 @@ fn utf16le_bytes_to_string(bytes: &[u8], target: &'static str) -> Result<String,
     }
 
     let units = bytes
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
         .collect::<Vec<_>>();
     String::from_utf16(&units).map_err(|error| Error::InvalidUtf16 {

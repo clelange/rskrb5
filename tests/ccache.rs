@@ -511,7 +511,9 @@ fn decode_hex(input: &str) -> Vec<u8> {
     assert_eq!(input.len() % 2, 0, "hex input has even length");
     input
         .as_bytes()
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| {
             let high = hex_value(pair[0]);
             let low = hex_value(pair[1]);
