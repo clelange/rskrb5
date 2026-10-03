@@ -347,3 +347,18 @@ fn exchange_as_req_uses_transport_boundary() {
     assert!(transport.called);
     assert_eq!(session.service, Principal::tgt_service("TEST.GOKRB5"));
 }
+
+#[test]
+fn exported_padata_constants_match_their_registrations() {
+    assert_eq!(rskrb5::client::PA_FX_COOKIE, 133);
+    assert_eq!(rskrb5::client::PA_AS_FRESHNESS, 150);
+}
+
+#[test]
+fn random_nonce_keeps_the_top_bit_clear_and_varies() {
+    let draws: Vec<u32> = (0..8)
+        .map(|_| rskrb5::client::random_nonce().expect("nonce draws"))
+        .collect();
+    assert!(draws.iter().all(|nonce| nonce & 0x8000_0000 == 0));
+    assert!(draws.windows(2).any(|pair| pair[0] != pair[1]));
+}

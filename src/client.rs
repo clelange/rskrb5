@@ -71,6 +71,12 @@ pub const PA_REQ_ENC_PA_REP: i32 = 149;
 /// PA-FX-FAST padata type used to signal FAST negotiation support.
 pub const PA_FX_FAST: i32 = 136;
 
+/// PA-FX-COOKIE padata type carrying KDC conversation state (RFC 6113 section 5.2).
+pub const PA_FX_COOKIE: i32 = 133;
+
+/// PA-AS-FRESHNESS padata type for AS freshness tokens (RFC 8070).
+pub const PA_AS_FRESHNESS: i32 = 150;
+
 /// PA-PAC-OPTIONS preauthentication type used by MS-KILE.
 pub const PA_PAC_OPTIONS: i32 = 167;
 
@@ -3376,8 +3382,9 @@ fn current_preauth_time() -> Result<(SystemTime, u32), Error> {
     ))
 }
 
-#[cfg(feature = "tokio")]
-fn random_nonce() -> Result<u32, Error> {
+/// A fresh request nonce: 31 random bits from the OS random source, so the value
+/// stays positive for peers that decode the nonce as a signed 32-bit integer.
+pub fn random_nonce() -> Result<u32, Error> {
     let mut bytes = [0; 4];
     getrandom::fill(&mut bytes)?;
     Ok(u32::from_be_bytes(bytes) & 0x7fff_ffff)
