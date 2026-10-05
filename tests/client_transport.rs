@@ -1,11 +1,12 @@
 #![cfg(feature = "tokio")]
 
+use std::env;
 use std::error::Error;
-use std::time::Duration;
+use std::time::{Duration, Instant, SystemTime};
 
 use rskrb5::client::{
-    Error as ClientError, KRB_ERR_RESPONSE_TOO_BIG, KdcEndpoint, KdcEndpointSource, KdcProtocol,
-    TokioKdcTransport,
+    AsReqOptions, Error as ClientError, KRB_ERR_RESPONSE_TOO_BIG, KdcEndpoint, KdcEndpointSource,
+    KdcProtocol, PA_ETYPE_INFO2, Principal, TokioKdcTransport, build_tgt_as_req,
 };
 use rskrb5::config::Config;
 use rskrb5::kadmin::{
@@ -13,7 +14,7 @@ use rskrb5::kadmin::{
 };
 use rskrb5::keytab::EncryptionKey;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, UdpSocket};
+use tokio::net::{TcpListener, TcpStream, UdpSocket};
 
 const MARSHALLED_KPASSWD_REQ: &str = include_str!("fixtures/kpasswd-request.hex");
 const KPASSWD_HEADER_LEN: usize = 6;
@@ -505,6 +506,273 @@ fn tokio_transport_auto_kpasswd_honors_tcp_only_udp_preference_limit() -> Result
         assert_eq!(response, b"auto-kpasswd-tcp-rep");
         Ok::<_, Box<dyn Error>>(())
     })
+}
+
+#[test]
+fn tcp_login_reuses_one_connection_for_the_preauth_retry() -> Result<(), Box<dyn Error>> {
+    runtime().block_on(async {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let addr = listener.local_addr()?;
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept client");
+            let first = read_framed(&mut socket).await.expect("read bare AS-REQ");
+            write_framed(&mut socket, &preauth_required_error())
+                .await
+                .expect("write KRB-ERROR");
+            let second = read_framed(&mut socket).await.expect("read retry AS-REQ");
+            write_framed(&mut socket, b"not-an-as-rep")
+                .await
+                .expect("write stub reply");
+            let reconnected = tokio::time::timeout(Duration::from_millis(250), listener.accept())
+                .await
+                .is_ok();
+            (first.len(), second.len(), reconnected)
+        });
+
+        // The stub second reply is not a decodable AS-REP, so the login fails.
+        // The connection count is what is under test, not the login outcome.
+        let _ = login_over_tcp(addr).await;
+
+        let (first_len, second_len, reconnected) = server.await?;
+        assert!(first_len > 0, "KDC received the bare AS-REQ");
+        assert!(
+            second_len > 0,
+            "KDC received the preauth retry on the same connection"
+        );
+        assert!(
+            !reconnected,
+            "preauth retry must not open a second connection"
+        );
+        Ok::<_, Box<dyn Error>>(())
+    })
+}
+
+#[test]
+fn tcp_login_reconnects_when_the_kdc_closes_the_stream() -> Result<(), Box<dyn Error>> {
+    runtime().block_on(async {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let addr = listener.local_addr()?;
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept client");
+            read_framed(&mut socket).await.expect("read bare AS-REQ");
+            write_framed(&mut socket, &preauth_required_error())
+                .await
+                .expect("write KRB-ERROR");
+            // RFC 4120 section 7.2.2 allows the KDC to close here.
+            drop(socket);
+
+            let (mut retry_socket, _) = listener.accept().await.expect("accept retry");
+            let retry = read_framed(&mut retry_socket)
+                .await
+                .expect("read retry AS-REQ");
+            write_framed(&mut retry_socket, b"not-an-as-rep")
+                .await
+                .expect("write stub reply");
+            retry.len()
+        });
+
+        let _ = login_over_tcp(addr).await;
+
+        let retry_len = server.await?;
+        assert!(
+            retry_len > 0,
+            "closed stream must be retried on a fresh connection"
+        );
+        Ok::<_, Box<dyn Error>>(())
+    })
+}
+
+/// Drive a password TGT login over TCP against a stub KDC.
+async fn login_over_tcp(addr: std::net::SocketAddr) -> Result<(), ClientError> {
+    let options = AsReqOptions::new(SystemTime::now(), 1);
+    TokioKdcTransport::new()
+        .with_timeout(Duration::from_secs(2))
+        .login_tgt_with_password(
+            KdcProtocol::Tcp,
+            addr,
+            Principal::user("TEST.GOKRB5", "testuser1"),
+            b"password",
+            options,
+        )
+        .await
+        .map(|_| ())
+}
+
+/// Read one RFC 4120 framed message from a stub KDC connection.
+async fn read_framed(socket: &mut tokio::net::TcpStream) -> Result<Vec<u8>, Box<dyn Error>> {
+    let mut header = [0; 4];
+    socket.read_exact(&mut header).await?;
+    let mut body = vec![0; u32::from_be_bytes(header) as usize];
+    socket.read_exact(&mut body).await?;
+    Ok(body)
+}
+
+/// Write one RFC 4120 framed message from a stub KDC connection.
+async fn write_framed(
+    socket: &mut tokio::net::TcpStream,
+    body: &[u8],
+) -> Result<(), Box<dyn Error>> {
+    socket.write_all(&(body.len() as u32).to_be_bytes()).await?;
+    socket.write_all(body).await?;
+    Ok(())
+}
+
+/// Build a KDC_ERR_PREAUTH_REQUIRED carrying an ETYPE-INFO2 hint for AES256.
+///
+/// Drives the client into the second phase of the AS exchange, which is the
+/// request that should reuse the connection.
+fn preauth_required_error() -> Vec<u8> {
+    let etype_info2 = rasn_kerberos::EtypeInfo2::from([rasn_kerberos::EtypeInfo2Entry {
+        etype: 18,
+        salt: Some(kerberos_string("TEST.GOKRB5testuser1")),
+        s2kparams: None,
+    }]);
+    let method_data = rasn_kerberos::MethodData::from([rasn_kerberos::PaData {
+        r#type: PA_ETYPE_INFO2,
+        value: rasn::der::encode(&etype_info2)
+            .expect("ETYPE-INFO2 encodes")
+            .into(),
+    }]);
+    let error = rasn_kerberos::KrbError {
+        pvno: rasn::types::Integer::from(5),
+        msg_type: rasn::types::Integer::from(30),
+        ctime: None,
+        cusec: None,
+        stime: kerberos_time(1_893_553_440),
+        susec: rasn::types::Integer::from(0),
+        error_code: 25,
+        crealm: Some(realm("TEST.GOKRB5")),
+        cname: Some(rasn_principal(&["testuser1"])),
+        realm: realm("TEST.GOKRB5"),
+        sname: rasn_principal(&["krbtgt", "TEST.GOKRB5"]),
+        e_text: None,
+        e_data: Some(
+            rasn::der::encode(&method_data)
+                .expect("METHOD-DATA encodes")
+                .into(),
+        ),
+    };
+    rasn::der::encode(&error).expect("KRB-ERROR encodes")
+}
+
+/// Probe whether a live KDC leaves the TCP stream open for a follow-up request.
+///
+/// RFC 4120 section 7.2.2 permits a KDC either to close the stream after a
+/// response or to keep it open for a follow-up, so the behaviour of any given
+/// KDC has to be measured. Sends two bare AS-REQs on one stream and reports
+/// whether the second is answered.
+///
+/// Gated on `TEST_KDC_REUSE=1`. Reads `TEST_KDC_ADDR`, `TEST_KDC_PORT`,
+/// `TEST_KDC_REALM` and `TEST_KDC_USER`. Needs no credentials: a bare AS-REQ
+/// carries no preauthentication data and is answered with KRB-ERROR.
+#[test]
+fn live_kdc_tcp_stream_reuse_probe() -> Result<(), Box<dyn Error>> {
+    if env::var("TEST_KDC_REUSE").as_deref() != Ok("1") {
+        return Ok(());
+    }
+
+    let host = env::var("TEST_KDC_ADDR").expect("TEST_KDC_ADDR");
+    let port: u16 = env::var("TEST_KDC_PORT")
+        .unwrap_or_else(|_| "88".to_owned())
+        .parse()?;
+    let realm = env::var("TEST_KDC_REALM").expect("TEST_KDC_REALM");
+    let user = env::var("TEST_KDC_USER").expect("TEST_KDC_USER");
+
+    runtime().block_on(async {
+        let connect_start = Instant::now();
+        let mut stream = TcpStream::connect((host.as_str(), port)).await?;
+        stream.set_nodelay(true)?;
+        println!("handshake: {:?}", connect_start.elapsed());
+
+        let first_start = Instant::now();
+        let first = probe_exchange(&mut stream, &realm, &user, 1).await?;
+        println!("request 1: {first} in {:?}", first_start.elapsed());
+        assert!(
+            matches!(first, ProbeOutcome::Answered { .. }),
+            "first exchange must reach the KDC: {first}"
+        );
+
+        let second_start = Instant::now();
+        let second = probe_exchange(&mut stream, &realm, &user, 2).await?;
+        println!("request 2: {second} in {:?}", second_start.elapsed());
+        match second {
+            ProbeOutcome::Answered { .. } => {
+                println!("VERDICT: KDC reuses the stream; pinning the connection is worthwhile")
+            }
+            ProbeOutcome::Closed(ref reason) => println!(
+                "VERDICT: KDC closed the stream ({reason}); pinning gains nothing against this KDC"
+            ),
+        }
+        Ok::<_, Box<dyn Error>>(())
+    })
+}
+
+/// Result of one framed request/response attempt against a live KDC.
+enum ProbeOutcome {
+    /// KDC answered. Carries the response length and KRB-ERROR code when present.
+    Answered { len: usize, error_code: Option<i32> },
+    /// KDC did not answer and the stream is unusable.
+    Closed(String),
+}
+
+impl std::fmt::Display for ProbeOutcome {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Answered { len, error_code } => {
+                write!(
+                    formatter,
+                    "answered, {len} bytes, error code {error_code:?}"
+                )
+            }
+            Self::Closed(reason) => write!(formatter, "closed: {reason}"),
+        }
+    }
+}
+
+/// Send one bare AS-REQ on an existing stream and classify the outcome.
+async fn probe_exchange(
+    stream: &mut TcpStream,
+    realm: &str,
+    user: &str,
+    nonce: u32,
+) -> Result<ProbeOutcome, Box<dyn Error>> {
+    let client = Principal::user(realm, user);
+    let request = build_tgt_as_req(client, AsReqOptions::new(SystemTime::now(), nonce))?;
+
+    let mut framed = Vec::with_capacity(4 + request.der.len());
+    framed.extend_from_slice(&(request.der.len() as u32).to_be_bytes());
+    framed.extend_from_slice(&request.der);
+    if let Err(error) = stream.write_all(&framed).await {
+        return Ok(ProbeOutcome::Closed(format!("write failed: {error}")));
+    }
+
+    let mut header = [0; 4];
+    if let Err(error) = stream.read_exact(&mut header).await {
+        return Ok(ProbeOutcome::Closed(format!(
+            "no response length: {} ({error})",
+            error.kind()
+        )));
+    }
+
+    let mut response = vec![0; u32::from_be_bytes(header) as usize];
+    if let Err(error) = stream.read_exact(&mut response).await {
+        return Ok(ProbeOutcome::Closed(format!(
+            "truncated response: {} ({error})",
+            error.kind()
+        )));
+    }
+
+    Ok(ProbeOutcome::Answered {
+        len: response.len(),
+        error_code: krb_error_code(&response),
+    })
+}
+
+/// Read the `error-code` field out of a DER-encoded KRB-ERROR, if the response is one.
+fn krb_error_code(response: &[u8]) -> Option<i32> {
+    rasn::der::decode::<rasn_kerberos::KrbError>(response)
+        .ok()
+        .map(|error| error.error_code)
 }
 
 fn config_with_kdcs<I>(kdcs: I) -> Config
