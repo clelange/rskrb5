@@ -36,6 +36,9 @@ const MAX_UDP_DATAGRAM: usize = 65_507;
 const DEFAULT_MAX_REFERRALS: usize = 5;
 #[cfg(feature = "tokio")]
 const RSKRB5_DNS_SERVER_ENV: &str = "RSKRB5_DNS_SERVER";
+/// Byte length of the RFC 4120 section 7.2.2 record mark prefixing each TCP message.
+#[cfg(feature = "tokio")]
+const TCP_RECORD_MARK_LEN: usize = 4;
 
 /// KDC wire protocol for Tokio transport operations.
 #[cfg(feature = "tokio")]
@@ -181,35 +184,130 @@ impl TokioKdcTransport {
     where
         A: ToSocketAddrs,
     {
-        let request_len = request
+        self.send_tcp_pinned(addr, request)
+            .await
+            .map(|(response, _)| response)
+    }
+
+    /// Perform a TCP exchange and keep the stream open for a follow-up request.
+    ///
+    /// RFC 4120 section 7.2.2 permits the KDC to leave the stream open when it
+    /// expects a follow-up, which lets a two-phase AS exchange avoid a second
+    /// connect.
+    async fn send_tcp_pinned<A>(
+        &self,
+        addr: A,
+        request: &[u8],
+    ) -> Result<(Vec<u8>, TcpStream), Error>
+    where
+        A: ToSocketAddrs,
+    {
+        self.with_transport_timeout(async {
+            let mut stream = Self::connect_tcp(addr).await?;
+            let response = self.exchange_tcp(&mut stream, request).await?;
+            Ok((response, stream))
+        })
+        .await
+    }
+
+    /// Open a KDC stream with Nagle disabled.
+    ///
+    /// Applies no timeout of its own; callers wrap this in
+    /// [`Self::with_transport_timeout`] together with the exchanges they intend
+    /// to perform, so one logical request keeps one timeout budget.
+    async fn connect_tcp<A>(addr: A) -> Result<TcpStream, Error>
+    where
+        A: ToSocketAddrs,
+    {
+        let stream = TcpStream::connect(addr).await?;
+        stream.set_nodelay(true)?;
+        Ok(stream)
+    }
+
+    /// Perform one RFC 4120 framed request/response exchange on an open stream.
+    ///
+    /// The record mark and the request body are written as a single segment:
+    /// splitting them leaves the body waiting on the peer's delayed-ACK timer
+    /// before Nagle will release it. Applies no timeout of its own; see
+    /// [`Self::connect_tcp`].
+    async fn exchange_tcp(&self, stream: &mut TcpStream, request: &[u8]) -> Result<Vec<u8>, Error> {
+        let request_len: u32 = request
             .len()
             .try_into()
             .map_err(|_| Error::TcpRequestTooLarge {
                 actual: request.len(),
             })?;
+        let mut framed = Vec::with_capacity(TCP_RECORD_MARK_LEN + request.len());
+        framed.extend_from_slice(&request_len.to_be_bytes());
+        framed.extend_from_slice(request);
+        stream.write_all(&framed).await?;
 
-        self.with_transport_timeout(async {
-            let mut stream = TcpStream::connect(addr).await?;
-            stream.write_all(&u32::to_be_bytes(request_len)).await?;
-            stream.write_all(request).await?;
+        let mut header = [0; TCP_RECORD_MARK_LEN];
+        stream.read_exact(&mut header).await?;
+        let response_len = u32::from_be_bytes(header);
+        let response_len_usize = response_len as usize;
+        if response_len_usize > self.tcp_response_limit {
+            return Err(Error::TcpResponseTooLarge {
+                actual: response_len,
+                limit: self.tcp_response_limit,
+            });
+        }
 
-            let mut header = [0; 4];
-            stream.read_exact(&mut header).await?;
-            let response_len = u32::from_be_bytes(header);
-            let response_len_usize = response_len as usize;
-            if response_len_usize > self.tcp_response_limit {
-                return Err(Error::TcpResponseTooLarge {
-                    actual: response_len,
-                    limit: self.tcp_response_limit,
-                });
-            }
+        let mut response = vec![0; response_len_usize];
+        stream.read_exact(&mut response).await?;
+        non_empty_kdc_response(response)
+    }
 
-            let mut response = vec![0; response_len_usize];
-            stream.read_exact(&mut response).await?;
-            Ok(response)
-        })
-        .await
-        .and_then(non_empty_kdc_response)
+    /// Send an encoded KDC request and keep a TCP stream open for a follow-up.
+    ///
+    /// Returns no stream for [`KdcProtocol::Udp`], which has none, or for
+    /// [`KdcProtocol::Auto`], which races the two protocols and may answer over
+    /// either; those follow the unpinned path unchanged.
+    async fn send_pinned<A>(
+        &self,
+        protocol: KdcProtocol,
+        addr: A,
+        request: &[u8],
+    ) -> Result<(Vec<u8>, Option<TcpStream>), Error>
+    where
+        A: ToSocketAddrs + Clone,
+    {
+        match protocol {
+            KdcProtocol::Tcp => self
+                .send_tcp_pinned(addr, request)
+                .await
+                .map(|(response, stream)| (response, Some(stream))),
+            KdcProtocol::Udp | KdcProtocol::Auto => self
+                .send(protocol, addr, request)
+                .await
+                .map(|response| (response, None)),
+        }
+    }
+
+    /// Send a follow-up request on a stream pinned by an earlier exchange.
+    ///
+    /// Returns `Ok(None)` when there is no pinned stream, or when the KDC closed
+    /// the one we had: RFC 4120 section 7.2.2 permits the KDC to close the
+    /// stream at any time after a response and requires that closure not be
+    /// treated as fatal, so the caller retries on a fresh connection. Protocol
+    /// errors would recur on a new connection, so they propagate instead of
+    /// spending another round trip.
+    async fn send_follow_up(
+        &self,
+        pinned: Option<&mut TcpStream>,
+        request: &[u8],
+    ) -> Result<Option<Vec<u8>>, Error> {
+        let Some(stream) = pinned else {
+            return Ok(None);
+        };
+        match self
+            .with_transport_timeout(self.exchange_tcp(stream, request))
+            .await
+        {
+            Ok(response) => Ok(Some(response)),
+            Err(Error::Io(_)) => Ok(None),
+            Err(error) => Err(error),
+        }
     }
 
     /// Send an encoded KDC request over the selected protocol.
@@ -314,10 +412,30 @@ impl TokioKdcTransport {
         realm: &str,
         request: &[u8],
     ) -> Result<Vec<u8>, Error> {
+        self.send_to_realm_pinned(config, protocol, realm, request)
+            .await
+            .map(|(response, _)| response)
+    }
+
+    /// Send to a realm's KDC and keep a TCP stream open for a follow-up request.
+    ///
+    /// Discovery runs once here rather than once per request, so a two-phase AS
+    /// exchange no longer repeats the DNS SRV lookup.
+    async fn send_to_realm_pinned(
+        &self,
+        config: &Config,
+        protocol: KdcProtocol,
+        realm: &str,
+        request: &[u8],
+    ) -> Result<(Vec<u8>, Option<TcpStream>), Error> {
         if protocol == KdcProtocol::Auto {
-            return self.send_to_realm_auto(config, realm, request).await;
+            return self
+                .send_to_realm_auto(config, realm, request)
+                .await
+                .map(|response| (response, None));
         }
-        self.send_to_realm_explicit(config, protocol, realm, request)
+        let endpoints = self.discover_kdcs(config, realm, protocol).await?;
+        self.send_to_endpoints_pinned(realm, protocol, endpoints, request)
             .await
     }
 
@@ -778,8 +896,8 @@ impl TokioKdcTransport {
     {
         let initial_request =
             password_initial_as_req(client.clone(), service.clone(), password, options.clone())?;
-        let initial_response = self
-            .send(protocol, addr.clone(), &initial_request.der)
+        let (initial_response, mut pinned) = self
+            .send_pinned(protocol, addr.clone(), &initial_request.der)
             .await?;
         if let Some(session) =
             password_initial_as_rep_session(&initial_request, &initial_response, &client, password)?
@@ -788,7 +906,10 @@ impl TokioKdcTransport {
         }
         let (request, reply_key) =
             password_preauth_request(client, service, password, options, &initial_response)?;
-        let response = self.send(protocol, addr, &request.der).await?;
+        let response = match self.send_follow_up(pinned.as_mut(), &request.der).await? {
+            Some(response) => response,
+            None => self.send(protocol, addr, &request.der).await?,
+        };
         process_as_rep(&request, &response, &reply_key)
     }
 
@@ -820,8 +941,8 @@ impl TokioKdcTransport {
     ) -> Result<AsRepSession, Error> {
         let initial_request =
             password_initial_as_req(client.clone(), service.clone(), password, options.clone())?;
-        let initial_response = self
-            .send_to_realm(config, protocol, &client.realm, &initial_request.der)
+        let (initial_response, mut pinned) = self
+            .send_to_realm_pinned(config, protocol, &client.realm, &initial_request.der)
             .await?;
         if let Some(session) =
             password_initial_as_rep_session(&initial_request, &initial_response, &client, password)?
@@ -830,9 +951,13 @@ impl TokioKdcTransport {
         }
         let (request, reply_key) =
             password_preauth_request(client, service, password, options, &initial_response)?;
-        let response = self
-            .send_to_realm(config, protocol, &request.client.realm, &request.der)
-            .await?;
+        let response = match self.send_follow_up(pinned.as_mut(), &request.der).await? {
+            Some(response) => response,
+            None => {
+                self.send_to_realm(config, protocol, &request.client.realm, &request.der)
+                    .await?
+            }
+        };
         process_as_rep(&request, &response, &reply_key)
     }
 
@@ -868,8 +993,8 @@ impl TokioKdcTransport {
     {
         let initial_request =
             keytab_initial_as_req(client.clone(), service.clone(), keytab, options.clone())?;
-        let initial_response = self
-            .send(protocol, addr.clone(), &initial_request.der)
+        let (initial_response, mut pinned) = self
+            .send_pinned(protocol, addr.clone(), &initial_request.der)
             .await?;
         if let Some(session) =
             keytab_initial_as_rep_session(&initial_request, &initial_response, &client, keytab)?
@@ -878,7 +1003,10 @@ impl TokioKdcTransport {
         }
         let (request, reply_key) =
             keytab_preauth_request(client, service, keytab, options, &initial_response)?;
-        let response = self.send(protocol, addr, &request.der).await?;
+        let response = match self.send_follow_up(pinned.as_mut(), &request.der).await? {
+            Some(response) => response,
+            None => self.send(protocol, addr, &request.der).await?,
+        };
         process_as_rep(&request, &response, &reply_key)
     }
 
@@ -908,8 +1036,8 @@ impl TokioKdcTransport {
     ) -> Result<AsRepSession, Error> {
         let initial_request =
             keytab_initial_as_req(client.clone(), service.clone(), keytab, options.clone())?;
-        let initial_response = self
-            .send_to_realm(config, protocol, &client.realm, &initial_request.der)
+        let (initial_response, mut pinned) = self
+            .send_to_realm_pinned(config, protocol, &client.realm, &initial_request.der)
             .await?;
         if let Some(session) =
             keytab_initial_as_rep_session(&initial_request, &initial_response, &client, keytab)?
@@ -918,9 +1046,13 @@ impl TokioKdcTransport {
         }
         let (request, reply_key) =
             keytab_preauth_request(client, service, keytab, options, &initial_response)?;
-        let response = self
-            .send_to_realm(config, protocol, &request.client.realm, &request.der)
-            .await?;
+        let response = match self.send_follow_up(pinned.as_mut(), &request.der).await? {
+            Some(response) => response,
+            None => {
+                self.send_to_realm(config, protocol, &request.client.realm, &request.der)
+                    .await?
+            }
+        };
         process_as_rep(&request, &response, &reply_key)
     }
 
@@ -1040,6 +1172,22 @@ impl TokioKdcTransport {
         endpoints: Vec<KdcEndpoint>,
         request: &[u8],
     ) -> Result<Vec<u8>, Error> {
+        self.send_to_endpoints_pinned(realm, protocol, endpoints, request)
+            .await
+            .map(|(response, _)| response)
+    }
+
+    /// Try each endpoint in turn, keeping the winning TCP stream open.
+    ///
+    /// Failover still triggers on a failed exchange rather than on a failed
+    /// connect, so the endpoint that answers is the one that gets pinned.
+    async fn send_to_endpoints_pinned(
+        &self,
+        realm: &str,
+        protocol: KdcProtocol,
+        endpoints: Vec<KdcEndpoint>,
+        request: &[u8],
+    ) -> Result<(Vec<u8>, Option<TcpStream>), Error> {
         if endpoints.is_empty() {
             return Err(Error::NoKdcEndpoints {
                 realm: realm.to_owned(),
@@ -1050,14 +1198,14 @@ impl TokioKdcTransport {
         let mut failures = Vec::new();
         for endpoint in endpoints {
             match self
-                .send(
+                .send_pinned(
                     endpoint.protocol,
                     (endpoint.host.as_str(), endpoint.port),
                     request,
                 )
                 .await
             {
-                Ok(response) => return Ok(response),
+                Ok(outcome) => return Ok(outcome),
                 Err(error) => failures.push(format!("{}: {error}", endpoint.authority())),
             }
         }
