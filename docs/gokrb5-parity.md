@@ -30,6 +30,16 @@ required for `gokrb5/v8` parity.
 | Active Directory integration | blocked-on-lab | Deferred for 0.2.0 until reachable USER/RESOURCE AD endpoints are available; keep the dry-run evidence green and do not claim AD parity. |
 | Out-of-scope non-gokrb5 platform features | intentionally-out-of-scope | Keep typed unsupported-store errors and do not block parity on these. |
 
+Intentional divergences from the gokrb5 baseline are recorded as they land:
+
+- **AP-REQ client identity (hardening).** `ServiceValidator::validate_ap_req`
+  compares the authenticator's client realm with the ticket's `crealm` in
+  addition to the ordered name components, per RFC 4120 section 3.2.3, and
+  returns the ticket-derived client identity in `ValidatedApReq.client`.
+  gokrb5 v8.4.4 compares principal components only
+  (`types.PrincipalName.Equal`) and exposes authenticator-derived credentials;
+  this divergence is deliberate hardening and is revisited if upstream changes.
+
 ## Parity Gates
 
 These gates are the release and parity proof points for gokrb5 behavior.

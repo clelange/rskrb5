@@ -469,6 +469,66 @@ fn rejects_client_principal_mismatch() {
 }
 
 #[test]
+fn rejects_authenticator_client_realm_mismatch() {
+    let keytab = http_keytab();
+    let mut validator = ServiceValidator::new(&keytab).with_now(timestamp(1_893_553_447));
+
+    // RFC 4120 section 3.2.3: the ticket's client realm must match the
+    // authenticator's. The components match here; only the realm differs.
+    let mut ap_req = valid_ap_req_struct();
+    reencrypt_authenticator(&mut ap_req, "EVIL.VERIFIER.REALM", 1);
+    let ap_req = rasn::der::encode(&ap_req).expect("mutated AP-REQ encodes");
+
+    match validator
+        .validate_ap_req(&ap_req)
+        .expect_err("realm mismatch rejected")
+    {
+        Error::ClientPrincipalMismatch {
+            ticket,
+            authenticator,
+        } => {
+            assert_eq!(ticket, "testuser1@TEST.GOKRB5");
+            assert_eq!(authenticator, "testuser1@EVIL.VERIFIER.REALM");
+        }
+        error => panic!("expected ClientPrincipalMismatch, got {error:?}"),
+    }
+}
+
+#[test]
+fn returns_the_ticket_client_identity() {
+    let keytab = http_keytab();
+    let mut validator = ServiceValidator::new(&keytab).with_now(timestamp(1_893_553_447));
+
+    // RFC 4120 section 6.2: the name-type is advisory, so a differing
+    // authenticator name-type is not a mismatch - but the accepted identity
+    // must be the KDC-encrypted ticket's, not the authenticator's.
+    let mut ap_req = valid_ap_req_struct();
+    reencrypt_authenticator(&mut ap_req, "TEST.GOKRB5", 5);
+    let ap_req = rasn::der::encode(&ap_req).expect("variant AP-REQ encodes");
+
+    let validated = validator
+        .validate_ap_req(&ap_req)
+        .expect("name-type difference is not a mismatch");
+
+    let (service_key, _) = keytab
+        .find_key(&["HTTP", "host.test.gokrb5"], "TEST.GOKRB5", 1, 18)
+        .expect("HTTP service key exists");
+    let ticket =
+        rskrb5::ticket::decrypt_ticket_enc_part(&valid_ap_req_struct().ticket, service_key)
+            .expect("ticket decrypts");
+
+    assert_ne!(validated.client.name_type, 5);
+    assert_eq!(
+        validated.client,
+        Principal {
+            realm: "TEST.GOKRB5".to_owned(),
+            name_type: ticket.cname.r#type,
+            components: vec!["testuser1".to_owned()],
+        }
+    );
+}
+
+#[test]
 fn rejects_invalid_future_and_expired_tickets() {
     let keytab = http_keytab();
     let mut invalid_validator = ServiceValidator::new(&keytab).with_now(timestamp(1_893_553_447));
@@ -685,6 +745,45 @@ fn kerberos_time(seconds: u64) -> rasn_kerberos::KerberosTime {
 
 fn zero_kerberos_flags() -> rasn_kerberos::KerberosFlags {
     rasn_kerberos::KerberosFlags::repeat(false, 32)
+}
+
+/// Decode the fixture AP-REQ so a test can vary one cleartext field.
+fn valid_ap_req_struct() -> rasn_kerberos::ApReq {
+    rasn::der::decode(&decode_hex(VALID_AP_REQ)).expect("fixture AP-REQ decodes")
+}
+
+/// Re-encrypt the fixture authenticator under the ticket session key with a
+/// different client realm and name-type.
+fn reencrypt_authenticator(ap_req: &mut rasn_kerberos::ApReq, crealm: &str, name_type: i32) {
+    let session_key = EncryptionKey {
+        etype: 18,
+        value: decode_hex(VALID_SESSION_KEY),
+    };
+    let authenticator = rasn_kerberos::Authenticator {
+        authenticator_vno: 5.into(),
+        crealm: realm(crealm),
+        cname: rasn_kerberos::PrincipalName {
+            r#type: name_type,
+            string: vec![kerberos_string("testuser1")],
+        },
+        cksum: None,
+        cusec: 123_456.into(),
+        ctime: kerberos_time(1_893_553_447),
+        subkey: None,
+        seq_number: Some(42),
+        authorization_data: None,
+    };
+    ap_req.authenticator = rasn_kerberos::EncryptedData {
+        etype: session_key.etype,
+        kvno: None,
+        cipher: encrypt_message(
+            &session_key,
+            &rasn::der::encode(&authenticator).expect("Authenticator encodes"),
+            AP_REQ_AUTHENTICATOR_USAGE_FOR_TEST,
+            PAC_AUTHENTICATOR_CONFOUNDER,
+        )
+        .into(),
+    };
 }
 
 fn valid_ap_req() -> ValidatedApReq {

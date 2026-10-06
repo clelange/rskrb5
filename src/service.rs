@@ -59,7 +59,7 @@ impl HostAddress {
 /// Successful AP-REQ validation result.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ValidatedApReq {
-    /// Client identity from the authenticator.
+    /// Client identity from the KDC-authenticated ticket.
     pub client: Principal,
     /// Service identity from the ticket.
     pub service: Principal,
@@ -418,10 +418,19 @@ impl<'a> ServiceValidator<'a> {
         let ticket_client = principal_from_parts(&enc_ticket.crealm, &enc_ticket.cname)?;
         let authenticator_client =
             principal_from_parts(&authenticator.crealm, &authenticator.cname)?;
-        if authenticator_client.components != ticket_client.components {
+        // RFC 4120 section 3.2.3: compare the client name and realm of the
+        // ticket with the same fields in the authenticator and reject
+        // KRB_AP_ERR_BADMATCH on any mismatch.
+        if authenticator_client.realm != ticket_client.realm
+            || authenticator_client.components != ticket_client.components
+        {
             return Err(Error::ClientPrincipalMismatch {
-                ticket: ticket_client.name(),
-                authenticator: authenticator_client.name(),
+                ticket: format!("{}@{}", ticket_client.name(), ticket_client.realm),
+                authenticator: format!(
+                    "{}@{}",
+                    authenticator_client.name(),
+                    authenticator_client.realm
+                ),
             });
         }
 
@@ -446,7 +455,7 @@ impl<'a> ServiceValidator<'a> {
         self.record_replay(replay_key, now)?;
 
         Ok(ValidatedApReq {
-            client: authenticator_client,
+            client: ticket_client,
             service: ticket_service,
             session_key,
             subkey: authenticator
@@ -693,9 +702,9 @@ pub enum Error {
     /// Ticket client and authenticator client do not match.
     #[error("authenticator client {authenticator} does not match ticket client {ticket}")]
     ClientPrincipalMismatch {
-        /// Ticket client principal components.
+        /// Ticket client principal (`name@realm`).
         ticket: String,
-        /// Authenticator client principal components.
+        /// Authenticator client principal (`name@realm`).
         authenticator: String,
     },
 
