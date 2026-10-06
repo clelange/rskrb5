@@ -526,6 +526,8 @@ pub struct ChangePasswordResult {
     pub code: u16,
     /// Result text from the remaining bytes.
     pub text: String,
+    /// Result text as received, before lossy UTF-8 conversion.
+    pub text_raw: Vec<u8>,
 }
 
 impl ChangePasswordResult {
@@ -536,9 +538,11 @@ impl ChangePasswordResult {
                 actual: bytes.len(),
             });
         }
+        let text_raw = bytes[2..].to_vec();
         Ok(Self {
             code: read_u16(bytes, 0),
-            text: String::from_utf8_lossy(&bytes[2..]).into_owned(),
+            text: String::from_utf8_lossy(&text_raw).into_owned(),
+            text_raw,
         })
     }
 
@@ -555,6 +559,7 @@ impl ChangePasswordResult {
             Err(Error::PasswordChangeFailed {
                 code: self.code,
                 text: self.text.clone(),
+                text_raw: self.text_raw.clone(),
             })
         }
     }
@@ -659,6 +664,8 @@ pub enum Error {
         code: u16,
         /// kpasswd result text.
         text: String,
+        /// kpasswd result text as received, before lossy UTF-8 conversion.
+        text_raw: Vec<u8>,
     },
     /// DER decoding failed for a framed Kerberos message.
     #[error("{target} decode failed: {message}")]

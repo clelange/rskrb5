@@ -366,7 +366,7 @@ fn tokio_transport_exchanges_configured_kpasswd_failure_result() -> Result<(), B
         task.await?;
         assert!(matches!(
             error,
-            ClientError::Kadmin(KadminError::PasswordChangeFailed { code, text })
+            ClientError::Kadmin(KadminError::PasswordChangeFailed { code, text, text_raw: _ })
                 if code == KPASSWD_AUTHERROR && text == "authentication failed"
         ));
         Ok::<_, Box<dyn Error>>(())

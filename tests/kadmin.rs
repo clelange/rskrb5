@@ -610,6 +610,7 @@ fn kpasswd_reply_decrypt_result_returns_parsed_error_result() {
     let expected = ChangePasswordResult {
         code: u16::from_be_bytes([b'k', b'r']),
         text: "b5data".to_owned(),
+        text_raw: b"b5data".to_vec(),
     };
 
     assert!(reply.result.is_some());
@@ -677,6 +678,7 @@ fn kpasswd_reply_parses_krb_error_response_data() {
         Some(ChangePasswordResult {
             code: u16::from_be_bytes([b'k', b'r']),
             text: "b5data".to_owned(),
+            text_raw: b"b5data".to_vec(),
         })
     );
 }
@@ -697,6 +699,7 @@ fn kpasswd_reply_decrypt_result_returns_krb_error_result() {
         ChangePasswordResult {
             code: u16::from_be_bytes([b'k', b'r']),
             text: "b5data".to_owned(),
+            text_raw: b"b5data".to_vec(),
         }
     );
 }
@@ -715,12 +718,13 @@ fn kpasswd_result_success_helper_reports_failure_code() {
     let result = ChangePasswordResult {
         code: KPASSWD_AUTHERROR,
         text: "authentication failed".to_owned(),
+        text_raw: b"authentication failed".to_vec(),
     };
 
     assert!(!result.is_success());
     assert!(matches!(
         result.ensure_success(),
-        Err(KadminError::PasswordChangeFailed { code, text })
+        Err(KadminError::PasswordChangeFailed { code, text, text_raw: _ })
             if code == KPASSWD_AUTHERROR && text == "authentication failed"
     ));
 }
@@ -840,5 +844,27 @@ fn rasn_encryption_key(key: &EncryptionKey) -> rasn_kerberos::EncryptionKey {
     rasn_kerberos::EncryptionKey {
         r#type: key.etype,
         value: key.value.clone().into(),
+    }
+}
+
+#[test]
+fn non_utf8_result_text_is_kept_verbatim_on_both_reply_paths() {
+    // Result code 4 (soft error) followed by a Latin-1 body, which is not UTF-8.
+    let reply = b"\x00\x04Passwort zu \xe4hnlich";
+    let raw = &reply[2..];
+
+    let result = rskrb5::kadmin::ChangePasswordResult::parse(reply).expect("result parses");
+    assert_eq!(result.text_raw, raw);
+    assert!(
+        result.text.contains('\u{fffd}'),
+        "the display text stays lossy"
+    );
+
+    match result.ensure_success() {
+        Err(rskrb5::kadmin::Error::PasswordChangeFailed { code, text_raw, .. }) => {
+            assert_eq!(code, 4);
+            assert_eq!(text_raw, raw);
+        }
+        other => panic!("result code 4 is a failure: {other:?}"),
     }
 }
