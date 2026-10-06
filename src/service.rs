@@ -437,9 +437,24 @@ impl<'a> ServiceValidator<'a> {
             });
         }
 
+        // RFC 4120 section 3.2.3 keys the replay cache on the server name, the
+        // client name, the time and the microseconds. Section 6.2 makes the
+        // advisory name-type "not significant when checking for equivalence",
+        // and the ticket's outer sname is cleartext a peer can rewrite, so the
+        // identity is built without it; the service side is the key identity
+        // that actually accepted the ticket (the configured override when one
+        // is set, otherwise the ticket's own components).
         let replay_key = ReplayKey {
-            service: ticket_service.clone(),
-            client: authenticator_client.clone(),
+            service: Principal {
+                realm: ticket_service.realm.clone(),
+                name_type: 0,
+                components: keytab_components.clone(),
+            },
+            client: Principal {
+                realm: authenticator_client.realm.clone(),
+                name_type: 0,
+                components: authenticator_client.components.clone(),
+            },
             ctime_seconds: authenticator.ctime.0.timestamp(),
             cusec,
         };

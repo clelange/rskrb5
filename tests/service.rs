@@ -369,6 +369,60 @@ fn detects_ap_req_replay() {
 }
 
 #[test]
+fn replay_identity_ignores_the_ticket_name_type() {
+    let keytab = http_keytab();
+    let mut validator = ServiceValidator::new(&keytab).with_now(timestamp(1_893_553_447));
+    validator
+        .validate_ap_req(&decode_hex(VALID_AP_REQ))
+        .expect("first AP-REQ validates");
+    assert_eq!(validator.replay_cache_mut().len(), 1);
+
+    // RFC 4120 section 6.2: the name-type is advisory and "not significant
+    // when checking for equivalence". The ticket's outer sname is cleartext,
+    // so a peer can flip its name-type without touching any ciphertext; the
+    // mutated request is the same presentation and must be rejected.
+    let mut mutated = valid_ap_req_struct();
+    mutated.ticket.sname.r#type = 0;
+    let mutated = rasn::der::encode(&mutated).expect("mutated AP-REQ encodes");
+
+    assert!(matches!(
+        validator
+            .validate_ap_req(&mutated)
+            .expect_err("name-type-only mutation is a replay"),
+        Error::Replay
+    ));
+    assert_eq!(validator.replay_cache_mut().len(), 1);
+}
+
+#[test]
+fn replay_identity_follows_the_accepted_key_identity() {
+    let keytab = http_keytab();
+    let mut validator = ServiceValidator::new(&keytab)
+        .with_now(timestamp(1_893_553_447))
+        .with_keytab_principal(["HTTP", "host.test.gokrb5"]);
+
+    // The override selects the key; the ticket's own sname is then advisory
+    // for replay purposes, so an alias for the same service key is the same
+    // server principal.
+    let mut alias = valid_ap_req_struct();
+    alias.ticket.sname.string = vec![
+        kerberos_string("HTTP"),
+        kerberos_string("alias.test.gokrb5"),
+    ];
+    let alias = rasn::der::encode(&alias).expect("alias AP-REQ encodes");
+
+    validator
+        .validate_ap_req(&alias)
+        .expect("alias sname validates under the override");
+    assert!(matches!(
+        validator
+            .validate_ap_req(&decode_hex(VALID_AP_REQ))
+            .expect_err("same accepted key is the same server principal"),
+        Error::Replay
+    ));
+}
+
+#[test]
 fn clears_old_replay_cache_entries() {
     let keytab = http_keytab();
     let now = timestamp(1_893_553_447);
@@ -685,6 +739,11 @@ fn kerberos_time(seconds: u64) -> rasn_kerberos::KerberosTime {
 
 fn zero_kerberos_flags() -> rasn_kerberos::KerberosFlags {
     rasn_kerberos::KerberosFlags::repeat(false, 32)
+}
+
+/// Decode the fixture AP-REQ so a test can vary one cleartext field.
+fn valid_ap_req_struct() -> rasn_kerberos::ApReq {
+    rasn::der::decode(&decode_hex(VALID_AP_REQ)).expect("fixture AP-REQ decodes")
 }
 
 fn valid_ap_req() -> ValidatedApReq {
