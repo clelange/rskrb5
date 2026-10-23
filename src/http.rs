@@ -753,18 +753,26 @@ impl NegotiateLayer<'static> {
     }
 
     /// Create a Negotiate layer from `config.libdefaults.default_keytab_name`.
+    ///
+    /// The configured `[libdefaults] clockskew` becomes the acceptance window;
+    /// [`Self::new`] keeps the gokrb5-compatible 300 s default.
     pub fn from_default_keytab_name(config: &Config) -> Result<Self> {
-        Self::from_keytab_name(&config.libdefaults.default_keytab_name)
+        Ok(
+            Self::from_keytab_name(&config.libdefaults.default_keytab_name)?
+                .with_max_clock_skew(config.libdefaults.clockskew),
+        )
     }
 
     /// Create a Negotiate layer from the default keytab.
     ///
     /// `KRB5_KTNAME` takes precedence when set. Otherwise this falls back to
-    /// `config.libdefaults.default_keytab_name`.
+    /// `config.libdefaults.default_keytab_name`. The configured
+    /// `[libdefaults] clockskew` becomes the acceptance window.
     pub fn from_default_keytab(config: &Config) -> Result<Self> {
-        Self::from_keytab_name(crate::keytab::default_keytab_name(
+        Ok(Self::from_keytab_name(crate::keytab::default_keytab_name(
             &config.libdefaults.default_keytab_name,
-        )?)
+        )?)?
+        .with_max_clock_skew(config.libdefaults.clockskew))
     }
 
     /// Create a Negotiate layer by loading the file keytab named by `KRB5_KTNAME`.

@@ -695,6 +695,29 @@ fn tower_layer_loads_config_default_keytab_name() {
 
 #[cfg(feature = "tower")]
 #[test]
+fn tower_layer_config_clockskew_rejects_stale_authenticator() {
+    let path = temp_file("http-config-clockskew");
+    let name = format!("FILE:{}", path.display());
+    keytab().save(&path).expect("keytab saves");
+    let config = config_with_default_keytab_name_and_clockskew(&name, "1s");
+
+    let layer = krb_http::NegotiateLayer::from_default_keytab_name(&config)
+        .expect("layer loads default keytab name")
+        .with_now(timestamp(1_893_553_447 + 2))
+        .with_ap_rep(false);
+    let _ = std::fs::remove_file(&path);
+
+    let mut service = layer.layer(AssertAcceptedService);
+    let mut request = Request::new(());
+    krb_http::set_authorization_header(&mut request, &valid_authorization_header())
+        .expect("authorization header sets");
+
+    let response = run_ready(service.call(request)).expect("reject response returned");
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[cfg(feature = "tower")]
+#[test]
 fn tower_layer_loads_default_keytab_when_env_is_absent() {
     let _env = common::EnvVarGuard::remove_krb5_ktname();
 
@@ -904,6 +927,18 @@ fn config_with_default_keytab_name(keytab_name: &str) -> Config {
         r#"
 [libdefaults]
  default_keytab_name = {keytab_name}
+"#,
+    );
+    Config::parse(&input).expect("config parses")
+}
+
+#[cfg(feature = "tower")]
+fn config_with_default_keytab_name_and_clockskew(keytab_name: &str, clockskew: &str) -> Config {
+    let input = format!(
+        r#"
+[libdefaults]
+ default_keytab_name = {keytab_name}
+ clockskew = {clockskew}
 "#,
     );
     Config::parse(&input).expect("config parses")

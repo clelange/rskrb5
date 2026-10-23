@@ -512,6 +512,62 @@ fn rejects_large_authenticator_clock_skew() {
 }
 
 #[test]
+fn config_clockskew_bounds_authenticator_freshness() {
+    let keytab = http_keytab();
+    let path = temp_service_keytab_file("config-clockskew");
+    let name = format!("FILE:{}", path.display());
+    keytab.save_name(&name).expect("keytab saves by name");
+    let config = config_with_default_keytab_name_and_clockskew(&name, "1s");
+
+    let mut named = ServiceValidator::from_default_keytab_name(&config)
+        .expect("validator loads the configured keytab")
+        .with_now(timestamp(1_893_553_447 + 2));
+    assert!(matches!(
+        named
+            .validate_ap_req(&decode_hex(VALID_AP_REQ))
+            .expect_err("declared 1 s window rejects a 2 s stale authenticator"),
+        Error::ClockSkew { .. }
+    ));
+
+    let mut fresh = ServiceValidator::from_default_keytab_name(&config)
+        .expect("validator loads the configured keytab")
+        .with_now(timestamp(1_893_553_447));
+    fresh
+        .validate_ap_req(&decode_hex(VALID_AP_REQ))
+        .expect("fresh authenticator stays accepted");
+
+    let _env = common::EnvVarGuard::remove_krb5_ktname();
+    let mut default = ServiceValidator::from_default_keytab(&config)
+        .expect("validator loads the default keytab")
+        .with_now(timestamp(1_893_553_447 + 2));
+    assert!(matches!(
+        default
+            .validate_ap_req(&decode_hex(VALID_AP_REQ))
+            .expect_err("default-keytab constructor uses the declared window"),
+        Error::ClockSkew { .. }
+    ));
+
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn service_validator_new_keeps_default_skew() {
+    let keytab = http_keytab();
+    let mut tolerant = ServiceValidator::new(&keytab).with_now(timestamp(1_893_553_447 + 2));
+    tolerant
+        .validate_ap_req(&decode_hex(VALID_AP_REQ))
+        .expect("the gokrb5-compatible default accepts a 2 s skew");
+
+    let mut strict = ServiceValidator::new(&keytab).with_now(timestamp(1_893_553_447 + 301));
+    assert!(matches!(
+        strict
+            .validate_ap_req(&decode_hex(VALID_AP_REQ))
+            .expect_err("the default window rejects more than 300 s"),
+        Error::ClockSkew { .. }
+    ));
+}
+
+#[test]
 fn rejects_addressless_ticket_when_client_address_is_required() {
     let keytab = http_keytab();
     let mut validator = ServiceValidator::new(&keytab)
@@ -539,6 +595,17 @@ fn config_with_default_keytab_name(keytab_name: &str) -> Config {
         r#"
 [libdefaults]
  default_keytab_name = {keytab_name}
+"#,
+    );
+    Config::parse(&input).expect("config parses")
+}
+
+fn config_with_default_keytab_name_and_clockskew(keytab_name: &str, clockskew: &str) -> Config {
+    let input = format!(
+        r#"
+[libdefaults]
+ default_keytab_name = {keytab_name}
+ clockskew = {clockskew}
 "#,
     );
     Config::parse(&input).expect("config parses")
