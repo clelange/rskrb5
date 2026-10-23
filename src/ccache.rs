@@ -579,18 +579,17 @@ impl Principal {
             read_i32(bytes, offset, endian)?
         };
 
-        let mut component_count = read_i32(bytes, offset, endian)?;
+        // Each component is at least a four-byte counted string; bound the
+        // count against the remaining input before reserving capacity.
+        let mut component_count = read_count(bytes, offset, endian, 4)?;
         if version == 1 {
             component_count = component_count
                 .checked_sub(1)
                 .ok_or(Error::LengthOverflow)?;
         }
-        if component_count < 0 {
-            return Err(Error::NegativeLength(component_count));
-        }
 
         let realm = read_counted_string(bytes, offset, endian)?;
-        let mut components = Vec::with_capacity(component_count as usize);
+        let mut components = Vec::with_capacity(component_count);
         for _ in 0..component_count {
             components.push(read_counted_string(bytes, offset, endian)?);
         }
@@ -706,13 +705,15 @@ impl Credential {
             .try_into()
             .map_err(|_| Error::LengthOverflow)?;
 
-        let address_count = read_count(bytes, offset, endian)?;
+        // Every address entry is at least a six-byte counted record.
+        let address_count = read_count(bytes, offset, endian, 6)?;
         let mut addresses = Vec::with_capacity(address_count);
         for _ in 0..address_count {
             addresses.push(HostAddress::parse(bytes, offset, endian)?);
         }
 
-        let auth_data_count = read_count(bytes, offset, endian)?;
+        // Every authorization-data entry is at least a six-byte counted record.
+        let auth_data_count = read_count(bytes, offset, endian, 6)?;
         let mut auth_data = Vec::with_capacity(auth_data_count);
         for _ in 0..auth_data_count {
             auth_data.push(AuthorizationDataEntry::parse(bytes, offset, endian)?);
@@ -1046,16 +1047,39 @@ fn read_u32(bytes: &[u8], offset: &mut usize, endian: Endian) -> Result<u32, Err
     })
 }
 
-fn read_count(bytes: &[u8], offset: &mut usize, endian: Endian) -> Result<usize, Error> {
+/// Read a non-negative i32 element count and require the remaining input to be
+/// able to hold that many elements of at least `min_item_len` bytes each.
+///
+/// Counts come from the credential-cache bytes themselves, so an unbounded
+/// reservation would let a short malformed input ask the allocator for tens of
+/// gigabytes; every reservation below is gated on this check.
+fn read_count(
+    bytes: &[u8],
+    offset: &mut usize,
+    endian: Endian,
+    min_item_len: usize,
+) -> Result<usize, Error> {
     let count = read_i32(bytes, offset, endian)?;
     if count < 0 {
         return Err(Error::NegativeLength(count));
     }
-    count.try_into().map_err(|_| Error::LengthOverflow)
+    let count: usize = count.try_into().map_err(|_| Error::LengthOverflow)?;
+    let remaining = bytes.len().saturating_sub(*offset);
+    let needed = count
+        .checked_mul(min_item_len)
+        .ok_or(Error::LengthOverflow)?;
+    if needed > remaining {
+        return Err(Error::Truncated {
+            offset: *offset,
+            needed,
+            remaining,
+        });
+    }
+    Ok(count)
 }
 
 fn read_data(bytes: &[u8], offset: &mut usize, endian: Endian) -> Result<Vec<u8>, Error> {
-    let len = read_count(bytes, offset, endian)?;
+    let len = read_count(bytes, offset, endian, 1)?;
     Ok(read_bytes(bytes, offset, len)?.to_vec())
 }
 
