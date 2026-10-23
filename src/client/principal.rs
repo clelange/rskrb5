@@ -123,10 +123,14 @@ fn host_based_service_principal(
             "host-based service host is empty",
         ));
     }
+    // RFC 4120 section 6.2.1: where the host name is not case sensitive (DNS),
+    // it must be lowercase. Fold only the host here so both host-based
+    // constructors agree on one identity per DNS peer; the service component,
+    // the realm and the explicit `parse_service` path stay case-sensitive.
     Ok(Principal::new(
         realm,
         KRB_NT_SRV_INST,
-        [service.to_owned(), host.to_owned()],
+        [service.to_owned(), host.to_ascii_lowercase()],
     ))
 }
 

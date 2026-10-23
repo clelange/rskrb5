@@ -65,6 +65,37 @@ fn principal_helpers_reject_malformed_names() {
 }
 
 #[test]
+fn host_based_service_folds_dns_host_case() {
+    assert_eq!(
+        Principal::host_based_service("HTTP", "AUTH.CERN.CH").expect("host service builds"),
+        Principal::new("", 2, ["HTTP", "auth.cern.ch"])
+    );
+    assert_eq!(
+        Principal::host_based_service_in_realm("HTTP", "Auth.Cern.Ch", "CERN.CH")
+            .expect("realm service builds"),
+        Principal::new("CERN.CH", 2, ["HTTP", "auth.cern.ch"])
+    );
+    assert_eq!(
+        Principal::parse_service("HTTP/AUTH.CERN.CH@CERN.CH").expect("explicit parser runs"),
+        Principal::new("CERN.CH", 2, ["HTTP", "AUTH.CERN.CH"])
+    );
+}
+
+#[test]
+fn host_based_service_preserves_service_and_realm_case() {
+    let upper = Principal::host_based_service_in_realm("HTTP", "host.example.com", "CERN.CH")
+        .expect("realm service builds");
+    assert_eq!(upper.components[0], "HTTP");
+    assert_eq!(upper.realm, "CERN.CH");
+
+    let lower = Principal::host_based_service_in_realm("http", "HOST.EXAMPLE.COM", "Cern.Ch")
+        .expect("realm service builds");
+    assert_eq!(lower.components[0], "http");
+    assert_eq!(lower.components[1], "host.example.com");
+    assert_eq!(lower.realm, "Cern.Ch");
+}
+
+#[test]
 fn principal_helpers_create_host_based_services() {
     assert_eq!(
         Principal::host_based_service("HTTP", "auth.cern.ch").expect("host service builds"),

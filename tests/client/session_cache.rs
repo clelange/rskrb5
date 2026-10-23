@@ -81,6 +81,43 @@ fn tokio_client_exposes_and_removes_cached_service_ticket() {
 
 #[cfg(feature = "tokio")]
 #[test]
+fn cached_service_ticket_identity_is_case_folded() {
+    let tgt = sample_tgt_session();
+    let now = timestamp(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("current time is after unix epoch")
+            .as_secs(),
+    );
+    let session_for = |host: &str| {
+        let mut ticket = sample_service_ticket_session(&tgt);
+        ticket.service = Principal::host_based_service_in_realm("HTTP", host, "CERN.CH")
+            .expect("host-based principal builds");
+        ticket.start_time = now
+            .checked_sub(Duration::from_secs(60))
+            .expect("start time");
+        ticket.end_time = now
+            .checked_add(Duration::from_secs(60 * 60))
+            .expect("end time");
+        ticket
+    };
+    let mut client = TokioClient::from_tgt_session(Config::new(), KdcProtocol::Tcp, tgt.clone());
+    client.cache_service_ticket(session_for("auth.cern.ch"));
+
+    assert!(
+        client
+            .cached_service_ticket(
+                Principal::host_based_service_in_realm("HTTP", "AUTH.CERN.CH", "CERN.CH")
+                    .expect("host-based principal builds")
+            )
+            .is_some()
+    );
+    client.cache_service_ticket(session_for("Auth.Cern.CH"));
+    assert_eq!(client.cached_service_ticket_count(), 1);
+}
+
+#[cfg(feature = "tokio")]
+#[test]
 fn tokio_client_prefers_freshest_cached_service_ticket() {
     let tgt = current_tgt_session(5, 180);
     let service_session = |remaining_minutes: u64, ticket: &[u8]| {
