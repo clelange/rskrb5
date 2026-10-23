@@ -340,6 +340,11 @@ impl TokioClient {
             .and_then(|metadata| metadata.subkey.as_ref())
             .unwrap_or(&request.reply_key);
         let result = reply.decrypt_result(result_key)?;
+        if result.is_success() && verified.is_none() {
+            // A success result needs an authenticated AP-REP; a KRB-ERROR
+            // carries none, so its text must not flip the stored credential.
+            return Err(Error::MissingKpasswdApRep);
+        }
         result.ensure_success()?;
 
         if update_password_credential {

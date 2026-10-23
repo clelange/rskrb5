@@ -298,7 +298,7 @@ fn tokio_transport_exchanges_configured_kpasswd_request() -> Result<(), Box<dyn 
 }
 
 #[test]
-fn tokio_transport_exchanges_configured_kpasswd_success_result() -> Result<(), Box<dyn Error>> {
+fn tokio_transport_rejects_unauthenticated_kpasswd_success_result() -> Result<(), Box<dyn Error>> {
     runtime().block_on(async {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let addr = listener.local_addr()?;
@@ -315,7 +315,7 @@ fn tokio_transport_exchanges_configured_kpasswd_success_result() -> Result<(), B
             write_tcp_response(&mut socket, &response).await;
         });
 
-        let result = TokioKdcTransport::new()
+        let error = TokioKdcTransport::new()
             .with_timeout(Duration::from_secs(2))
             .exchange_kpasswd_result_with_config(
                 &config,
@@ -324,11 +324,14 @@ fn tokio_transport_exchanges_configured_kpasswd_success_result() -> Result<(), B
                 &request,
                 &reply_key(),
             )
-            .await?;
+            .await
+            .expect_err("unsigned success result rejected");
 
         task.await?;
-        assert_eq!(result.code, KPASSWD_SUCCESS);
-        assert_eq!(result.text, "password changed");
+        assert!(matches!(
+            error,
+            rskrb5::client::Error::Kadmin(rskrb5::kadmin::Error::UnauthenticatedSuccess)
+        ));
         Ok::<_, Box<dyn Error>>(())
     })
 }

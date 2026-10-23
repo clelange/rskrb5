@@ -702,6 +702,41 @@ fn kpasswd_reply_decrypt_result_returns_krb_error_result() {
 }
 
 #[test]
+fn kpasswd_reply_rejects_unsigned_krb_error_success_result() {
+    let mut result = Vec::new();
+    result.extend_from_slice(&KPASSWD_SUCCESS.to_be_bytes());
+    result.extend_from_slice(b"password changed");
+    let error = rasn_kerberos::KrbError {
+        pvno: Integer::from(5),
+        msg_type: Integer::from(30),
+        ctime: None,
+        cusec: None,
+        stime: kerberos_time(1_893_553_440),
+        susec: Integer::from(0),
+        error_code: 52,
+        crealm: Some(kerberos_string("TEST.GOKRB5")),
+        cname: Some(rasn_principal_name(1, ["testuser1"])),
+        realm: kerberos_string("TEST.GOKRB5"),
+        sname: rasn_principal_name(1, ["kadmin", "changepw"]),
+        e_text: None,
+        e_data: Some(result.into()),
+    };
+    let encoded = rasn::der::encode(&error).expect("KRB-ERROR encodes");
+    let reply = Reply::parse(&kpasswd_reply_frame(0, &encoded)).expect("KRB-ERROR reply parses");
+    let key = EncryptionKey {
+        etype: 18,
+        value: vec![0; 32],
+    };
+
+    assert!(matches!(
+        reply
+            .decrypt_result(&key)
+            .expect_err("unsigned success result rejected"),
+        KadminError::UnauthenticatedSuccess
+    ));
+}
+
+#[test]
 fn kpasswd_result_success_helper_accepts_zero_code() {
     let result = ChangePasswordResult::parse(&[0, 0]).expect("success result parses");
 

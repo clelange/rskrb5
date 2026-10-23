@@ -1137,6 +1137,32 @@ async fn write_tcp_kdc_response(socket: &mut tokio::net::TcpStream, response: &[
 }
 
 #[cfg(feature = "tokio")]
+fn kpasswd_authenticated_success_reply(
+    request: &[u8],
+    session_key: &EncryptionKey,
+    response_key_byte: u8,
+) -> Vec<u8> {
+    let parsed = KpasswdRequest::parse(request).expect("kpasswd request parses");
+    let authenticator = rskrb5::ap_req::decrypt_ap_req_authenticator(
+        &parsed.ap_req,
+        session_key,
+        AP_REQ_AUTHENTICATOR_USAGE,
+    )
+    .expect("AP-REQ authenticator decrypts");
+    let response_key = EncryptionKey {
+        etype: 18,
+        value: vec![response_key_byte; 32],
+    };
+    kpasswd_success_reply_with_ap_rep_subkey(
+        &authenticator,
+        session_key,
+        &response_key,
+        KPASSWD_SUCCESS,
+        "password changed",
+    )
+}
+
+#[cfg(feature = "tokio")]
 fn kpasswd_reply_frame(ap_rep_length: u16, body: &[u8]) -> Vec<u8> {
     let message_length = 6 + body.len();
     assert!(u16::try_from(message_length).is_ok());

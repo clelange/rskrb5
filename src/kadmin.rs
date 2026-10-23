@@ -445,8 +445,17 @@ impl Reply {
     }
 
     /// Return the password-change result, decrypting KRB-PRIV when needed.
+    ///
+    /// A result parsed from a KRB-ERROR reply is unauthenticated: a success
+    /// code there is rejected with [`Error::UnauthenticatedSuccess`].
     pub fn decrypt_result(&self, key: &EncryptionKey) -> Result<ChangePasswordResult, Error> {
         if let Some(result) = &self.result {
+            // `result` is populated only from the unauthenticated KRB-ERROR
+            // e-data branch; a success code there is not proof that the
+            // password change happened.
+            if result.is_success() {
+                return Err(Error::UnauthenticatedSuccess);
+            }
             return Ok(result.clone());
         }
         if self.krb_error.is_some() {
@@ -621,6 +630,10 @@ pub enum Error {
     /// A KRB-ERROR reply did not include kpasswd response data.
     #[error("kadmin reply does not contain response data")]
     MissingReplyResult,
+    /// A KRB-ERROR reply carried a success result without authenticated
+    /// provenance.
+    #[error("kadmin success result is not authenticated")]
+    UnauthenticatedSuccess,
     /// A non-error reply did not include a KRB-PRIV section.
     #[error("kadmin reply does not contain KRB-PRIV")]
     MissingKrbPriv,

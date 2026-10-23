@@ -201,10 +201,11 @@ fn tokio_client_changes_password_with_cached_changepw_ticket() {
             assert_eq!(parsed.ap_req.msg_type, rasn::types::Integer::from(14));
             assert_eq!(parsed.krb_priv.msg_type, rasn::types::Integer::from(21));
 
-            let response = kpasswd_reply_frame(
-                0,
-                &kpasswd_result_krb_error(KPASSWD_SUCCESS, "password changed"),
-            );
+            let session_key = EncryptionKey {
+                etype: 18,
+                value: decode_hex(SERVICE_SESSION_KEY),
+            };
+            let response = kpasswd_authenticated_success_reply(&request, &session_key, 0x77);
             socket
                 .write_all(&(response.len() as u32).to_be_bytes())
                 .await
@@ -501,10 +502,11 @@ fn negotiate_client_changes_password_with_cached_changepw_ticket() {
             socket.read_exact(&mut request).await.expect("read request");
             let _ = KpasswdRequest::parse(&request).expect("kpasswd request parses");
 
-            let response = kpasswd_reply_frame(
-                0,
-                &kpasswd_result_krb_error(KPASSWD_SUCCESS, "password changed"),
-            );
+            let session_key = EncryptionKey {
+                etype: 18,
+                value: decode_hex(SERVICE_SESSION_KEY),
+            };
+            let response = kpasswd_authenticated_success_reply(&request, &session_key, 0x77);
             socket
                 .write_all(&(response.len() as u32).to_be_bytes())
                 .await
@@ -623,9 +625,16 @@ fn negotiate_client_changes_explicit_target_password() {
                 target_for_server
             );
             assert_eq!(change_data.new_passwd.to_vec(), b"newpassword".to_vec());
-            let response = kpasswd_reply_frame(
-                0,
-                &kpasswd_result_krb_error(KPASSWD_SUCCESS, "password changed"),
+            let response_key = EncryptionKey {
+                etype: 18,
+                value: vec![0x77; 32],
+            };
+            let response = kpasswd_success_reply_with_ap_rep_subkey(
+                &authenticator,
+                &changepw_session_key,
+                &response_key,
+                KPASSWD_SUCCESS,
+                "password changed",
             );
             socket
                 .write_all(&(response.len() as u32).to_be_bytes())
@@ -703,12 +712,11 @@ fn blocking_negotiate_client_changes_password_with_cached_changepw_ticket() {
         let request_len = u32::from_be_bytes(header) as usize;
         let mut request = vec![0; request_len];
         socket.read_exact(&mut request).expect("read request");
-        let _ = KpasswdRequest::parse(&request).expect("kpasswd request parses");
-
-        let response = kpasswd_reply_frame(
-            0,
-            &kpasswd_result_krb_error(KPASSWD_SUCCESS, "password changed"),
-        );
+        let session_key = EncryptionKey {
+            etype: 18,
+            value: decode_hex(SERVICE_SESSION_KEY),
+        };
+        let response = kpasswd_authenticated_success_reply(&request, &session_key, 0x77);
         socket
             .write_all(&(response.len() as u32).to_be_bytes())
             .expect("write response length");
@@ -859,10 +867,11 @@ TEST.GOKRB5 = {{
                     );
                     assert_eq!(change_data.new_passwd, old_password.to_vec());
                 }
-                let response = kpasswd_reply_frame(
-                    0,
-                    &kpasswd_result_krb_error(KPASSWD_SUCCESS, "password changed"),
-                );
+                let session_key = EncryptionKey {
+                    etype: 18,
+                    value: decode_hex(SESSION_KEY),
+                };
+                let response = kpasswd_authenticated_success_reply(&request, &session_key, 0x77);
                 write_tcp_kdc_response(&mut socket, &response).await;
             }
         });
@@ -975,11 +984,11 @@ TEST.GOKRB5 = {{
         let kpasswd_task = tokio::spawn(async move {
             for _ in 0..2 {
                 let (request, mut socket) = read_tcp_kdc_request(&kpasswd_listener).await;
-                let _parsed = KpasswdRequest::parse(&request).expect("kpasswd request parses");
-                let response = kpasswd_reply_frame(
-                    0,
-                    &kpasswd_result_krb_error(KPASSWD_SUCCESS, "password changed"),
-                );
+                let session_key = EncryptionKey {
+                    etype: 18,
+                    value: decode_hex(SESSION_KEY),
+                };
+                let response = kpasswd_authenticated_success_reply(&request, &session_key, 0x77);
                 write_tcp_kdc_response(&mut socket, &response).await;
             }
         });
@@ -1015,5 +1024,107 @@ TEST.GOKRB5 = {{
         assert_eq!(change_self_with_new.text, "password changed");
         assert_eq!(change_self_with_updated.code, KPASSWD_SUCCESS);
         assert_eq!(change_self_with_updated.text, "password changed");
+    });
+}
+
+#[cfg(feature = "tokio")]
+#[test]
+fn tokio_client_rejects_unsigned_kpasswd_success() {
+    runtime().block_on(async {
+        let old_password = b"old-passwordvalue";
+        let new_password = b"new-passwordvalue";
+        let self_client = Principal::user("TEST.GOKRB5", "testuser1");
+        let old_reply_key =
+            derive_password_reply_key(&self_client, old_password, &password_key_info())
+                .expect("old reply key derives");
+
+        let kdc_listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind local kdc listener");
+        let kdc_addr = kdc_listener
+            .local_addr()
+            .expect("local kdc listener address");
+        let kpasswd_listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind local kpasswd listener");
+        let kpasswd_addr = kpasswd_listener
+            .local_addr()
+            .expect("local kpasswd listener address");
+
+        let config = Config::parse(&format!(
+            r#"
+[libdefaults]
+dns_lookup_kdc = false
+udp_preference_limit = 1
+
+[realms]
+TEST.GOKRB5 = {{
+ kdc = {kdc_addr}
+ kpasswd_server = {kpasswd_addr}
+}}
+"#
+        ))
+        .expect("config parses");
+        let mut client = TokioClient::with_password(
+            config,
+            KdcProtocol::Tcp,
+            self_client.clone(),
+            old_password.to_vec(),
+        );
+
+        let kdc_task_client = self_client.clone();
+        let kdc_task = tokio::spawn(async move {
+            let expected_service = change_password_principal();
+            for _ in 0..2 {
+                let (request, mut socket) = read_tcp_kdc_request(&kdc_listener).await;
+                let decoded: rasn_kerberos::AsReq =
+                    rasn::der::decode(&request).expect("AS-REQ decodes");
+                let built = built_request_from_der(decoded, &request);
+                assert_eq!(built.client, kdc_task_client);
+                assert_eq!(built.service, expected_service);
+                // The failed change must not rotate the stored credential, so
+                // both AS exchanges have to decrypt under the old reply key.
+                let response = synthetic_as_rep_with_reply_key(
+                    &built,
+                    built.nonce,
+                    built.service.clone(),
+                    &old_reply_key,
+                );
+                write_tcp_kdc_response(&mut socket, &response).await;
+            }
+        });
+
+        let kpasswd_task = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (_request, mut socket) = read_tcp_kdc_request(&kpasswd_listener).await;
+                let response = kpasswd_reply_frame(
+                    0,
+                    &kpasswd_result_krb_error(KPASSWD_SUCCESS, "password changed"),
+                );
+                write_tcp_kdc_response(&mut socket, &response).await;
+            }
+        });
+
+        for attempt in 0u64..2 {
+            let error = client
+                .change_password_with_options(
+                    new_password,
+                    KpasswdRequestOptions::new(
+                        timestamp(1_893_553_452 + attempt),
+                        456_789,
+                        42,
+                        ipv4_host_address([127, 0, 0, 1]),
+                    ),
+                )
+                .await
+                .expect_err("unsigned success result is rejected");
+            assert!(matches!(
+                error,
+                Error::Kadmin(rskrb5::kadmin::Error::UnauthenticatedSuccess)
+            ));
+        }
+
+        kdc_task.await.expect("kdc task completes");
+        kpasswd_task.await.expect("kpasswd task completes");
     });
 }
