@@ -611,6 +611,570 @@ fn tokio_client_auto_renewal_handle_aborts() {
 
 #[cfg(feature = "tokio")]
 #[test]
+fn tokio_client_auto_renewal_paces_cache_only_nonrenewable_tgt() {
+    let (done, finished) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .start_paused(true)
+            .build()
+            .expect("paused runtime");
+        runtime.block_on(async move {
+            // Due (55 min old, 5 min left) but not renewable, and cache-only:
+            // the refresh is a successful no-op that must be paced.
+            let mut tgt = current_tgt_session(55, 5);
+            tgt.renew_till = None;
+            let client = std::sync::Arc::new(tokio::sync::Mutex::new(
+                TokioClient::from_tgt_session(Config::new(), KdcProtocol::Tcp, tgt),
+            ));
+            let renewal =
+                TokioClient::spawn_auto_renewal_with_retry(client, Duration::from_millis(50));
+
+            // With auto-advanced paused time, a paced loop lets this sleep
+            // complete; a spinning loop keeps the runtime busy instead.
+            tokio::time::sleep(Duration::from_secs(600)).await;
+            renewal.abort();
+            done.send(()).expect("pacing result reported");
+        });
+    });
+
+    finished
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the auto-renewal loop paces instead of spinning");
+}
+
+#[cfg(feature = "tokio")]
+#[test]
+fn tokio_client_refresh_due_uses_current_ticket_life() {
+    let now = SystemTime::now();
+    let mut renewed = current_tgt_session(60 * 60, 10 * 60);
+    renewed.start_time = now
+        .checked_sub(Duration::from_secs(60))
+        .expect("recent start time");
+
+    let client = TokioClient::from_tgt_session(Config::new(), KdcProtocol::Tcp, renewed.clone());
+    assert!(
+        !client.tgt_refresh_due(),
+        "a ticket renewed 60 s ago with 10 h left is not due from a 60 h old auth_time"
+    );
+
+    let mut near_end = renewed;
+    near_end.end_time = now
+        .checked_add(Duration::from_secs(10))
+        .expect("near end time");
+    near_end.key_expiration = Some(near_end.end_time);
+    let client = TokioClient::from_tgt_session(Config::new(), KdcProtocol::Tcp, near_end);
+    assert!(
+        client.tgt_refresh_due(),
+        "the current life, not auth_time, drives the refresh band"
+    );
+}
+
+#[cfg(feature = "tokio")]
+fn spawn_counting_kdc(
+    listener: tokio::net::TcpListener,
+    client_principal: Principal,
+    password: Vec<u8>,
+) -> (
+    tokio::task::JoinHandle<()>,
+    std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    std::sync::Arc<std::sync::atomic::AtomicUsize>,
+) {
+    spawn_counting_kdc_with_tgs_reply(listener, client_principal, password, |_, _, _| {
+        krb_error_bytes(32)
+    })
+}
+
+/// Counting KDC that answers each TGS-REQ through `tgs_reply`, which receives
+/// the decoded request, its DER and the number of AS-REQs served before it.
+#[cfg(feature = "tokio")]
+fn spawn_counting_kdc_with_tgs_reply<F>(
+    listener: tokio::net::TcpListener,
+    client_principal: Principal,
+    password: Vec<u8>,
+    tgs_reply: F,
+) -> (
+    tokio::task::JoinHandle<()>,
+    std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    std::sync::Arc<std::sync::atomic::AtomicUsize>,
+)
+where
+    F: Fn(rasn_kerberos::TgsReq, &[u8], usize) -> Vec<u8> + Send + 'static,
+{
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let as_requests = std::sync::Arc::new(AtomicUsize::new(0));
+    let tgs_requests = std::sync::Arc::new(AtomicUsize::new(0));
+    let as_count = as_requests.clone();
+    let tgs_count = tgs_requests.clone();
+    let handle = tokio::spawn(async move {
+        loop {
+            let Ok((mut socket, _)) = listener.accept().await else {
+                return;
+            };
+            let mut header = [0u8; 4];
+            if socket.read_exact(&mut header).await.is_err() {
+                continue;
+            }
+            let mut body = vec![0u8; u32::from_be_bytes(header) as usize];
+            if socket.read_exact(&mut body).await.is_err() {
+                continue;
+            }
+            let reply = match body.first().copied() {
+                // AS-REQ and TGS-REQ application tags.
+                Some(0x6a) => {
+                    as_count.fetch_add(1, Ordering::SeqCst);
+                    let decoded: rasn_kerberos::AsReq =
+                        rasn::der::decode(&body).expect("AS-REQ decodes");
+                    let built = built_request_from_der(decoded, &body);
+                    let reply_key = derive_password_reply_key(
+                        &client_principal,
+                        &password,
+                        &password_key_info(),
+                    )
+                    .expect("reply key derives");
+                    synthetic_as_rep_with_reply_key(
+                        &built,
+                        built.nonce,
+                        built.service.clone(),
+                        &reply_key,
+                    )
+                }
+                Some(0x6c) => {
+                    tgs_count.fetch_add(1, Ordering::SeqCst);
+                    let decoded: rasn_kerberos::TgsReq =
+                        rasn::der::decode(&body).expect("TGS-REQ decodes");
+                    tgs_reply(decoded, &body, as_count.load(Ordering::SeqCst))
+                }
+                _ => continue,
+            };
+            let mut response = Vec::with_capacity(4 + reply.len());
+            response.extend_from_slice(&(reply.len() as u32).to_be_bytes());
+            response.extend_from_slice(&reply);
+            let _ = socket.write_all(&response).await;
+        }
+    });
+    (handle, as_requests, tgs_requests)
+}
+
+#[cfg(feature = "tokio")]
+fn krb_error_bytes(error_code: i32) -> Vec<u8> {
+    let error = rasn_kerberos::KrbError {
+        pvno: rasn::types::Integer::from(5),
+        msg_type: rasn::types::Integer::from(30),
+        ctime: None,
+        cusec: None,
+        stime: kerberos_time(1_893_553_440),
+        susec: rasn::types::Integer::from(0),
+        error_code,
+        crealm: Some(realm("TEST.GOKRB5")),
+        cname: Some(rasn_principal(&Principal::user("TEST.GOKRB5", "testuser1"))),
+        realm: realm("TEST.GOKRB5"),
+        sname: rasn_principal(&Principal::tgt_service("TEST.GOKRB5")),
+        e_text: None,
+        e_data: None,
+    };
+    rasn::der::encode(&error).expect("KRB-ERROR encodes")
+}
+
+#[cfg(feature = "tokio")]
+fn expired_renewable_tgt() -> rskrb5::client::AsRepSession {
+    let now = SystemTime::now();
+    let mut tgt = current_tgt_session(120, 0);
+    tgt.renew_till = Some(
+        now.checked_add(Duration::from_secs(60 * 60))
+            .expect("renew till"),
+    );
+    tgt
+}
+
+#[cfg(feature = "tokio")]
+#[test]
+fn tokio_client_affirm_login_falls_back_to_as_for_expired_renewable_tgt() {
+    runtime().block_on(async {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind kdc listener");
+        let addr = listener.local_addr().expect("kdc address");
+        let client_principal = Principal::user("TEST.GOKRB5", "testuser1");
+        let (kdc, as_requests, tgs_requests) = spawn_counting_kdc(
+            listener,
+            client_principal.clone(),
+            TESTUSER_PASSWORD.to_vec(),
+        );
+
+        let mut client = TokioClient::from_tgt_session(
+            config_with_kdc_server(addr.to_string()),
+            KdcProtocol::Tcp,
+            expired_renewable_tgt(),
+        )
+        .with_password_credential(TESTUSER_PASSWORD);
+
+        client
+            .affirm_login()
+            .await
+            .expect("expired renewable TGT recovers through the AS exchange");
+        assert!(as_requests.load(std::sync::atomic::Ordering::SeqCst) >= 1);
+        assert_eq!(
+            tgs_requests.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "an expired TGT with a credential goes straight to the AS exchange"
+        );
+        kdc.abort();
+    });
+}
+
+#[cfg(feature = "tokio")]
+#[test]
+fn tokio_client_refresh_tgt_if_needed_falls_back_to_as_for_expired_renewable_tgt() {
+    runtime().block_on(async {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind kdc listener");
+        let addr = listener.local_addr().expect("kdc address");
+        let client_principal = Principal::user("TEST.GOKRB5", "testuser1");
+        let (kdc, as_requests, tgs_requests) = spawn_counting_kdc(
+            listener,
+            client_principal.clone(),
+            TESTUSER_PASSWORD.to_vec(),
+        );
+
+        let mut client = TokioClient::from_tgt_session(
+            config_with_kdc_server(addr.to_string()),
+            KdcProtocol::Tcp,
+            expired_renewable_tgt(),
+        )
+        .with_password_credential(TESTUSER_PASSWORD);
+
+        client
+            .refresh_tgt_if_needed()
+            .await
+            .expect("refresh recovers through the AS exchange");
+        assert!(as_requests.load(std::sync::atomic::Ordering::SeqCst) >= 1);
+        assert_eq!(
+            tgs_requests.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "expired renewable TGTs do not spend a doomed TGS renewal first"
+        );
+        kdc.abort();
+    });
+}
+
+#[cfg(feature = "tokio")]
+#[test]
+fn tokio_client_cache_only_expired_renewable_tgt_keeps_renewal_error() {
+    runtime().block_on(async {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind kdc listener");
+        let addr = listener.local_addr().expect("kdc address");
+        let client_principal = Principal::user("TEST.GOKRB5", "testuser1");
+        let (kdc, as_requests, tgs_requests) = spawn_counting_kdc(
+            listener,
+            client_principal.clone(),
+            TESTUSER_PASSWORD.to_vec(),
+        );
+
+        let mut client = TokioClient::from_tgt_session(
+            config_with_kdc_server(addr.to_string()),
+            KdcProtocol::Tcp,
+            expired_renewable_tgt(),
+        );
+
+        client
+            .affirm_login()
+            .await
+            .expect_err("cache-only client keeps the renewal error");
+        assert_eq!(as_requests.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(
+            tgs_requests.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "cache-only clients still attempt the in-grace renewal"
+        );
+        kdc.abort();
+    });
+}
+
+/// Run `test` on a paused current-thread runtime in its own thread and return
+/// its report, failing after 10 s of real time so a spinning loop cannot hang.
+#[cfg(feature = "tokio")]
+fn run_on_paused_runtime<T, F, Fut>(test: F) -> T
+where
+    T: Send + 'static,
+    F: FnOnce() -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = T>,
+{
+    let (done, finished) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .start_paused(true)
+            .build()
+            .expect("paused runtime");
+        let report = runtime.block_on(test());
+        done.send(report).expect("paused-clock report delivered");
+    });
+    finished
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the paused-clock test reports within 10 s of real time")
+}
+
+#[cfg(feature = "tokio")]
+fn is_renewal_request(request: &rasn_kerberos::TgsReq) -> bool {
+    <[u8; 4]>::try_from(request.0.req_body.kdc_options.0.as_raw_slice())
+        .is_ok_and(|options| u32::from_be_bytes(options) & KDC_OPTION_RENEW != 0)
+}
+
+#[cfg(feature = "tokio")]
+fn unix_seconds(time: SystemTime) -> u64 {
+    time.duration_since(UNIX_EPOCH)
+        .expect("time is after the epoch")
+        .as_secs()
+}
+
+/// TGS-REP renewing the primary TGT the way RFC 4120 renewal does: `auth_time`
+/// stays 60 h old while `start_time` restarts a 10 h ticket life now. The
+/// session key is unchanged, so every later renewal decrypts with it too.
+#[cfg(feature = "tokio")]
+fn renewed_tgt_reply_keeping_auth_time(request: rasn_kerberos::TgsReq, der: &[u8]) -> Vec<u8> {
+    let built = built_tgs_request_from_der(request, der);
+    let now = unix_seconds(SystemTime::now());
+    let session_key = EncryptionKey {
+        etype: 18,
+        value: decode_hex(SESSION_KEY),
+    };
+    let enc_part = rasn_kerberos::EncTgsRepPart(rasn_kerberos::EncKdcRepPart {
+        key: rasn_encryption_key(&session_key),
+        last_req: vec![rasn_kerberos::LastReqValue {
+            r#type: 0,
+            value: kerberos_time(now),
+        }],
+        nonce: built.nonce,
+        key_expiration: None,
+        flags: rasn_kerberos::TicketFlags(rasn_kerberos::KerberosFlags::from_slice(TICKET_FLAGS)),
+        auth_time: kerberos_time(now - 60 * 60 * 60),
+        start_time: Some(kerberos_time(now)),
+        end_time: kerberos_time(now + 10 * 60 * 60),
+        renew_till: Some(kerberos_time(now + 7 * 24 * 60 * 60)),
+        srealm: realm(&built.service.realm),
+        sname: rasn_principal(&built.service),
+        caddr: None,
+        encrypted_pa_data: None,
+    });
+    let encrypted = encrypt_message(
+        &session_key,
+        &rasn::der::encode(&enc_part).expect("EncTgsRepPart encodes"),
+        TGS_REP_ENCPART_SESSION_KEY_USAGE,
+        TGS_REP_CONFOUNDER,
+    );
+    let tgs_rep = rasn_kerberos::TgsRep(rasn_kerberos::KdcRep {
+        pvno: rasn::types::Integer::from(5),
+        msg_type: rasn::types::Integer::from(13),
+        padata: None,
+        crealm: realm(&built.client.realm),
+        cname: rasn_principal(&built.client),
+        ticket: rasn_kerberos::Ticket {
+            tkt_vno: rasn::types::Integer::from(5),
+            realm: realm(&built.service.realm),
+            sname: rasn_principal(&built.service),
+            enc_part: rasn_kerberos::EncryptedData {
+                etype: 18,
+                kvno: Some(2),
+                cipher: [0xde, 0xad, 0xbe, 0xef].as_slice().into(),
+            },
+        },
+        enc_part: rasn_kerberos::EncryptedData {
+            etype: session_key.etype,
+            kvno: None,
+            cipher: encrypted.into(),
+        },
+    });
+    rasn::der::encode(&tgs_rep).expect("TGS-REP encodes")
+}
+
+/// After a renewal that keeps an old `auth_time`, auto-renewal measures the
+/// refresh band from the renewed ticket's own life and sleeps instead of
+/// renewing again.
+#[cfg(feature = "tokio")]
+#[test]
+fn tokio_client_auto_renewal_paces_after_renewal() {
+    let (as_requests, renewal_requests) = run_on_paused_runtime(|| async {
+        use std::sync::atomic::Ordering;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind kdc listener");
+        let addr = listener.local_addr().expect("kdc address");
+        let (kdc, as_requests, tgs_requests) = spawn_counting_kdc_with_tgs_reply(
+            listener,
+            Principal::user("TEST.GOKRB5", "testuser1"),
+            TESTUSER_PASSWORD.to_vec(),
+            |request, der, _| renewed_tgt_reply_keeping_auth_time(request, der),
+        );
+
+        // Due (55 min old, 5 min left) and renewable; cache-only, so only a
+        // renewal can refresh it.
+        let client = std::sync::Arc::new(tokio::sync::Mutex::new(TokioClient::from_tgt_session(
+            config_with_kdc_server(addr.to_string()),
+            KdcProtocol::Tcp,
+            current_tgt_session(55, 5),
+        )));
+        let renewal = TokioClient::spawn_auto_renewal(client.clone());
+
+        // Spin without timers until the first renewal is installed: an idle
+        // paused runtime auto-advances the clock while loopback I/O is still
+        // in flight, which would fire the transport timeout.
+        let renewed_life_floor = Duration::from_secs(60 * 60);
+        loop {
+            let renewed = tgs_requests.load(Ordering::SeqCst) >= 1
+                && client.try_lock().is_ok_and(|client| {
+                    client.tgt_session().is_some_and(|tgt| {
+                        tgt.end_time
+                            .duration_since(SystemTime::now())
+                            .is_ok_and(|left| left > renewed_life_floor)
+                    })
+                });
+            if renewed {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+
+        // 600 s of virtual time in 1 s steps; a loop that still treats the
+        // renewed ticket as due renews again on every step.
+        for _ in 0..600 {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+        renewal.abort();
+        kdc.abort();
+        (
+            as_requests.load(Ordering::SeqCst),
+            tgs_requests.load(Ordering::SeqCst),
+        )
+    });
+
+    assert_eq!(as_requests, 0, "a cache-only client never logs in");
+    assert_eq!(
+        renewal_requests, 1,
+        "a renewal with a fresh 10 h life is not due again within 600 s"
+    );
+}
+
+/// When the KDC refuses to renew a due TGT, auto-renewal with a configured
+/// password falls back to a fresh AS exchange instead of retrying the renewal.
+#[cfg(feature = "tokio")]
+#[test]
+fn tokio_client_auto_renewal_uses_as_when_renewal_refused() {
+    let (as_requests, renewal_requests) = run_on_paused_runtime(|| async {
+        use std::sync::atomic::Ordering;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind kdc listener");
+        let addr = listener.local_addr().expect("kdc address");
+        let (kdc, as_requests, tgs_requests) = spawn_counting_kdc(
+            listener,
+            Principal::user("TEST.GOKRB5", "testuser1"),
+            TESTUSER_PASSWORD.to_vec(),
+        );
+
+        // The paused clock auto-advances while loopback I/O is in flight, so
+        // keep the transport timeout beyond the 600 s window: the renewal must
+        // fail on the KDC's refusal, not on a virtual timeout.
+        let client = std::sync::Arc::new(tokio::sync::Mutex::new(
+            TokioClient::from_tgt_session(
+                config_with_kdc_server(addr.to_string()),
+                KdcProtocol::Tcp,
+                current_tgt_session(55, 5),
+            )
+            .with_password_credential(TESTUSER_PASSWORD)
+            .with_transport(
+                TokioKdcTransport::new().with_timeout(Duration::from_secs(24 * 60 * 60)),
+            ),
+        ));
+        let renewal = TokioClient::spawn_auto_renewal(client);
+
+        for _ in 0..600 {
+            if as_requests.load(Ordering::SeqCst) >= 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+        renewal.abort();
+        kdc.abort();
+        (
+            as_requests.load(Ordering::SeqCst),
+            tgs_requests.load(Ordering::SeqCst),
+        )
+    });
+
+    assert!(
+        renewal_requests >= 1,
+        "the due TGT is offered for renewal first"
+    );
+    assert!(
+        as_requests >= 1,
+        "a refused renewal falls back to the AS exchange within 600 s"
+    );
+}
+
+/// `get_service_ticket` with an expired renewable TGT and a password skips the
+/// renewal a conforming KDC refuses, logs in through AS, then requests the
+/// service ticket with the fresh TGT.
+#[cfg(feature = "tokio")]
+#[test]
+fn tokio_client_get_service_ticket_falls_back_to_as_for_expired_renewable_tgt() {
+    runtime().block_on(async {
+        use std::sync::atomic::Ordering;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind kdc listener");
+        let addr = listener.local_addr().expect("kdc address");
+        let tgt_session_key = EncryptionKey {
+            etype: 18,
+            value: decode_hex(SESSION_KEY),
+        };
+        let (kdc, as_requests, tgs_requests) = spawn_counting_kdc_with_tgs_reply(
+            listener,
+            Principal::user("TEST.GOKRB5", "testuser1"),
+            TESTUSER_PASSWORD.to_vec(),
+            move |request, der, as_requests_before| {
+                // KDC_ERR_TKT_EXPIRED for a renewal of the expired TGT, and for
+                // a service request that did not follow the AS exchange.
+                if is_renewal_request(&request) || as_requests_before == 0 {
+                    return krb_error_bytes(32);
+                }
+                let built = built_tgs_request_from_der(request, der);
+                synthetic_tgs_rep(&built, built.nonce, &tgt_session_key)
+            },
+        );
+
+        let mut client = TokioClient::from_tgt_session(
+            config_with_kdc_server(addr.to_string()),
+            KdcProtocol::Tcp,
+            expired_renewable_tgt(),
+        )
+        .with_password_credential(TESTUSER_PASSWORD);
+
+        let ticket = client
+            .get_service_ticket(sample_service_principal())
+            .await
+            .expect("the service ticket is acquired after an AS login");
+        assert_eq!(ticket.service, sample_service_principal());
+        assert_eq!(as_requests.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            tgs_requests.load(Ordering::SeqCst),
+            1,
+            "only the service TGS-REQ follows the AS exchange; no doomed renewal"
+        );
+        kdc.abort();
+    });
+}
+
+#[cfg(feature = "tokio")]
+#[test]
 fn tokio_client_validates_configuration() {
     let mut dns_config = Config::new();
     dns_config.libdefaults.dns_lookup_kdc = true;

@@ -66,7 +66,7 @@ required-features = ["evaluation"]
 [dev-dependencies]
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
 pretty_assertions = "1.4"
-tokio = { version = "1.47", features = ["macros", "net", "rt-multi-thread"] }
+tokio = { version = "1.47", features = ["macros", "net", "rt-multi-thread", "test-util"] }
 toml = "0.9"
 
 [[example]]

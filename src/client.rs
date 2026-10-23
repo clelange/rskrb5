@@ -810,7 +810,15 @@ impl TokioClient {
                 if client.credentials.is_none() && client.tgt.is_none() {
                     return;
                 }
-                if client.refresh_tgt_if_needed().await.is_err() {
+                // A refresh that leaves the TGT due made no progress (for
+                // example a cache-only, non-renewable ticket); pace that case
+                // too instead of spinning for the rest of the refresh band.
+                let refreshed = client.refresh_tgt_if_needed().await.map(|_| ());
+                let still_due = client
+                    .tgt
+                    .as_ref()
+                    .is_none_or(|tgt| session_refresh_due_at(tgt, SystemTime::now()));
+                if refreshed.is_err() || still_due {
                     drop(client);
                     tokio::time::sleep(retry_delay).await;
                 }
@@ -1094,8 +1102,19 @@ impl TokioClient {
             if session_valid_at(&tgt, now) {
                 return Ok(self.tgt.as_ref().expect("TGT was just checked"));
             }
-            if session_renewable_at(&tgt, now) {
-                return self.renew_tgt().await;
+            let has_credentials = self.credentials.is_some();
+            let expired = now >= tgt.end_time;
+            // A conforming KDC refuses renewal once the ticket expired, so an
+            // expired renewable TGT takes the AS exchange when a credential is
+            // configured; any other renewal failure falls through the same way.
+            if session_renewable_at(&tgt, now) && !(expired && has_credentials) {
+                match self.renew_tgt().await.map(|_| ()) {
+                    Ok(()) => {
+                        return Ok(self.tgt.as_ref().expect("renewal installed the TGT"));
+                    }
+                    Err(error) if !has_credentials => return Err(error),
+                    Err(_) => {}
+                }
             }
         }
 
@@ -1347,7 +1366,15 @@ impl TokioClient {
                 return Ok(tgt);
             }
             if session_renewable_at(&tgt, now) {
-                return Ok(self.renew_tgt().await?.clone());
+                let has_credentials = self.credentials.is_some();
+                let expired = now >= tgt.end_time;
+                if !(expired && has_credentials) {
+                    match self.renew_tgt().await.cloned() {
+                        Ok(session) => return Ok(session),
+                        Err(error) if !has_credentials => return Err(error),
+                        Err(_) => {}
+                    }
+                }
             }
             if session_valid_at(&tgt, now) && self.credentials.is_none() {
                 return Ok(tgt);
@@ -3642,7 +3669,9 @@ fn session_refresh_due_at(session: &AsRepSession, now: SystemTime) -> bool {
     if now >= session.end_time {
         return true;
     }
-    let Ok(lifetime) = session.end_time.duration_since(session.auth_time) else {
+    // RFC 4120 keeps auth_time fixed across renewals while a renewal advances
+    // start_time, so the current ticket life is end_time - start_time.
+    let Ok(lifetime) = session.end_time.duration_since(session.start_time) else {
         return true;
     };
     if lifetime.is_zero() {
@@ -3660,7 +3689,7 @@ fn session_refresh_delay_at(session: &AsRepSession, now: SystemTime) -> Duration
     if session_refresh_due_at(session, now) {
         return Duration::ZERO;
     }
-    let Ok(lifetime) = session.end_time.duration_since(session.auth_time) else {
+    let Ok(lifetime) = session.end_time.duration_since(session.start_time) else {
         return Duration::ZERO;
     };
     let Some(refresh_at) = session
