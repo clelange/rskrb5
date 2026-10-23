@@ -468,7 +468,6 @@ fn duration_formats_match_gokrb5() {
 #[test]
 fn resolve_realm_matches_gokrb5_specificity() {
     let config = Config::parse(COMPLEX_KRB5_CONF).expect("config parses");
-
     assert_eq!(config.resolve_realm("unknown.com"), None);
     assert_eq!(
         config.resolve_realm("hostname1.example.com"),
@@ -487,6 +486,120 @@ fn resolve_realm_matches_gokrb5_specificity() {
         config.resolve_realm("foo.testlowercase.org"),
         Some("lowercase.org")
     );
+}
+
+#[test]
+fn resolve_realm_folds_dns_case() {
+    let config = Config::parse(
+        r#"
+[libdefaults]
+ default_realm = CLIENT.REALM
+
+[domain_realm]
+ foo.example.com = PARTNER.REALM
+ .example.com = SUFFIX.REALM
+"#,
+    )
+    .expect("config parses");
+
+    for spelling in [
+        "foo.example.com",
+        "FOO.EXAMPLE.COM",
+        "Foo.Example.com",
+        "FOO.EXAMPLE.COM.",
+    ] {
+        assert_eq!(
+            config.resolve_realm(spelling),
+            Some("PARTNER.REALM"),
+            "{spelling}"
+        );
+    }
+    for spelling in ["bar.example.com", "BAR.EXAMPLE.COM", "Bar.Example.com"] {
+        assert_eq!(
+            config.resolve_realm(spelling),
+            Some("SUFFIX.REALM"),
+            "{spelling}"
+        );
+    }
+}
+
+#[test]
+fn resolve_realm_applies_bare_domain_tags_to_subdomains() {
+    // MIT's own three-tag example; expected values match the MIT 1.22.1
+    // reference (`krb5_get_host_realm`, dns_lookup_realm=false).
+    let config = Config::parse(
+        r#"
+[libdefaults]
+ default_realm = CLIENT.REALM
+
+[domain_realm]
+ crash.mit.edu = TEST.ATHENA.MIT.EDU
+ .dev.mit.edu = TEST.ATHENA.MIT.EDU
+ mit.edu = ATHENA.MIT.EDU
+"#,
+    )
+    .expect("config parses");
+
+    assert_eq!(config.resolve_realm("mit.edu"), Some("ATHENA.MIT.EDU"));
+    assert_eq!(
+        config.resolve_realm("crash.mit.edu"),
+        Some("TEST.ATHENA.MIT.EDU")
+    );
+    assert_eq!(
+        config.resolve_realm("sub.crash.mit.edu"),
+        Some("TEST.ATHENA.MIT.EDU")
+    );
+    assert_eq!(config.resolve_realm("dev.mit.edu"), Some("ATHENA.MIT.EDU"));
+    assert_eq!(
+        config.resolve_realm("foo.dev.mit.edu"),
+        Some("TEST.ATHENA.MIT.EDU")
+    );
+    assert_eq!(
+        config.resolve_realm("a.b.dev.mit.edu"),
+        Some("TEST.ATHENA.MIT.EDU")
+    );
+    assert_eq!(config.resolve_realm("notmit.edu"), None);
+}
+
+#[test]
+fn resolve_realm_dot_tag_does_not_match_the_domain_itself() {
+    let config = Config::parse(
+        r#"
+[libdefaults]
+ default_realm = CLIENT.REALM
+
+[domain_realm]
+ .mit.edu = ATHENA.MIT.EDU
+"#,
+    )
+    .expect("config parses");
+
+    assert_eq!(config.resolve_realm("mit.edu"), None);
+    assert_eq!(
+        config.resolve_realm("crash.mit.edu"),
+        Some("ATHENA.MIT.EDU")
+    );
+}
+
+#[test]
+fn resolve_realm_prefers_dot_tag_over_bare_at_the_same_level() {
+    // Reference precedence: MIT resolves dev.mit.edu from the bare tag and
+    // x.dev.mit.edu from the leading-dot tag when both are declared.
+    let config = Config::parse(
+        r#"
+[libdefaults]
+ default_realm = CLIENT.REALM
+
+[domain_realm]
+ .dev.mit.edu = DOT.REALM
+ dev.mit.edu = BARE.REALM
+"#,
+    )
+    .expect("config parses");
+
+    assert_eq!(config.resolve_realm("dev.mit.edu"), Some("BARE.REALM"));
+    assert_eq!(config.resolve_realm("x.dev.mit.edu"), Some("DOT.REALM"));
+    assert_eq!(config.resolve_realm("a.b.dev.mit.edu"), Some("DOT.REALM"));
 }
 
 #[test]
@@ -623,4 +736,23 @@ fn temp_file(name: &str) -> PathBuf {
         "rskrb5-config-{name}-{}-{nanos}",
         std::process::id()
     ))
+}
+
+#[test]
+fn resolve_realm_rejects_bare_prefix_extension() {
+    let config = Config::parse(
+        r#"
+[libdefaults]
+ default_realm = CLIENT.REALM
+
+[domain_realm]
+ mit.edu = ATHENA.MIT.EDU
+"#,
+    )
+    .expect("config parses");
+
+    assert_eq!(config.resolve_realm("notmit.edu"), None);
+    assert_eq!(config.resolve_realm("sub.notmit.edu"), None);
+    assert_eq!(config.resolve_realm("mit.edu"), Some("ATHENA.MIT.EDU"));
+    assert_eq!(config.resolve_realm("sub.mit.edu"), Some("ATHENA.MIT.EDU"));
 }

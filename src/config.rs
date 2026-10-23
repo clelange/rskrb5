@@ -192,18 +192,27 @@ impl Config {
 
     /// Resolve a DNS name to a Kerberos realm using `[domain_realm]`.
     ///
-    /// This mirrors gokrb5's lookup order: exact hostname first, then the most
-    /// specific dotted suffix mapping.
+    /// DNS names compare case-insensitively (RFC 4120 section 6.1) while realm
+    /// values stay case-sensitive, and mapping keys are stored lower-cased.
+    /// Lookup order: the exact hostname first, then the most specific suffix,
+    /// where a leading-dot tag covers subdomains only and a bare tag covers the
+    /// domain and its subdomains (MIT `krb5.conf(5)`); within one level the
+    /// leading-dot tag wins.
     pub fn resolve_realm(&self, domain_name: &str) -> Option<&str> {
-        let domain_name = domain_name.trim_end_matches('.');
+        let folded = domain_name.trim_end_matches('.').to_ascii_lowercase();
+        let domain_name = folded.as_str();
         if let Some(realm) = self.domain_realm.get(domain_name) {
             return Some(realm);
         }
 
         let parts: Vec<_> = domain_name.split('.').collect();
         for start in 1..parts.len() {
-            let suffix = format!(".{}", parts[start..].join("."));
-            if let Some(realm) = self.domain_realm.get(&suffix) {
+            let bare = parts[start..].join(".");
+            let dotted = format!(".{bare}");
+            if let Some(realm) = self.domain_realm.get(&dotted) {
+                return Some(realm);
+            }
+            if let Some(realm) = self.domain_realm.get(&bare) {
                 return Some(realm);
             }
         }

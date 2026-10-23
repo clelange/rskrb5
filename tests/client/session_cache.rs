@@ -1879,3 +1879,43 @@ fn tokio_client_updates_ccache_file_without_duplicate_tickets() {
         service_ticket.session_key.value
     );
 }
+
+#[cfg(feature = "tokio")]
+#[test]
+fn service_realm_resolution_folds_dns_case() {
+    let config = Config::parse(
+        r#"
+[libdefaults]
+ default_realm = CLIENT.REALM
+
+[domain_realm]
+ .example.com = PARTNER.REALM
+"#,
+    )
+    .expect("config parses");
+    let tgt = sample_tgt_session();
+    let mut service_ticket = sample_service_ticket_session(&tgt);
+    let now = timestamp(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("current time is after unix epoch")
+            .as_secs(),
+    );
+    service_ticket.start_time = now
+        .checked_sub(Duration::from_secs(60))
+        .expect("start time");
+    service_ticket.end_time = now
+        .checked_add(Duration::from_secs(60 * 60))
+        .expect("end time");
+    service_ticket.service = Principal::new("PARTNER.REALM", 2, ["HTTP", "Host.Example.COM"]);
+
+    let mut client = TokioClient::from_tgt_session(config, KdcProtocol::Tcp, tgt);
+    client.cache_service_ticket(service_ticket.clone());
+
+    let lookup = Principal::new("", 2, ["HTTP", "Host.Example.COM"]);
+    let cached = client
+        .cached_service_ticket(lookup)
+        .expect("mixed-case host resolves to the partner realm");
+    assert_eq!(cached.service.realm, "PARTNER.REALM");
+    assert_eq!(cached.ticket, service_ticket.ticket);
+}
