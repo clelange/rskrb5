@@ -12,6 +12,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use sha2::{Digest, Sha256};
+
 use crate::config::Config;
 use crate::keytab::{EncryptionKey, Keytab};
 use crate::pac::{self, Pac};
@@ -176,6 +178,7 @@ pub struct VerifiedApRep {
 #[derive(Debug, Default)]
 pub struct ReplayCache {
     entries: HashMap<ReplayKey, SystemTime>,
+    authenticators: HashMap<[u8; 32], SystemTime>,
 }
 
 impl ReplayCache {
@@ -187,14 +190,15 @@ impl ReplayCache {
     /// Remove all cached replay entries.
     pub fn clear(&mut self) {
         self.entries.clear();
+        self.authenticators.clear();
     }
 
-    /// Number of cached replay entries.
+    /// Number of cached RFC 4120 replay entries, excluding the digest index.
     pub fn len(&self) -> usize {
         self.entries.len()
     }
 
-    /// Whether the replay cache is empty.
+    /// Whether the RFC 4120 replay entries are empty, excluding the digest index.
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
@@ -211,11 +215,28 @@ impl ReplayCache {
             now.duration_since(*presented_at)
                 .map_or(true, |age| age <= max_age)
         });
+        self.authenticators.retain(|_, presented_at| {
+            now.duration_since(*presented_at)
+                .map_or(true, |age| age <= max_age)
+        });
         before - self.entries.len()
     }
 
-    fn insert(&mut self, key: ReplayKey, presented_at: SystemTime) -> bool {
-        self.entries.insert(key, presented_at).is_none()
+    fn insert(
+        &mut self,
+        key: ReplayKey,
+        authenticator_digest: [u8; 32],
+        presented_at: SystemTime,
+    ) -> bool {
+        if self.entries.contains_key(&key)
+            || self.authenticators.contains_key(&authenticator_digest)
+        {
+            return false;
+        }
+        self.entries.insert(key, presented_at);
+        self.authenticators
+            .insert(authenticator_digest, presented_at);
+        true
     }
 }
 
@@ -266,8 +287,13 @@ impl SharedReplayCache {
         self.with_cache_mut(|cache| cache.clear_older_than_at(max_age, now))
     }
 
-    fn insert(&self, key: ReplayKey, presented_at: SystemTime) -> Result<bool, Error> {
-        self.with_cache_mut(|cache| cache.insert(key, presented_at))
+    fn insert(
+        &self,
+        key: ReplayKey,
+        authenticator_digest: [u8; 32],
+        presented_at: SystemTime,
+    ) -> Result<bool, Error> {
+        self.with_cache_mut(|cache| cache.insert(key, authenticator_digest, presented_at))
     }
 
     fn with_cache<R>(&self, f: impl FnOnce(&ReplayCache) -> R) -> Result<R, Error> {
@@ -437,15 +463,34 @@ impl<'a> ServiceValidator<'a> {
             });
         }
 
+        // RFC 4120 section 3.2.3 keys the replay cache on the server name, the
+        // client name, the time and the microseconds. Section 6.2 makes the
+        // advisory name-type "not significant when checking for equivalence",
+        // and the ticket's outer sname is cleartext a peer can rewrite, so the
+        // identity is built without it; the service side is the key identity
+        // that actually accepted the ticket (the configured override when one
+        // is set, otherwise the ticket's own components). Keep that RFC key,
+        // and also index the authenticator ciphertext to reject re-presentation
+        // under any rewritten cleartext ticket field, including an sname alias
+        // whose keytab entry shares the key. Hash only the cipher octets:
+        // unauthenticated etype/kvno metadata must not create a fresh digest.
+        let authenticator_digest: [u8; 32] =
+            Sha256::digest(ap_req.authenticator.cipher.as_ref()).into();
         let replay_key = ReplayKey {
-            service: ticket_service.clone(),
-            client: authenticator_client.clone(),
+            service: Principal {
+                realm: ticket_service.realm.clone(),
+                name_type: 0,
+                components: keytab_components.clone(),
+            },
+            client: Principal {
+                realm: authenticator_client.realm.clone(),
+                name_type: 0,
+                components: authenticator_client.components.clone(),
+            },
             ctime_seconds: authenticator.ctime.0.timestamp(),
             cusec,
         };
-        self.record_replay(replay_key, now)?;
-
-        Ok(ValidatedApReq {
+        let validated = ValidatedApReq {
             client: authenticator_client,
             service: ticket_service,
             session_key,
@@ -461,18 +506,26 @@ impl<'a> ServiceValidator<'a> {
             authenticator_cusec: cusec,
             authenticator_time,
             pac,
-        })
+        };
+        self.record_replay(replay_key, authenticator_digest, now)?;
+        Ok(validated)
     }
 
     fn now(&self) -> SystemTime {
         self.now.unwrap_or_else(SystemTime::now)
     }
 
-    fn record_replay(&mut self, replay_key: ReplayKey, now: SystemTime) -> Result<(), Error> {
+    fn record_replay(
+        &mut self,
+        replay_key: ReplayKey,
+        authenticator_digest: [u8; 32],
+        now: SystemTime,
+    ) -> Result<(), Error> {
         let inserted = if let Some(replay_cache) = &self.shared_replay_cache {
-            replay_cache.insert(replay_key, now)?
+            replay_cache.insert(replay_key, authenticator_digest, now)?
         } else {
-            self.replay_cache.insert(replay_key, now)
+            self.replay_cache
+                .insert(replay_key, authenticator_digest, now)
         };
         if inserted { Ok(()) } else { Err(Error::Replay) }
     }
