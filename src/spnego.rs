@@ -1027,6 +1027,8 @@ pub struct InitiatorContext {
     pub authenticator_time: SystemTime,
     /// Optional client sequence number supplied in the authenticator.
     pub sequence_number: Option<u32>,
+    /// GSS-API context flags requested when this context was built.
+    pub context_flags: Vec<u32>,
 }
 
 impl InitiatorContext {
@@ -1175,6 +1177,7 @@ pub fn init_sec_context_with_confounder(
         authenticator_cusec: built_ap_req.authenticator_cusec,
         authenticator_time: built_ap_req.authenticator_time,
         sequence_number: built_ap_req.sequence_number,
+        context_flags: options.context_flags.clone(),
     })
 }
 

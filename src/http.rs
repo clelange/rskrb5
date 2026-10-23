@@ -86,15 +86,33 @@ pub enum TowerError<E> {
 }
 
 /// Client-side HTTP Negotiate wrapper error.
+///
+/// `E` is the caller-provided sender's error type and `B` is the response body
+/// type, so a response that failed mutual authentication can be returned to the
+/// caller for diagnostics.
 #[cfg(feature = "tokio")]
 #[derive(Debug, thiserror::Error)]
-pub enum NegotiateHttpError<E> {
+pub enum NegotiateHttpError<E, B> {
     /// HTTP Negotiate processing failed.
     #[error("{0}")]
     Http(#[from] Error),
     /// The caller-provided HTTP sender failed.
     #[error("HTTP sender failed")]
     Sender(E),
+    /// Mutual authentication was requested, but the final response did not
+    /// carry an AP-REP that verified against the initiator context.
+    ///
+    /// The response must not be treated as coming from an authenticated server.
+    #[error("mutual authentication was requested but the server did not prove its identity")]
+    MutualAuthenticationNotProven {
+        /// Classification of the final response.
+        ///
+        /// `None` when the first response never issued a `401 WWW-Authenticate:
+        /// Negotiate` challenge, so no authenticated retry was sent.
+        negotiation: Option<ClientNegotiateResponse>,
+        /// The final HTTP response, kept for diagnostics.
+        response: Box<Response<B>>,
+    },
 }
 
 /// Client-side HTTP Negotiate response classification.
@@ -263,6 +281,11 @@ pub async fn authorize_request_context_with_negotiate_client_options<B>(
 /// challenge. It must therefore build a fresh replayable request body each time
 /// it is called. `send_request` can adapt any HTTP client by accepting the
 /// generic `http::Request` value and returning a generic `http::Response`.
+///
+/// The default initiator options do not request mutual authentication, so the
+/// final response is returned with its [`ClientNegotiateResponse`]
+/// classification and the caller decides how to treat it. Use
+/// [`send_with_negotiate_options`] to require mutual authentication.
 #[cfg(feature = "tokio")]
 pub async fn send_with_negotiate<
     ReqBody,
@@ -276,7 +299,7 @@ pub async fn send_with_negotiate<
     service: Principal,
     make_request: MakeRequest,
     send_request: SendRequest,
-) -> std::result::Result<NegotiateHttpResponse<RespBody>, NegotiateHttpError<SendError>>
+) -> std::result::Result<NegotiateHttpResponse<RespBody>, NegotiateHttpError<SendError, RespBody>>
 where
     MakeRequest: FnMut() -> Request<ReqBody>,
     SendRequest: FnMut(Request<ReqBody>) -> SendFuture,
@@ -297,6 +320,16 @@ where
 /// `make_request` must be replayable: the wrapper calls it again after a
 /// Negotiate challenge so request bodies are never cloned or buffered
 /// implicitly.
+///
+/// When `options` request mutual authentication (the AP option
+/// `mutual-required`, `0x2000_0000`, or [`spnego::CONTEXT_FLAG_MUTUAL`]), the
+/// wrapper fails closed: unless the final response carries an AP-REP that
+/// verifies against the initiator context, it returns
+/// [`NegotiateHttpError::MutualAuthenticationNotProven`] with the final
+/// response. This covers a first response that never issued a Negotiate
+/// challenge and a final response without `WWW-Authenticate`, without a
+/// Negotiate challenge, or without a valid AP-REP. Without a mutual request
+/// the final response is returned with its classification.
 #[cfg(feature = "tokio")]
 pub async fn send_with_negotiate_options<
     ReqBody,
@@ -311,17 +344,18 @@ pub async fn send_with_negotiate_options<
     options: spnego::InitiatorContextOptions,
     mut make_request: MakeRequest,
     mut send_request: SendRequest,
-) -> std::result::Result<NegotiateHttpResponse<RespBody>, NegotiateHttpError<SendError>>
+) -> std::result::Result<NegotiateHttpResponse<RespBody>, NegotiateHttpError<SendError, RespBody>>
 where
     MakeRequest: FnMut() -> Request<ReqBody>,
     SendRequest: FnMut(Request<ReqBody>) -> SendFuture,
     SendFuture: Future<Output = std::result::Result<Response<RespBody>, SendError>>,
 {
+    let mutual = mutual_requested_by(&options);
     let first = send_request(make_request())
         .await
         .map_err(NegotiateHttpError::Sender)?;
     if !should_retry_with_negotiate(&first)? {
-        return Ok(NegotiateHttpResponse::not_negotiated(first));
+        return unchallenged_result(mutual, first);
     }
 
     let mut retry = make_request();
@@ -334,25 +368,23 @@ where
     let response = send_request(retry)
         .await
         .map_err(NegotiateHttpError::Sender)?;
-    let negotiation = classify_negotiate_response(&context, &response);
-    Ok(NegotiateHttpResponse::negotiated(
-        response,
-        context,
-        negotiation,
-    ))
+    negotiated_result(mutual, response, context)
 }
 
 /// Send an HTTP request with a 401 Negotiate retry using a blocking client.
 ///
 /// `make_request` has the same replay contract as [`send_with_negotiate`]: it
 /// is called once for the first request and again after a Negotiate challenge.
+///
+/// The default initiator options do not request mutual authentication; use
+/// [`send_with_blocking_negotiate_options`] to require it.
 #[cfg(feature = "tokio")]
 pub fn send_with_blocking_negotiate<ReqBody, RespBody, MakeRequest, SendRequest, SendError>(
     client: &mut BlockingNegotiateClient,
     service: Principal,
     make_request: MakeRequest,
     send_request: SendRequest,
-) -> std::result::Result<NegotiateHttpResponse<RespBody>, NegotiateHttpError<SendError>>
+) -> std::result::Result<NegotiateHttpResponse<RespBody>, NegotiateHttpError<SendError, RespBody>>
 where
     MakeRequest: FnMut() -> Request<ReqBody>,
     SendRequest: FnMut(Request<ReqBody>) -> std::result::Result<Response<RespBody>, SendError>,
@@ -367,6 +399,10 @@ where
 }
 
 /// Send an HTTP request with a blocking 401 Negotiate retry and explicit initiator options.
+///
+/// Requested mutual authentication fails closed exactly as in
+/// [`send_with_negotiate_options`]: without a verified AP-REP the wrapper
+/// returns [`NegotiateHttpError::MutualAuthenticationNotProven`].
 #[cfg(feature = "tokio")]
 pub fn send_with_blocking_negotiate_options<
     ReqBody,
@@ -380,14 +416,15 @@ pub fn send_with_blocking_negotiate_options<
     options: spnego::InitiatorContextOptions,
     mut make_request: MakeRequest,
     mut send_request: SendRequest,
-) -> std::result::Result<NegotiateHttpResponse<RespBody>, NegotiateHttpError<SendError>>
+) -> std::result::Result<NegotiateHttpResponse<RespBody>, NegotiateHttpError<SendError, RespBody>>
 where
     MakeRequest: FnMut() -> Request<ReqBody>,
     SendRequest: FnMut(Request<ReqBody>) -> std::result::Result<Response<RespBody>, SendError>,
 {
+    let mutual = mutual_requested_by(&options);
     let first = send_request(make_request()).map_err(NegotiateHttpError::Sender)?;
     if !should_retry_with_negotiate(&first)? {
-        return Ok(NegotiateHttpResponse::not_negotiated(first));
+        return unchallenged_result(mutual, first);
     }
 
     let mut retry = make_request();
@@ -397,12 +434,7 @@ where
     set_authorization_header(&mut retry, &context.header)?;
 
     let response = send_request(retry).map_err(NegotiateHttpError::Sender)?;
-    let negotiation = classify_negotiate_response(&context, &response);
-    Ok(NegotiateHttpResponse::negotiated(
-        response,
-        context,
-        negotiation,
-    ))
+    negotiated_result(mutual, response, context)
 }
 
 /// Validate the request's Negotiate header and attach the accepted context to extensions.
@@ -484,6 +516,52 @@ fn should_retry_with_negotiate<B>(response: &Response<B>) -> Result<bool> {
     }
 }
 
+/// Whether the initiator options ask for mutual authentication in any supported form.
+#[cfg(feature = "tokio")]
+fn mutual_requested_by(options: &spnego::InitiatorContextOptions) -> bool {
+    options.ap_option_bits & AP_OPTION_MUTUAL_REQUIRED != 0
+        || options.context_flags.contains(&spnego::CONTEXT_FLAG_MUTUAL)
+}
+
+#[cfg(feature = "tokio")]
+fn unchallenged_result<E, B>(
+    mutual: bool,
+    first: Response<B>,
+) -> std::result::Result<NegotiateHttpResponse<B>, NegotiateHttpError<E, B>> {
+    if mutual {
+        return Err(NegotiateHttpError::MutualAuthenticationNotProven {
+            negotiation: None,
+            response: Box::new(first),
+        });
+    }
+    Ok(NegotiateHttpResponse::not_negotiated(first))
+}
+
+#[cfg(feature = "tokio")]
+fn negotiated_result<E, B>(
+    mutual: bool,
+    response: Response<B>,
+    context: spnego::InitiatorContext,
+) -> std::result::Result<NegotiateHttpResponse<B>, NegotiateHttpError<E, B>> {
+    let negotiation = classify_negotiate_response(&context, &response);
+    if mutual
+        && !matches!(
+            negotiation,
+            ClientNegotiateResponse::Accepted { ap_rep: Some(_) }
+        )
+    {
+        return Err(NegotiateHttpError::MutualAuthenticationNotProven {
+            negotiation: Some(negotiation),
+            response: Box::new(response),
+        });
+    }
+    Ok(NegotiateHttpResponse::negotiated(
+        response,
+        context,
+        negotiation,
+    ))
+}
+
 /// Build a `401 Unauthorized` response that starts Negotiate authentication.
 pub fn challenge_response<B: Default>() -> Response<B> {
     let mut response = Response::new(B::default());
@@ -513,6 +591,15 @@ fn negotiate_challenge(header: &str) -> Option<&str> {
         }
     }
     None
+}
+
+/// RFC 4120 AP option `mutual-required`.
+const AP_OPTION_MUTUAL_REQUIRED: u32 = 0x2000_0000;
+
+/// Whether the initiator asked for mutual authentication in any supported form.
+fn mutual_authentication_requested(context: &spnego::InitiatorContext) -> bool {
+    crate::ap_req::ap_options_to_bits(&context.ap_req.ap_options) & AP_OPTION_MUTUAL_REQUIRED != 0
+        || context.context_flags.contains(&spnego::CONTEXT_FLAG_MUTUAL)
 }
 
 fn classify_negotiate_challenge(
@@ -552,6 +639,12 @@ fn classify_negotiate_challenge(
     }
 
     let Some(response_token) = response.response_token else {
+        if mutual_authentication_requested(context) {
+            return ClientNegotiateResponse::InvalidToken {
+                message: "mutual authentication was requested but the peer returned no AP-REP"
+                    .to_owned(),
+            };
+        }
         return ClientNegotiateResponse::Accepted { ap_rep: None };
     };
     let krb5 = match spnego::Krb5MechToken::decode(&response_token) {

@@ -93,7 +93,7 @@ upstream_tests = ["service/*_test.go", "messages/Ticket_test.go"]
 rskrb5_modules = ["src/service.rs", "src/http.rs"]
 rskrb5_tests = ["tests/service.rs", "tests/http.rs", "tests/client_integration.rs"]
 status = "covered-with-gated-evidence"
-evidence = ["unit tests cover AP-REQ validation, replay cache, clock skew, client address checks, AP-REP mutual auth, keytab adapters, and PAC checksum validation", "GitHub Actions run 28073249506 passed Docker HTTP/SPNEGO service acceptance, raw KRB5 Negotiate, and replay rejection on ubuntu-latest"]
+evidence = ["unit tests cover AP-REQ validation, replay cache, clock skew, client address checks, AP-REP mutual auth, mutual-required completion enforcement (classifier and send wrappers fail closed), keytab adapters, and PAC checksum validation", "GitHub Actions run 28073249506 passed Docker HTTP/SPNEGO service acceptance, raw KRB5 Negotiate, and replay rejection on ubuntu-latest"]
 next = ["keep Linux Docker HTTP/SPNEGO coverage green before release"]
 
 [[area]]
