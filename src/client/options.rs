@@ -48,6 +48,14 @@ impl AsReqOptions {
     }
 
     /// Construct options from parsed `[libdefaults]`.
+    ///
+    /// When `permitted_enctypes_explicit` is set, the request list is narrowed
+    /// to `permitted_enctype_ids`. `Config::parse` already rejects an explicit
+    /// `default_tkt_enctypes` naming an enctype outside the allowlist, so for
+    /// parsed configs this only narrows the seeded default list that no
+    /// operator requested. A programmatically built `LibDefaults` whose lists
+    /// are disjoint, or whose `permitted_enctype_ids` is empty, yields an
+    /// empty list, which the request builders reject.
     pub fn from_libdefaults(now: SystemTime, nonce: u32, defaults: &LibDefaults) -> Self {
         let mut options = Self::new(now, nonce);
         options.ticket_lifetime = defaults.ticket_lifetime;
@@ -58,6 +66,11 @@ impl AsReqOptions {
         } else {
             defaults.default_tkt_enctype_ids.clone()
         };
+        if defaults.permitted_enctypes_explicit {
+            options
+                .etypes
+                .retain(|etype| defaults.permitted_enctype_ids.contains(etype));
+        }
         options.kdc_option_bits = defaults.kdc_default_options;
         if defaults.canonicalize {
             options.kdc_option_bits |= KDC_OPTION_CANONICALIZE;
@@ -145,6 +158,14 @@ impl TgsReqOptions {
     }
 
     /// Construct options from parsed `[libdefaults]`.
+    ///
+    /// When `permitted_enctypes_explicit` is set, the request list is narrowed
+    /// to `permitted_enctype_ids`. `Config::parse` already rejects an explicit
+    /// `default_tgs_enctypes` naming an enctype outside the allowlist, so for
+    /// parsed configs this only narrows the seeded default list that no
+    /// operator requested. A programmatically built `LibDefaults` whose lists
+    /// are disjoint, or whose `permitted_enctype_ids` is empty, yields an
+    /// empty list, which the request builders reject.
     pub fn from_libdefaults(now: SystemTime, nonce: u32, defaults: &LibDefaults) -> Self {
         let mut options = Self::new(now, nonce);
         options.ticket_lifetime = defaults.ticket_lifetime;
@@ -155,6 +176,11 @@ impl TgsReqOptions {
         } else {
             defaults.default_tgs_enctype_ids.clone()
         };
+        if defaults.permitted_enctypes_explicit {
+            options
+                .etypes
+                .retain(|etype| defaults.permitted_enctype_ids.contains(etype));
+        }
         options.kdc_option_bits = defaults.kdc_default_options;
         if defaults.canonicalize {
             options.kdc_option_bits |= KDC_OPTION_CANONICALIZE;

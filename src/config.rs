@@ -17,10 +17,12 @@ const PLATFORM_DEFAULT_CONFIG_PATHS: &[&str] = &["C:\\ProgramData\\MIT\\Kerberos
 #[cfg(not(any(target_family = "unix", target_family = "windows")))]
 const PLATFORM_DEFAULT_CONFIG_PATHS: &[&str] = &[];
 
+// gokrb5 also lists des3-cbc-sha1 here, as its unimplemented etype 7. MIT
+// spells enctype 16 that way, so keeping the name would add DES3 to every
+// default request list.
 const DEFAULT_ENCTYPES: &[&str] = &[
     "aes256-cts-hmac-sha1-96",
     "aes128-cts-hmac-sha1-96",
-    "des3-cbc-sha1",
     "arcfour-hmac-md5",
     "camellia256-cts-cmac",
     "camellia128-cts-cmac",
@@ -148,8 +150,18 @@ impl Config {
     }
 
     /// Parse a `krb5.conf` string.
+    ///
+    /// Fails with [`Error::EnctypeNotPermitted`] when an explicit
+    /// `default_tkt_enctypes` or `default_tgs_enctypes` list names an enctype
+    /// outside an explicit `permitted_enctypes` allowlist. The check runs once,
+    /// on the final values after every `[libdefaults]` section is applied.
+    ///
+    /// Fails with [`Error::NoPermittedEnctypes`] when an explicit
+    /// `permitted_enctypes` names no supported enctype, for example only
+    /// unsupported names or only weak ones without `allow_weak_crypto`.
     pub fn parse(input: &str) -> Result<Self, Error> {
         let mut config = Self::new();
+        let mut enctypes = EnctypeParseState::default();
         let mut current = SectionKind::Unknown;
         let mut lines = Vec::new();
 
@@ -161,7 +173,7 @@ impl Config {
             }
 
             if let Some(section) = SectionKind::parse(cleaned) {
-                apply_section(&mut config, current, &lines)?;
+                apply_section(&mut config, current, &lines, &mut enctypes)?;
                 current = section;
                 lines.clear();
                 continue;
@@ -175,7 +187,8 @@ impl Config {
             }
         }
 
-        apply_section(&mut config, current, &lines)?;
+        apply_section(&mut config, current, &lines, &mut enctypes)?;
+        config.libdefaults.validate_explicit_enctypes(enctypes)?;
         Ok(config)
     }
 
@@ -310,6 +323,22 @@ pub struct LibDefaults {
     pub permitted_enctypes: Vec<String>,
     /// Permitted enctype IDs implemented by gokrb5-compatible crypto.
     pub permitted_enctype_ids: Vec<i32>,
+    /// Whether `[libdefaults] permitted_enctypes` was explicitly configured.
+    ///
+    /// Parsing a `[libdefaults] permitted_enctypes` line sets this flag. The
+    /// seeded default name list is gokrb5-derived and narrower than MIT's
+    /// default (it has no SHA2 enctypes), so the allowlist is only enforced
+    /// when this flag is set.
+    ///
+    /// The flag round-trips through serde. Serialized `LibDefaults` that lack
+    /// this field deserialize it as `false`.
+    ///
+    /// Code that builds `LibDefaults` programmatically (a struct literal or
+    /// `Default`) and wants the allowlist enforced must set this flag to
+    /// `true` together with `permitted_enctypes` / `permitted_enctype_ids`.
+    /// With the flag set, an empty `permitted_enctype_ids` permits no enctype.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub permitted_enctypes_explicit: bool,
     /// Preferred preauthentication type IDs.
     pub preferred_preauth_types: Vec<i32>,
     /// Whether tickets should be proxiable.
@@ -367,6 +396,7 @@ impl LibDefaults {
             no_addresses: true,
             permitted_enctypes: default_enctypes,
             permitted_enctype_ids: Vec::new(),
+            permitted_enctypes_explicit: false,
             preferred_preauth_types: DEFAULT_PREAUTH_TYPES.to_vec(),
             proxiable: false,
             rdns: true,
@@ -381,7 +411,11 @@ impl LibDefaults {
         defaults
     }
 
-    fn parse_lines(&mut self, lines: &[Line]) -> Result<(), Error> {
+    fn parse_lines(
+        &mut self,
+        lines: &[Line],
+        enctypes: &mut EnctypeParseState,
+    ) -> Result<(), Error> {
         for line in lines {
             let (key, value) = parse_assignment(line, "libdefaults")?;
             let key = key.to_ascii_lowercase();
@@ -403,8 +437,14 @@ impl LibDefaults {
                 }
                 "default_keytab_name" => self.default_keytab_name = value.to_owned(),
                 "default_realm" => self.default_realm = value.to_owned(),
-                "default_tgs_enctypes" => self.default_tgs_enctypes = parse_words(value),
-                "default_tkt_enctypes" => self.default_tkt_enctypes = parse_words(value),
+                "default_tgs_enctypes" => {
+                    self.default_tgs_enctypes = parse_words(value);
+                    enctypes.tgs_explicit = true;
+                }
+                "default_tkt_enctypes" => {
+                    self.default_tkt_enctypes = parse_words(value);
+                    enctypes.tkt_explicit = true;
+                }
                 "dns_canonicalize_hostname" => {
                     self.dns_canonicalize_hostname = parse_boolean(value)?;
                 }
@@ -424,7 +464,10 @@ impl LibDefaults {
                 }
                 "kdc_timesync" => self.kdc_time_sync = parse_i32(value, line, key)?,
                 "noaddresses" | "no_addresses" => self.no_addresses = parse_boolean(value)?,
-                "permitted_enctypes" => self.permitted_enctypes = parse_words(value),
+                "permitted_enctypes" => {
+                    self.permitted_enctypes = parse_words(value);
+                    self.permitted_enctypes_explicit = true;
+                }
                 "preferred_preauth_types" => {
                     self.preferred_preauth_types = parse_i32_list(value, line, key)?;
                 }
@@ -445,6 +488,57 @@ impl LibDefaults {
         }
 
         self.refresh_enctype_ids();
+        Ok(())
+    }
+
+    /// Reject an explicit request list that names an enctype the explicit
+    /// `permitted_enctypes` allowlist does not permit.
+    ///
+    /// Dropping the enctype instead would silently send a narrower request
+    /// list than the operator configured. Seeded (implicit) request lists are
+    /// not checked here; `AsReqOptions::from_libdefaults` and
+    /// `TgsReqOptions::from_libdefaults` narrow them to the allowlist.
+    ///
+    /// An explicit allowlist without any supported enctype is rejected as a
+    /// whole: treating it as "no policy" would permit every enctype.
+    fn validate_explicit_enctypes(&self, enctypes: EnctypeParseState) -> Result<(), Error> {
+        if !self.permitted_enctypes_explicit {
+            return Ok(());
+        }
+        if self.permitted_enctype_ids.is_empty() {
+            return Err(Error::NoPermittedEnctypes {
+                names: self.permitted_enctypes.clone(),
+            });
+        }
+        let request_lists = [
+            (
+                enctypes.tkt_explicit,
+                "default_tkt_enctypes",
+                &self.default_tkt_enctypes,
+            ),
+            (
+                enctypes.tgs_explicit,
+                "default_tgs_enctypes",
+                &self.default_tgs_enctypes,
+            ),
+        ];
+        for (explicit, key, names) in request_lists {
+            if !explicit {
+                continue;
+            }
+            // Names without a supported ID are never requested, so only
+            // supported IDs can be narrowed away.
+            let not_permitted = names.iter().find(|name| {
+                supported_enctype_id(name)
+                    .is_some_and(|id| !self.permitted_enctype_ids.contains(&id))
+            });
+            if let Some(name) = not_permitted {
+                return Err(Error::EnctypeNotPermitted {
+                    key,
+                    enctype: name.clone(),
+                });
+            }
+        }
         Ok(())
     }
 
@@ -614,6 +708,35 @@ pub enum Error {
     /// The requested realm has no configured password-change servers.
     #[error("realm has no configured kpasswd servers: {0}")]
     NoKpasswdServer(String),
+    /// An explicit request enctype list names an enctype outside the explicit
+    /// `permitted_enctypes` allowlist.
+    #[error("[libdefaults] {key} lists {enctype}, which permitted_enctypes does not permit")]
+    EnctypeNotPermitted {
+        /// Request-list key: `default_tkt_enctypes` or `default_tgs_enctypes`.
+        key: &'static str,
+        /// The configured enctype name.
+        enctype: String,
+    },
+    /// An explicit `permitted_enctypes` allowlist names no supported enctype.
+    #[error(
+        "[libdefaults] permitted_enctypes = {} names no supported enctype",
+        names.join(" ")
+    )]
+    NoPermittedEnctypes {
+        /// The configured enctype names.
+        names: Vec<String>,
+    },
+}
+
+/// Which `[libdefaults]` request enctype lists one parse set explicitly.
+///
+/// The state spans every `[libdefaults]` section of the parse, so a request
+/// list from an earlier section is still validated against a
+/// `permitted_enctypes` line from a later one.
+#[derive(Clone, Copy, Debug, Default)]
+struct EnctypeParseState {
+    tkt_explicit: bool,
+    tgs_explicit: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -643,9 +766,14 @@ impl SectionKind {
     }
 }
 
-fn apply_section(config: &mut Config, section: SectionKind, lines: &[Line]) -> Result<(), Error> {
+fn apply_section(
+    config: &mut Config,
+    section: SectionKind,
+    lines: &[Line],
+    enctypes: &mut EnctypeParseState,
+) -> Result<(), Error> {
     match section {
-        SectionKind::LibDefaults => config.libdefaults.parse_lines(lines),
+        SectionKind::LibDefaults => config.libdefaults.parse_lines(lines, enctypes),
         SectionKind::Realms => {
             config.realms = parse_realms(lines)?;
             Ok(())
@@ -1193,7 +1321,7 @@ fn supported_enctype_id(value: &str) -> Option<i32> {
         "aes256-cts-hmac-sha1-96" | "aes256-cts" | "aes256-sha1" => 18,
         "aes128-cts-hmac-sha256-128" | "aes128-sha2" => 19,
         "aes256-cts-hmac-sha384-192" | "aes256-sha2" => 20,
-        "des3-cbc-sha1-kd" => 16,
+        "des3-cbc-sha1" | "des3-hmac-sha1" | "des3-cbc-sha1-kd" => 16,
         "arcfour-hmac" | "rc4-hmac" | "arcfour-hmac-md5" => 23,
         _ => return None,
     })

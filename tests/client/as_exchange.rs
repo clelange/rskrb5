@@ -58,6 +58,126 @@ fn builds_tgt_as_req_with_renew_lifetime_sets_renewable_flag() {
 }
 
 #[test]
+fn as_req_etypes_are_intersected_with_permitted_enctypes() {
+    let defaults = rskrb5::config::LibDefaults {
+        default_tkt_enctype_ids: vec![18, 17, 23],
+        permitted_enctype_ids: vec![18],
+        permitted_enctypes_explicit: true,
+        ..Default::default()
+    };
+    let options = AsReqOptions::from_libdefaults(timestamp(1_893_553_447), 0x1122_3344, &defaults);
+    let request = build_tgt_as_req(Principal::user("TEST.GOKRB5", "testuser1"), options)
+        .expect("AS-REQ builds");
+
+    let decoded: rasn_kerberos::AsReq = rasn::der::decode(&request.der).expect("AS-REQ decodes");
+    assert_eq!(decoded.0.req_body.etype, vec![18]);
+}
+
+#[test]
+fn as_req_with_disjoint_permitted_enctypes_fails_closed() {
+    let defaults = rskrb5::config::LibDefaults {
+        default_tkt_enctype_ids: vec![18],
+        permitted_enctype_ids: vec![17],
+        permitted_enctypes_explicit: true,
+        ..Default::default()
+    };
+    let options = AsReqOptions::from_libdefaults(timestamp(1_893_553_447), 0x1122_3344, &defaults);
+    assert!(options.etypes.is_empty());
+
+    let error = build_tgt_as_req(Principal::user("TEST.GOKRB5", "testuser1"), options)
+        .expect_err("an empty request list fails closed");
+    assert!(matches!(error, Error::EmptyEtypes));
+}
+
+#[test]
+fn sha2_request_list_survives_the_implicit_permitted_set() {
+    let defaults = rskrb5::config::LibDefaults {
+        default_tkt_enctype_ids: vec![19, 20],
+        permitted_enctype_ids: vec![18, 17, 23],
+        ..Default::default()
+    };
+    let options = AsReqOptions::from_libdefaults(timestamp(1_893_553_447), 0x1122_3344, &defaults);
+
+    assert_eq!(options.etypes, vec![19, 20]);
+}
+
+#[test]
+fn config_with_sha2_tkt_enctypes_and_no_permitted_line_keeps_the_request_list() {
+    let config = Config::parse(
+        r#"
+[libdefaults]
+ default_tkt_enctypes = aes128-cts-hmac-sha256-128
+"#,
+    )
+    .expect("config parses");
+    assert!(!config.libdefaults.permitted_enctypes_explicit);
+
+    let options =
+        AsReqOptions::from_libdefaults(timestamp(1_893_553_447), 0x1122_3344, &config.libdefaults);
+    assert_eq!(options.etypes, vec![19]);
+}
+
+#[test]
+fn explicit_permitted_enctypes_reject_an_explicit_sha2_request_list() {
+    let error = Config::parse(
+        r#"
+[libdefaults]
+ default_tkt_enctypes = aes128-cts-hmac-sha256-128
+ permitted_enctypes = aes256-cts-hmac-sha1-96
+"#,
+    )
+    .expect_err("an explicit SHA2 request list outside the allowlist is rejected");
+
+    assert!(
+        matches!(
+            &error,
+            rskrb5::config::Error::EnctypeNotPermitted { key: "default_tkt_enctypes", enctype }
+                if enctype == "aes128-cts-hmac-sha256-128"
+        ),
+        "unexpected error: {error:?}"
+    );
+}
+
+#[test]
+fn explicit_mit_des3_request_entry_is_requested() {
+    let config = Config::parse(
+        r#"
+[libdefaults]
+ default_tkt_enctypes = aes256-cts-hmac-sha1-96 des3-cbc-sha1
+"#,
+    )
+    .expect("config parses");
+
+    let options =
+        AsReqOptions::from_libdefaults(timestamp(1_893_553_447), 0x1122_3344, &config.libdefaults);
+    let request = build_tgt_as_req(Principal::user("TEST.GOKRB5", "testuser1"), options)
+        .expect("AS-REQ builds");
+    let decoded: rasn_kerberos::AsReq = rasn::der::decode(&request.der).expect("AS-REQ decodes");
+    assert_eq!(decoded.0.req_body.etype, vec![18, 16]);
+}
+
+#[test]
+fn explicit_mit_des3_request_entry_outside_permitted_fails_parsing() {
+    let error = Config::parse(
+        r#"
+[libdefaults]
+ default_tkt_enctypes = aes256-cts-hmac-sha1-96 des3-cbc-sha1
+ permitted_enctypes = aes256-cts-hmac-sha1-96
+"#,
+    )
+    .expect_err("a DES3 request entry outside the allowlist is rejected");
+
+    assert!(
+        matches!(
+            &error,
+            rskrb5::config::Error::EnctypeNotPermitted { key: "default_tkt_enctypes", enctype }
+                if enctype == "des3-cbc-sha1"
+        ),
+        "unexpected error: {error:?}"
+    );
+}
+
+#[test]
 fn as_req_options_from_libdefaults_sets_canonicalize_flag() {
     let defaults = rskrb5::config::LibDefaults {
         canonicalize: true,
@@ -218,6 +338,26 @@ fn processes_as_rep_and_exports_ccache_credential() {
     assert_eq!(credential.times.renew_till, 1_894_071_845);
     assert_eq!(credential.ticket, session.ticket);
     assert!(credential.second_ticket.is_empty());
+}
+
+#[test]
+fn process_as_rep_rejects_session_key_outside_requested_enctypes() {
+    let request = build_tgt_as_req(
+        Principal::user("TEST.GOKRB5", "testuser1"),
+        AsReqOptions::new(timestamp(1_893_553_447), 0x1122_3344).with_etypes(vec![23]),
+    )
+    .expect("AS-REQ builds");
+    let reply_key = reply_key();
+    let response = synthetic_as_rep_with_reply_key(
+        &request,
+        request.nonce,
+        request.service.clone(),
+        &reply_key,
+    );
+
+    let error = process_as_rep(&request, &response, &reply_key)
+        .expect_err("a session key outside the requested list is rejected");
+    assert!(matches!(error, Error::EnctypeNotRequested(18)));
 }
 
 #[test]

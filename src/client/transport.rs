@@ -456,7 +456,14 @@ impl TokioKdcTransport {
         let response = self
             .send_to_realm(config, protocol, &request.client.realm, &request.der)
             .await?;
-        process_as_rep(request, &response, reply_key)
+        let session = process_as_rep(request, &response, reply_key)?;
+        if config.libdefaults.permitted_enctypes_explicit {
+            super::ensure_permitted_enctype(
+                &config.libdefaults.permitted_enctype_ids,
+                session.session_key.etype,
+            )?;
+        }
+        Ok(session)
     }
 
     /// Send a TGS-REQ through Tokio transport and process the returned TGS-REP.
@@ -485,7 +492,14 @@ impl TokioKdcTransport {
         let response = self
             .send_to_realm(config, protocol, &request.kdc_realm, &request.der)
             .await?;
-        process_tgs_rep(request, &response, tgs_session_key)
+        let session = process_tgs_rep(request, &response, tgs_session_key)?;
+        if config.libdefaults.permitted_enctypes_explicit {
+            super::ensure_permitted_enctype(
+                &config.libdefaults.permitted_enctype_ids,
+                session.session_key.etype,
+            )?;
+        }
+        Ok(session)
     }
 
     /// Perform S4U2Self through an explicit KDC endpoint.

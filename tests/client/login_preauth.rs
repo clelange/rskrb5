@@ -186,6 +186,60 @@ fn login_tgt_with_keytab_can_disable_fast_negotiation_marker() {
 }
 
 #[test]
+fn initial_as_rep_outside_requested_enctypes_is_rejected() {
+    let client = Principal::user("TEST.GOKRB5", "testuser1");
+    let options = AsReqOptions::new(timestamp(1_893_553_447), 0x1122_3344)
+        .with_etypes(vec![18])
+        .with_assume_preauthentication(true);
+    let aes128_key_info = PreauthKeyInfo {
+        etype: 17,
+        salt: None,
+        s2kparams: None,
+    };
+    let aes128_reply_key = derive_password_reply_key(&client, TESTUSER_PASSWORD, &aes128_key_info)
+        .expect("AES128 reply key derives");
+    let mut transport = AssumedPreauthTransport::new(aes128_reply_key, None);
+
+    let error = login_tgt_with_password(&mut transport, client, TESTUSER_PASSWORD, options)
+        .expect_err("an AS-REP outside the requested enctypes is rejected");
+    assert!(matches!(error, Error::EnctypeNotRequested(17)));
+    assert_eq!(transport.calls, 1);
+}
+
+#[test]
+fn keytab_initial_as_rep_outside_requested_enctypes_is_rejected() {
+    let client = Principal::user("TEST.GOKRB5", "testuser1");
+    let options = AsReqOptions::new(timestamp(1_893_553_447), 0x1122_3344)
+        .with_etypes(vec![18])
+        .with_assume_preauthentication(true);
+    let mut keytab = keytab_with_reply_key(4);
+    let aes128_key_info = PreauthKeyInfo {
+        etype: 17,
+        salt: None,
+        s2kparams: None,
+    };
+    let aes128_reply_key = derive_password_reply_key(&client, TESTUSER_PASSWORD, &aes128_key_info)
+        .expect("AES128 reply key derives");
+    keytab.entries_mut().push(KeytabEntry {
+        principal: KeytabPrincipal {
+            realm: "TEST.GOKRB5".to_owned(),
+            components: vec!["testuser1".to_owned()],
+            name_type: 1,
+        },
+        timestamp: 1_893_553_440,
+        kvno8: 4,
+        key: aes128_reply_key.clone(),
+        kvno: 4,
+    });
+    let mut transport = AssumedPreauthTransport::new(aes128_reply_key, Some(4));
+
+    let error = login_tgt_with_keytab(&mut transport, client, &keytab, options)
+        .expect_err("an out-of-list keytab reply is rejected");
+    assert!(matches!(error, Error::EnctypeNotRequested(17)));
+    assert_eq!(transport.calls, 1);
+}
+
+#[test]
 fn login_as_service_with_keytab_retries_for_explicit_service() {
     let client = Principal::user("TEST.GOKRB5", "testuser1");
     let service = change_password_principal();
